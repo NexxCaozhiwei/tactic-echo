@@ -1,0 +1,9 @@
+# Tactic Echo 0.9.46 — P5 统一冷却快照与 HUD 状态标签分层
+
+- **统一冷却数据层**：新增 `Tactics/CooldownResolver.lua`。技能以 `C_Spell.GetSpellCooldown`（旧 API 回退）为来源；饰品以 `GetInventoryItemCooldown("player", 13/14)` 为来源；药水及其他主动使用物品以 `C_Item.GetItemCooldown(itemID)`（旧 API 回退）为来源。三类来源统一输出 `identity / source / known / start / duration / remaining / active` 快照。
+- **事件驱动刷新**：冷却变化、施法成功、装备切换、背包、天赋/专精和法术表变更只标记缓存为脏，并以 `C_Timer.After(0.01)` 合并读取；HUD 倒计时仅按已缓存 `start + duration` 递减，不在 `OnUpdate` 高频查询冷却 API。
+- **物品卡片不再依赖动作条冷却**：饰品/药水的动作条绑定现在只决定现实按键和“未绑定”提示；即使未放在动作条，仍可显示来自装备槽位或 ItemID 的 CD。药水耗尽后，只要类别冷却仍在，卡片仍保留 CD 显示。
+- **HUD 三层文字**：来源标签（左上）、CD 数字（中央）、状态标签（左下）分离。`施法 / 引导 / 蓄力 / 暂停 / 阻止 / 未绑定` 不再覆盖 CD 数字；每个模块新增独立“状态标签”字体、字号、缩放、位置与偏移配置。
+- **原生转盘边界**：公开数值不可解释时，HUD 不伪造 CD 数字；仍尝试在渲染边界使用 Blizzard DurationObject 转盘。原始 DurationObject 不进入 HUD 模型、战术建议、TEAP 或 TEK 派发路径。
+- **回归覆盖**：新增 P5 冷却来源、未绑定物品卡片、三层 HUD 文本、事件合并与 DurationObject 边界合同测试。
+

@@ -1,0 +1,27 @@
+Tactic Echo 0.9.51 P5.6.2 — ProtocolMonitor secret boolean hotfix
+
+Apply method
+------------
+Extract this archive directly into the existing Tactic Echo project root and overwrite files.
+
+Changed paths
+-------------
+- addon/!TacticEcho/Tactics/ProtocolMonitor.lua
+- tests/unit/test_protocol_monitor_secret_boolean_contract.py
+- CHANGELOG.md
+- DECISIONS.md
+- HANDOFF.md
+- TASKS.md
+
+Behavior
+--------
+- Prevents direct comparison of the secret `notInterruptible` boolean returned by
+  UnitCastingInfo / UnitChannelInfo.
+- Reads target cast name, spell ID and interruptibility through pcall-contained
+  scalar probes. Values that remain protected are downgraded to unknown.
+- Does not alter TEAP v3, SignalFrame, HUD cooldowns, recommendations,
+  BindingToken semantics, or TEK dispatch eligibility.
+
+Version
+-------
+Root VERSION, Bootstrap.lua and !TacticEcho.toc remain 0.9.51.

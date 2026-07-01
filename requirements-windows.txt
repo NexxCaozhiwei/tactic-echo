@@ -1,0 +1,6 @@
+# Build/runtime dependencies for the Windows TEK.exe host.
+Pillow>=10.0
+pystray>=0.19
+pywin32>=306
+pyinstaller>=6.0
+pytest>=8.0

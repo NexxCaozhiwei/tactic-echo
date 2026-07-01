@@ -1,0 +1,11 @@
+Tactic Echo 0.9.39 — 启动、脱战策略与状态稳定性修复
+
+- TEAP 常规刷新周期改为 **50 ms**，与 TEK 默认采样同步；人工接管释放后的两帧 freshness 等待约为 100 ms。
+- UI 联动首次读取到满足协议、前台、Hook、绑定与 freshness 门禁的 `armed` 帧即可派发，不再要求人为执行“暂停→运行”，也不进入启动 replay guard。
+- 本地白名单键的按下/松开不进入人工接管恢复状态机；非白名单键的 balanced 恢复策略调整为 **30 ms + 2 帧 freshness + 150 ms 同技能/同动作 replay guard**。
+- TEAP `waiting` 不再隐藏 20 个色块；它持续输出可读的 waiting/disarmed 帧，TEK 将其识别为“插件未运行”而非信号丢失。
+- 脱战策略明确为：手动启停（脱战保持 armed）、脱战暂停（脱战 paused、进战自动 armed）、脱战停止（脱战 paused、进战仍 paused，需手动 armed）。三种策略均保留可读 TEAP 色块。
+- WoW 不在前台时状态明确显示“等待前台：WoW 未处于前台”。
+- `tek-status.json` 使用唯一临时文件、有限重试与后台异常隔离；状态镜像写入失败不再允许退出 TEK worker。
+- 验证：357 项 Python 回归测试通过。
+

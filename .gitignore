@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Build outputs
+build/
+dist/
+release/
+*.spec
+*.exe
+*.msi
+*.zip
+
+# Local runtime data
+logs/
+*.log
+*.tmp
+*.bak
+*.local
+
+# Tactic Echo / WoW local state
+WTF/
+SavedVariables/
+bindings-cache.wtf
+tek-status.json
+tek-trace-*.jsonl
+settings.json
+
+# Editor and OS files
+.vscode/
+.idea/
+Thumbs.db
+Desktop.ini

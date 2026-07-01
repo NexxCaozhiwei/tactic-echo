@@ -1,0 +1,19 @@
+Tactic Echo 0.9.51 P5.5 — TEK Windows test portability fix
+
+Scope
+- Fixes a Windows-only unit-test failure in tek/tests/test_settings_store.py.
+- No TEK runtime behavior, UI behavior, cooldown logic, input logic, or build scripts changed.
+
+Cause
+- The test supplied a fake Tk desktop size (1920x1080), but on Windows the production
+  code correctly prioritizes actual Win32 virtual-desktop metrics. The asserted center
+  coordinate was therefore computed from the real monitor topology rather than the fake.
+
+Fix
+- The test now patches only the virtual-desktop provider within the test, forcing the
+  FakeRoot fallback path deterministically on all hosts.
+
+Validation
+- python -m pytest -q tek/tests/test_settings_store.py: passed
+- python -m pytest -q: passed
+- python -m compileall -q tek/app tek/src: passed

@@ -1,0 +1,8 @@
+# Tactic Echo 0.9.47 — P5.1 饰品冷却显示热修
+
+- **饰品槽位不再无限缓存**：`inventory:13`、`inventory:14` 使用 0.10 秒有界重读，仅覆盖两件已展示饰品，不对全部法术或背包物品增加 OnUpdate 轮询。
+- **槽位与 ItemID 交叉校验**：优先读取 `GetInventoryItemCooldown("player", 13/14)`；若其在使用后短暂返回 `0/0`，则对当前装备的 ItemID 依次查询 `C_Item.GetItemCooldown`、`C_Container.GetItemCooldown` 与旧 API。任一来源确认冷却，即显示数字和转盘。
+- **多阶段确认**：玩家施法、动作条冷却、法术冷却、背包冷却与装备变化后，以 `0.01 / 0.05 / 0.15 / 0.35` 秒的合并确认序列重新读取已展示饰品。
+- **诊断可见性**：HUD Tooltip 会区分“装备槽位 API”与“当前装备 ItemID 回退”，用于确认客户端瞬态 API 读数。
+- **范围控制**：本版只修饰品 CD 生命周期；技能、药水、HUD 样式及 TEK 派发路径未改变。
+

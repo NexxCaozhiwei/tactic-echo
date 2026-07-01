@@ -1,0 +1,13 @@
+Tactic Echo 0.9.51 P5.6.1 — 直接覆盖热修包
+
+适用基线：Tactic-Echo-0.9.51-P5.6-v3-header-auto-locate-full
+使用方式：将本压缩包内容解压到现有项目根目录，选择“覆盖现有文件”。
+
+改动：
+- 移除 CooldownResolver.lua 对不存在 ITEM_COOLDOWN_CHANGED 事件的订阅和处理分支。
+- 保留 BAG_UPDATE_COOLDOWN、ACTIONBAR_UPDATE_COOLDOWN、UNIT_SPELLCAST_SUCCEEDED、装备变化及既有有界确认作为物品/药水/饰品冷却刷新来源。
+- 增加回归断言，防止无效事件重新进入 AddOn。
+
+未改动：
+- VERSION、!TacticEcho.toc、Core/Bootstrap.lua（版本继续为 0.9.51）。
+- TEAP v3、P5.6 自动定位、HUD 冷却展示、推荐和 TEK 输入链路。

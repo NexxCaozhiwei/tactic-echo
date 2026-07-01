@@ -1,0 +1,9 @@
+Tactic Echo 0.9.41 — P1 派发状态机与安全门禁收敛
+
+1. 有效 TEAP 的 paused / waiting / manual_hold / channeling / empowering 优先保留原始非派发状态，不再被 catalog、fingerprint 或 BindingToken 元数据异常覆盖为 blocked。
+2. is_paused() 改为无副作用查询；replay guard 只由明确派发状态机推进/清理。
+3. 限速器新增预占、提交与回滚：晚到 Hook、manual epoch、manual hold 门禁阻断时退还额度。
+4. sent=False 分类：unsupported_key 等映射问题仅 blocked；sendinput_partial / sendinput_exception 才纳入故障升级。
+5. AutoLocateFrameSource 的校准和采样采用读写锁，保证布局原子切换。
+
+验证：365 passed，3 subtests passed；Python 编译、AddOn Lua 语法及基线合同检查待本次发行前复验。

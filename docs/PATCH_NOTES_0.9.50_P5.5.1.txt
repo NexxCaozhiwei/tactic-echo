@@ -1,0 +1,24 @@
+Tactic Echo 0.9.50 P5.5.1 — TEK test/version-contract repair
+
+This direct-overlay repair fixes a packaging error in the previously supplied
+P5.5 TEK test portability package.
+
+Root cause
+- That package incorrectly replaced the repository-root VERSION with a patch
+  label (0.9.51-P5.5-tek-windows-test-portability-fix).
+- The repository baseline contract intentionally requires root VERSION, the
+  add-on .toc version, and Core/Bootstrap.lua version to be identical.
+- The add-on sources remain at 0.9.50, so the repository-root VERSION must
+  remain exactly 0.9.50.
+
+This repair
+- Restores root VERSION to 0.9.50.
+- Reapplies the deterministic Windows virtual-desktop mock in
+  tek/tests/test_settings_store.py.
+- Does not change production TEK code, add-on Lua code, UI behavior, cooldown
+  behavior, input behavior, or build scripts.
+
+Validation performed
+- python scripts/verify-baseline-contract.py --repo-root .
+- python -m pytest -q
+Result: 411 passed, 3 subtests passed.

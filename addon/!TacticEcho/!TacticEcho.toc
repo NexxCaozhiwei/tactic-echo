@@ -1,0 +1,48 @@
+## Interface: 120007
+## Title: Tactic Echo
+## Notes: Tactic Echo v3 dynamic-action-bar dispatch with a queue-oriented tactical HUD, settings center, and secret-safe advisory monitoring and visibility-first HUD rendering.
+## Author: Tactic Echo Project
+## Version: 0.9.51
+## SavedVariables: TacticEchoDB
+
+Core/Bootstrap.lua
+Core/Context.lua
+Config/Defaults.lua
+Config/Normalize.lua
+Recommendation/RecommendationResult.lua
+Recommendation/RecommendationAdapter.lua
+Actions/ActionRegistry.lua
+Actions/MacroSemantics.lua
+Actions/ActionBarBindingResolver.lua
+Profiles/BindingProfile.lua
+Profiles/ProfileManager.lua
+Diagnostics/MappingExport.lua
+Tactics/HealthCompatibility.lua
+Tactics/ProtocolMonitor.lua
+Tactics/EnvironmentCompatibility.lua
+Signal/SignalEncoder.lua
+Signal/SignalFrame.lua
+Tactics/TacticalState.lua
+Tactics/CooldownTracker.lua
+Tactics/CooldownResolver.lua
+Tactics/IconState.lua
+Tactics/AbilityProfiles.lua
+Tactics/BurstProfiles.lua
+Tactics/BurstStateMachine.lua
+Tactics/BurstPlanner.lua
+Tactics/AdvisoryPlanner.lua
+Tactics/TacticalTelemetry.lua
+Tactics/TacticalAdvisors.lua
+Tactics/RecommendationQueue.lua
+Recommendation/OfficialApiProbe.lua
+UI/Diagnostics.lua
+UI/ControlPanel.lua
+UI/TacticalHudStyles.lua
+UI/TacticalHudAnimator.lua
+UI/TacticalHudModel.lua
+UI/TacticalIconEffects.lua
+UI/TacticalIconButton.lua
+UI/TacticalHudDragHandle.lua
+UI/TacticalHudLayout.lua
+UI/TacticalBoard.lua
+UI/TargetCastPrompt.lua

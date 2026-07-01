@@ -1,0 +1,8 @@
+# Tactic Echo 0.9.45 — P4 性能链路、重定位与异步诊断
+
+- **P4-A**：WoW 客户区快速几何读取与前台标题缓存降低 50 ms 热路径 WinAPI 压力；插件端 TEAP 色块改为差量绘制，`TacticalState` 改为状态变化或 500 ms 心跳发布。
+- **P4-B**：重定位采用左上角 900×220 → 1600×400 → 当前 WoW 客户区的渐进扫描；扫描在后台执行，变化期间 TEK 保持 fail-closed。已验证条带的相对客户区布局会跨启动保存为提示，仍须通过新的 TEAP CRC/Commit/颜色校验才可派发。
+- **P4-C**：新增可选 `auto` / `gdi_blt` 条带后端。默认仍为 Pillow；选择 Auto 后，连续三次有效 Pillow 读取才提升为 GDI BitBlt，读取失败自动会话回退 Pillow。新增 `python -m tek.src.sampler_benchmark` 本地只读基准工具。
+- **P4-D**：Trace 写入移至有界后台队列，诊断/序列化/写盘错误不会终止 worker；隐藏状态窗口停止 Tk 控件刷新，恢复时立即刷新；条带边界、采样点和 `ScreenFrameSource` 热路径对象使用缓存。
+- 回归覆盖：渐进区域、后台重定位、跨启动布局缓存、Auto→GDI BitBlt 提升与回退、基准工具、异步 Trace、隐藏窗口刷新和热路径对象缓存。
+

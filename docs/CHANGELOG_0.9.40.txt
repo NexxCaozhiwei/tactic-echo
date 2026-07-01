@@ -1,0 +1,7 @@
+Tactic Echo 0.9.40 — P0 本地白名单收敛与运行可靠性
+
+- 删除 TEK 运行期对 WoW WTF、bindings-cache.wtf、角色目录扫描和动态移动绑定的依赖。
+- 连发介入改为唯一的本地白名单来源；默认 W/A/S/D/SPACE。
+- 禁止 Ctrl/Alt/Shift/Win 独立加入白名单；旧格式导入可规范化，异常格式保留当前有效值。
+- Hook 停止超时进入 Stopping 并阻止重启，避免双 Hook。
+- ErrorLocked 恢复同时重置失败计数、限速状态和恢复门禁。
