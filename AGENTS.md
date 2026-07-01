@@ -1,3 +1,4 @@
+
 # AGENTS.md — Tactic Echo 0.9.0 基线维护约束
 
 ## 1. 基线、范围与交付
