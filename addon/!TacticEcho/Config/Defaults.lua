@@ -82,6 +82,20 @@ local Defaults = {
         burstEnabled = true,
         burstPolicy = "align",
         burstDisplayMode = "window",
+        -- Phase-1 AutoBurst is opt-in.  SignalFrame "armed" remains the
+        -- independent automatic-run gate; this setting only enables burst
+        -- takeover when a configured window recommendation is observed.
+        autoBurstEnabled = false,
+        autoBurstDirection = "pre",
+        autoBurstMode = "simple",
+        autoBurstDebug = true,
+        -- Phase-1 test rule.  Both values must be set together to override the
+        -- current-profile fallback.  This makes the official recommendation
+        -- anchor explicit instead of silently assuming the first HUD burst card
+        -- is ever recommended by Blizzard's official rotation.
+        autoBurstWindowSpellID = 0,
+        autoBurstInjectionSpellID = 0,
+        autoBurstUseProfileFallback = true,
         burstShowCandidates = true,
         burstHighlightPrimary = true,
         burstShowClassCooldowns = true,

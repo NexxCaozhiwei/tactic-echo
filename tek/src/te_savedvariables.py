@@ -35,6 +35,14 @@ _MAPPING_ENTRY_FIELDS = (
 )
 
 _MAPPING_MOVEMENT_FIELDS = ("command", "primary", "secondary")
+_AUTOBURST_FIELDS = (
+    "available", "build", "enabled", "direction", "mode", "manualWindowSpellID", "manualInjectionSpellID",
+    "useProfileFallback", "ruleReason",
+)
+_AUTOBURST_RULE_FIELDS = ("id", "source", "profileKey", "windowSpellID", "injectionSpellID")
+_AUTOBURST_PLAN_FIELDS = ("active", "planId", "ruleId", "state", "currentStep", "currentRole", "currentSpellID", "pauseReason", "requireWindowDeparture")
+_AUTOBURST_DECISION_FIELDS = ("phase", "reason", "officialSpellID", "windowSpellID", "injectionSpellID", "ruleSource", "state")
+_AUTOBURST_FAULT_FIELDS = ("reason",)
 
 
 def read_latest_signal(path: str | Path) -> dict | None:
@@ -205,6 +213,22 @@ def mapping_export_from_text(text: str) -> dict | None:
             if item.get("command"):
                 movement_bindings.append(item)
     export["movementBindings"] = movement_bindings
+
+    auto_burst_index = chunk.find('["autoBurst"]')
+    auto_burst_chunk = _table_chunk_after(chunk, auto_burst_index) if auto_burst_index >= 0 else None
+    if auto_burst_chunk:
+        auto_burst = _parse_fields(auto_burst_chunk, _AUTOBURST_FIELDS)
+        for source_key, target_key, fields in (
+            ("resolvedRule", "resolvedRule", _AUTOBURST_RULE_FIELDS),
+            ("plan", "plan", _AUTOBURST_PLAN_FIELDS),
+            ("lastDecision", "lastDecision", _AUTOBURST_DECISION_FIELDS),
+            ("lastFault", "lastFault", _AUTOBURST_FAULT_FIELDS),
+        ):
+            nested_index = auto_burst_chunk.find(f'["{source_key}"]')
+            nested_chunk = _table_chunk_after(auto_burst_chunk, nested_index) if nested_index >= 0 else None
+            if nested_chunk:
+                auto_burst[target_key] = _parse_fields(nested_chunk, fields)
+        export["autoBurst"] = auto_burst
 
     # The addon snapshot already excludes macro bodies.  This defensive filter
     # keeps the Python-side contract true even if an older/custom export has

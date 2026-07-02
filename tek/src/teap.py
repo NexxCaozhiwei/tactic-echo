@@ -42,6 +42,8 @@ class TEAPFrame:
     target_interruptible: bool = False
     player_health_critical: bool = False
     monitor_flags: int = 0
+    dispatch_origin: str = "official"
+    burst_dispatch: bool = False
 
 
 def decode_fields(fields: list[int] | tuple[int, ...]) -> TEAPFrame:
@@ -89,6 +91,8 @@ def _decode_v3(raw: tuple[int, ...]) -> TEAPFrame:
         target_interruptible=bool(flags & 0x08),
         player_health_critical=bool(flags & 0x10),
         monitor_flags=flags & 0x1C,
+        dispatch_origin="burst" if (flags & 0x20) else "official",
+        burst_dispatch=bool(flags & 0x20),
         checksum=observed_crc,
         commit=raw[19],
         raw_fields=raw,
@@ -110,6 +114,7 @@ def encode_fields_v3(
     target_casting: bool = False,
     target_interruptible: bool = False,
     player_health_critical: bool = False,
+    dispatch_origin: str = "official",
 ) -> tuple[int, ...]:
     flags = (
         (1 if in_combat else 0)
@@ -117,6 +122,7 @@ def encode_fields_v3(
         | (4 if target_casting else 0)
         | (8 if target_interruptible else 0)
         | (16 if player_health_critical else 0)
+        | (32 if dispatch_origin == "burst" else 0)
     )
     fields = [
         84,

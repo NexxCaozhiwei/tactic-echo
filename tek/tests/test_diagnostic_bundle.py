@@ -97,6 +97,17 @@ class DiagnosticBundleTests(unittest.TestCase):
             self.assertFalse(manifest["mappingExportIncluded"])
             self.assertEqual(manifest["mappingExportError"], "mapping_export_path_not_configured")
 
+    def test_mapping_export_parser_keeps_safe_autoburst_summary(self):
+        sample = _MAPPING_SAMPLE.replace(
+            '    ["entries"] = {',
+            '    ["autoBurst"] = { ["enabled"] = true, ["build"] = "1.0.03", ["resolvedRule"] = { ["windowSpellID"] = 31884, ["injectionSpellID"] = 255937 }, ["lastDecision"] = { ["reason"] = "official_not_window" } },\n    ["entries"] = {',
+        )
+        parsed = mapping_export_from_text(sample)
+        self.assertIsNotNone(parsed)
+        self.assertTrue(parsed["autoBurst"]["enabled"])
+        self.assertEqual(parsed["autoBurst"]["resolvedRule"]["windowSpellID"], 31884)
+        self.assertEqual(parsed["autoBurst"]["lastDecision"]["reason"], "official_not_window")
+
 
 if __name__ == "__main__":
     unittest.main()

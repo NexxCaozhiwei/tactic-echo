@@ -32,6 +32,23 @@ local function wordHigh(value)
     return byte(math.floor((tonumber(value) or 0) / 256))
 end
 
+-- AutoBurst decisions carry a live bindingInfo table while SignalFrame builds
+-- a frame. SavedVariables and diagnostics only need a small immutable audit
+-- record; never persist the resolver object or macro diagnostics wholesale.
+local function burstPlanMetadata(value)
+    if type(value) ~= "table" then return nil end
+    return {
+        planId = tonumber(value.planId) or nil,
+        ruleId = type(value.ruleId) == "string" and value.ruleId or nil,
+        direction = value.direction == "post" and "post" or (value.direction == "pre" and "pre" or nil),
+        mode = value.mode == "focused" and "focused" or (value.mode == "simple" and "simple" or nil),
+        stepRole = value.stepRole == "window" and "window" or (value.stepRole == "injection" and "injection" or nil),
+        dispatchAttempt = tonumber(value.dispatchAttempt) or nil,
+        reason = type(value.reason) == "string" and value.reason or nil,
+        kind = value.kind == "candidate" and "candidate" or (value.kind == "hold" and "hold" or nil),
+    }
+end
+
 function SignalEncoder:GetStateCode(state)
     return stateCodes[state] or stateCodes.error
 end
@@ -72,6 +89,11 @@ function SignalEncoder:Encode(message)
         monitorFlags = select(1, TE.ProtocolMonitor:GetFlags(message.monitor)) or 0
     end
     flags = flags + monitorFlags
+    -- v3 reserved bit 5 is now an auditable dispatch-origin marker.  It does
+    -- not create a second transport: TEK still validates the same BindingToken
+    -- and all existing protocol gates before any input is attempted.
+    local dispatchOrigin = message.dispatchOrigin == "burst" and "burst" or "official"
+    if dispatchOrigin == "burst" then flags = flags + 32 end
 
     local fields = {
         84,
@@ -128,6 +150,10 @@ function SignalEncoder:Encode(message)
         legacyCatalogReason = message.legacyCatalogReason,
         monitor = message.monitor,
         monitorFlags = monitorFlags,
+        dispatchOrigin = dispatchOrigin,
+        officialSpellID = message.officialSpellID,
+        dispatchSpellID = message.dispatchSpellID,
+        burstPlan = burstPlanMetadata(message.burstPlan),
         frameFreshnessCounter = freshness,
         fields = fields,
         state = message.state,

@@ -182,6 +182,77 @@ SlashCmdList.TACTICECHOMAPPING = function(message)
     printMappingExport(TE.MappingExport:Capture(command == "" and "slash_mapping" or command))
 end
 
+local function autoBurstTactics()
+    if TE.Config and TE.Config.Normalize and type(TE.Config.Normalize.All) == "function" then
+        local _, tactics = TE.Config.Normalize:All()
+        return tactics
+    end
+    TacticEchoDB = TacticEchoDB or {}
+    TacticEchoDB.tactics = type(TacticEchoDB.tactics) == "table" and TacticEchoDB.tactics or {}
+    return TacticEchoDB.tactics
+end
+
+local function printAutoBurstStatus()
+    if not (TE.AutoBurst and type(TE.AutoBurst.GetDiagnostics) == "function") then
+        safePrint("自动爆发：模块未加载。请确认当前加载的插件目录为 !TacticEcho，版本为 1.0.07。")
+        return
+    end
+    local data = TE.AutoBurst:GetDiagnostics() or {}
+    local rule = data.resolvedRule or {}
+    local decision = data.lastDecision or {}
+    local plan = data.plan or {}
+    safePrint("自动爆发：构建=" .. tostring(data.build or "未知")
+        .. " 启用=" .. tostring(data.enabled == true)
+        .. " 方向=" .. tostring(data.direction or "-")
+        .. " 模式=" .. tostring(data.mode or "-"))
+    safePrint("自动爆发规则：来源=" .. tostring(rule.source or "无")
+        .. " 窗口=" .. tostring(rule.windowSpellID or "-")
+        .. " 注入=" .. tostring(rule.injectionSpellID or "-")
+        .. " 原因=" .. tostring(data.ruleReason or "无"))
+    safePrint("自动爆发最近：阶段=" .. tostring(decision.phase or "-")
+        .. " 原因=" .. tostring(decision.reason or "-")
+        .. " 官方=" .. tostring(decision.officialSpellID or "-")
+        .. " 计划=" .. tostring(plan.state or "IDLE")
+        .. " 等待确认=" .. tostring(plan.pendingConfirmationSpellID or "-")
+        .. " 候选帧=" .. tostring(plan.candidateOfferCount or 0))
+    if data.lastFault and data.lastFault.reason then
+        safePrint("自动爆发错误：" .. tostring(data.lastFault.reason))
+    end
+end
+
+SLASH_TACTICECHOAUTOBURST1 = "/teab"
+SlashCmdList.TACTICECHOAUTOBURST = function(message)
+    local command = string.lower(message or "")
+    local tactics = autoBurstTactics()
+    if command == "" or command == "status" then
+        printAutoBurstStatus()
+    elseif command == "on" then
+        tactics.autoBurstEnabled = true
+        safePrint("自动爆发测试已开启；仍需 /tesignal armed 且官方推荐以边沿进入窗口技能。")
+        printAutoBurstStatus()
+    elseif command == "off" then
+        tactics.autoBurstEnabled = false
+        if TE.AutoBurst and type(TE.AutoBurst.Abort) == "function" then TE.AutoBurst:Abort("slash_disabled", false) end
+        safePrint("自动爆发测试已关闭。")
+    elseif command == "clear" then
+        tactics.autoBurstWindowSpellID = 0
+        tactics.autoBurstInjectionSpellID = 0
+        safePrint("自动爆发显式 SpellID 已清空。")
+        printAutoBurstStatus()
+    else
+        local windowSpellID, injectionSpellID = command:match("^set%s+(%d+)%s+(%d+)$")
+        windowSpellID, injectionSpellID = tonumber(windowSpellID), tonumber(injectionSpellID)
+        if windowSpellID and injectionSpellID and windowSpellID > 0 and injectionSpellID > 0 then
+            tactics.autoBurstWindowSpellID = math.floor(windowSpellID)
+            tactics.autoBurstInjectionSpellID = math.floor(injectionSpellID)
+            safePrint("自动爆发测试规则已设置：窗口=" .. tostring(tactics.autoBurstWindowSpellID) .. " 注入=" .. tostring(tactics.autoBurstInjectionSpellID))
+            printAutoBurstStatus()
+        else
+            safePrint("用法：/teab status|on|off|clear|set <官方窗口SpellID> <注入SpellID>")
+        end
+    end
+end
+
 SLASH_TACTICECHOPOLICY1 = "/tepolicy"
 SlashCmdList.TACTICECHOPOLICY = function(message)
     local command = string.lower(message or "")
@@ -334,7 +405,7 @@ SLASH_TACTICECHO1 = "/te"
 SlashCmdList.TACTICECHO = function(message)
     local command = string.lower(message or "")
     if command == "" or command == "help" then
-        safePrint("命令：/te context；/te current；/te cache；/te mapping；/te policy；/te tactics；/te once；/te armed；/te pause；/te off；/te status；/te ui。")
+        safePrint("命令：/te context；/te current；/te cache；/te mapping；/te policy；/te tactics；/teab status；/teab set <窗口ID> <注入ID>；/te once；/te armed；/te pause；/te off；/te status；/te ui。")
     elseif command == "context" then
         SlashCmdList.TACTICECHOCONTEXT("")
     elseif command == "current" then

@@ -61,12 +61,20 @@ end
 
 local function snapshotFrom(message, encoded)
     if type(message) ~= "table" then return nil end
-    local binding = message.bindingInfo or {}
+    local dispatchBinding = message.bindingInfo or {}
+    -- Observation-only burst frames have no dispatch BindingToken by design.
+    -- Their HUD card should nevertheless retain the official action-bar label
+    -- and never be styled as “无绑定”.
+    local binding = message.bindingInfo or message.officialBindingInfo or {}
     local state = message.state or "waiting"
     local reason = message.unresolvedReason or message.bindingReason
-    local spellID = tonumber(message.spellID)
+    local dispatchSpellID = tonumber(message.dispatchSpellID or message.spellID)
+    local officialSpellID = tonumber(message.officialSpellID or message.spellID)
+    local spellID = dispatchSpellID or officialSpellID
     local spellName, spellIcon = spellInfo(spellID)
-    local dispatchAllowed = state == "armed" and (tonumber(message.bindingToken) or 0) > 0
+    local officialSpellName, officialSpellIcon = spellInfo(officialSpellID)
+    local dispatchAllowed = state == "armed" and message.observationOnly ~= true
+        and (tonumber(message.bindingToken) or 0) > 0
     local channelingActive = message.channelingActive == true
     local empoweringActive = message.empoweringActive == true
     -- `displayState` remains HUD-only. The actual encoded state now carries
@@ -85,6 +93,13 @@ local function snapshotFrom(message, encoded)
         spellID = spellID,
         spellName = spellName or "无官方推荐",
         spellIcon = spellIcon,
+        officialSpellID = officialSpellID,
+        officialSpellName = officialSpellName or "无官方推荐",
+        officialSpellIcon = officialSpellIcon,
+        dispatchSpellID = dispatchSpellID,
+        dispatchOrigin = message.dispatchOrigin or "official",
+        observationOnly = message.observationOnly == true,
+        observationReason = message.observationReason,
         officialSource = "C_AssistedCombat",
         state = state,
         intentState = message.intentState or "waiting",
@@ -96,6 +111,8 @@ local function snapshotFrom(message, encoded)
         -- modifiers still keep BindingToken=0 and dispatchAllowed=false.
         binding = message.binding or binding.rawBinding,
         rawBinding = binding.rawBinding,
+        -- Keep this as the transport token (zero for observation frames), not
+        -- the display-only official binding token.
         bindingToken = tonumber(message.bindingToken) or 0,
         bindingStatus = binding.status,
         bindingSource = binding.source,
@@ -183,9 +200,9 @@ local function recordHistory(snapshot)
     lastHistorySignature = signature
     local previous = history[#history]
     local current = {
-        spellID = snapshot.spellID,
-        spellName = snapshot.spellName,
-        spellIcon = snapshot.spellIcon,
+        spellID = snapshot.officialSpellID or snapshot.spellID,
+        spellName = snapshot.officialSpellName or snapshot.spellName,
+        spellIcon = snapshot.officialSpellIcon or snapshot.spellIcon,
         binding = snapshot.binding,
         state = snapshot.state,
         observedAt = snapshot.observedAt,
@@ -207,7 +224,9 @@ local function publishSignature(message)
         tostring(message and message.intentState or "waiting"),
         tostring(message and message.actionCode or 0),
         tostring(message and message.actionId or ""),
-        tostring(message and message.spellID or 0),
+        tostring(message and message.officialSpellID or message and message.spellID or 0),
+        tostring(message and message.dispatchSpellID or message and message.spellID or 0),
+        tostring(message and message.dispatchOrigin or "official"),
         tostring(message and message.inCombat == true),
         tostring(message and message.bindingToken or 0),
         tostring(message and message.bindingReason or ""),

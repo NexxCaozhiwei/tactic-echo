@@ -16,7 +16,7 @@ class AuditHardeningContractTests(unittest.TestCase):
         toc = (ADDON / "!TacticEcho.toc").read_text(encoding="utf-8")
         addon_match = re.search(r'TE\.version\s*=\s*"([^"\n]+)"', bootstrap)
         toc_match = re.search(r'^## Version:\s*(.+)$', toc, re.MULTILINE)
-        self.assertRegex(root_version, r"^0\.9\.\d+$")
+        self.assertRegex(root_version, r"^\d+\.\d+\.\d+$")
         self.assertIsNotNone(addon_match)
         self.assertIsNotNone(toc_match)
         self.assertEqual(root_version, addon_match.group(1))

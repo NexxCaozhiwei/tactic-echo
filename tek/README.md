@@ -1,6 +1,6 @@
 # TEK
 
-Current version: `0.9.51`
+Current version: `1.0.07`
 
 TEK is the Windows companion for Tactic Echo. Normal users should launch:
 

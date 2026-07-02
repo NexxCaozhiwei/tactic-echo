@@ -149,6 +149,10 @@ local function remember(encoded, reason)
         actionRegistryReason = encoded.legacyCatalogReason,
         monitor = encoded.monitor,
         monitorFlags = encoded.monitorFlags,
+        dispatchOrigin = encoded.dispatchOrigin,
+        officialSpellID = encoded.officialSpellID,
+        dispatchSpellID = encoded.dispatchSpellID,
+        burstPlan = encoded.burstPlan,
         observedAt = date("%Y-%m-%d %H:%M:%S"),
         elapsed = GetTime and GetTime() or 0,
         reason = reason,
@@ -761,10 +765,11 @@ function SignalFrame:GetCastLockInfo()
 end
 
 function SignalFrame:BuildMessage(reason)
-    local result = TE.RecommendationAdapter:ReadOfficial()
-    local spellID = result and tonumber(result.spellID) or nil
-    local bindingInfo, bindingReason = TE.ActionBarBindingResolver:ResolveSpell(spellID)
-    local action, legacyCatalogReason = TE.ActionRegistry:ResolveRecommendation(result)
+    -- The official recommendation is preserved as immutable source metadata.
+    -- AutoBurst may provide a separate DispatchCandidate, but it never mutates
+    -- this result or creates a parallel binding/token path.
+    local official = TE.RecommendationAdapter:ReadOfficial()
+    local officialSpellID = official and tonumber(official.spellID) or nil
     local inCombat = InCombatLockdown and InCombatLockdown() or false
     local outputState = state
     local sessionPolicy = getSessionPolicy()
@@ -775,17 +780,9 @@ function SignalFrame:BuildMessage(reason)
     lastCastDisplayInfo = castDisplay
     local channeling = castLock.active == true and castLock.kind == "channel" and castLock or { active = false }
     local empowering = castLock.active == true and castLock.kind == "empower" and castLock or { active = false }
-    -- Observational only: target-cast / low-health flags are encoded in
-    -- reserved v3 flag bits.  They are not inputs to dispatch eligibility.
     local monitor = TE.ProtocolMonitor and TE.ProtocolMonitor:Sample() or nil
     local runtimeReason = nil
 
-    -- Runtime-state priority: player text input becomes a dedicated manual_hold state, then a dedicated
-    -- event-derived channel / Empower state, then an out-of-combat pause.
-    -- pause_out_of_combat does not change the user's armed intent, while
-    -- close_out_of_combat changes it to a sticky paused intent in the combat
-    -- event handler below. Channeling and empowering remain non-dispatchable
-    -- TEAP states until their terminal event refreshes a new eligible armed frame.
     if state == "armed" then
         if inputFocusActive then
             outputState = "manual_hold"
@@ -800,21 +797,118 @@ function SignalFrame:BuildMessage(reason)
         end
     end
 
-    if outputState == "armed" and (not bindingInfo or bindingInfo.status ~= "Ready" or (tonumber(bindingInfo.bindingToken) or 0) == 0) then
+    local autoDecision
+    if TE.AutoBurst and type(TE.AutoBurst.Evaluate) == "function" then
+        local context = TE.Context and TE.Context:GetPlayer() or {}
+        local ok, decision = pcall(TE.AutoBurst.Evaluate, TE.AutoBurst, official, {
+            context = context,
+            inCombat = inCombat,
+            intentState = state,
+            effectiveState = outputState,
+            runtimeReason = runtimeReason or inputFocusReason or sessionPolicyReason,
+            primary = official,
+        })
+        if ok and type(decision) == "table" then
+            autoDecision = decision
+        elseif not ok and TE.AutoBurst and type(TE.AutoBurst.ReportFault) == "function" then
+            -- A fault during an already-created Burst plan must not accidentally
+            -- release its window into the ordinary dispatch path. Abort the
+            -- current plan into its departure lock and emit a non-dispatch
+            -- observation frame. A plan-less fault still leaves the normal
+            -- official path unchanged.
+            TE.AutoBurst:ReportFault("evaluate_error:" .. tostring(decision))
+            if type(TE.AutoBurst.Abort) == "function" then
+                pcall(TE.AutoBurst.Abort, TE.AutoBurst, "evaluator_fault", false)
+            end
+            local holdsWindow = false
+            if type(TE.AutoBurst.GetSnapshot) == "function" then
+                local snapshotOk, snapshot = pcall(TE.AutoBurst.GetSnapshot, TE.AutoBurst)
+                holdsWindow = snapshotOk and type(snapshot) == "table"
+                    and (snapshot.active == true or snapshot.requireWindowDeparture == true)
+            end
+            if holdsWindow then
+                autoDecision = {
+                    kind = "hold",
+                    dispatchOrigin = "burst",
+                    observationOnly = true,
+                    reason = "burst_evaluator_fault_hold",
+                }
+            end
+        end
+    end
+
+    local explicitObservationOnly = reason == "observe_once"
+    -- AutoBurst uses a hold only to suppress the ordinary recommendation while
+    -- its own bounded plan waits for GCD/confirmation/revalidation.  It is not
+    -- a user pause.  Encoding the old hold as state="paused" caused TEK to
+    -- reject it and, worse, fed that paused state back into AutoBurst on the
+    -- next BuildMessage call, permanently self-latching the plan.
+    local burstHoldObservation = autoDecision and autoDecision.kind == "hold"
+        and autoDecision.observationOnly == true
+    local observationOnly = explicitObservationOnly or burstHoldObservation
+
+    local dispatchOrigin = "official"
+    local dispatchSpellID = officialSpellID
+    local bindingInfo, bindingReason
+    -- A live burst hold intentionally has no dispatch token.  Preserve a
+    -- separate read-only official binding for HUD/diagnostics so the official
+    -- icon never changes to “无绑定” merely because AutoBurst is waiting for a
+    -- GCD/confirmation boundary.
+    local officialBindingInfo, officialBindingReason
+    if autoDecision and autoDecision.kind == "candidate" then
+        dispatchOrigin = "burst"
+        dispatchSpellID = tonumber(autoDecision.dispatchSpellID)
+        bindingInfo = autoDecision.bindingInfo
+        runtimeReason = runtimeReason or "burst_dispatch_candidate"
+    elseif autoDecision and autoDecision.kind == "hold" then
+        -- Keep the real output state intact.  TEAP observation_only prevents
+        -- TEK from validating the intentionally empty BindingToken or falling
+        -- through to the official action, without turning the whole runtime
+        -- into a paused/manual state.
+        dispatchOrigin = "burst"
+        dispatchSpellID = nil
+        runtimeReason = autoDecision.reason or runtimeReason or "burst_hold"
+    end
+
+    if dispatchSpellID and not bindingInfo then
+        bindingInfo, bindingReason = TE.ActionBarBindingResolver:ResolveSpell(dispatchSpellID)
+    end
+    if officialSpellID then
+        if dispatchSpellID == officialSpellID and bindingInfo then
+            officialBindingInfo, officialBindingReason = bindingInfo, bindingReason
+        elseif burstHoldObservation then
+            officialBindingInfo, officialBindingReason = TE.ActionBarBindingResolver:ResolveSpell(officialSpellID)
+        end
+    end
+    local action, legacyCatalogReason
+    if dispatchSpellID then
+        action, legacyCatalogReason = TE.ActionRegistry:ResolveRecommendation({ spellID = dispatchSpellID })
+    end
+
+    if outputState == "armed" and not observationOnly
+        and (not bindingInfo or bindingInfo.status ~= "Ready" or (tonumber(bindingInfo.bindingToken) or 0) == 0) then
         outputState = "blocked"
     end
 
     local actionCode = action and action.actionCode or 0
     local actionId = action and action.actionId or nil
-    local observationOnly = reason == "observe_once"
-    if observationOnly then outputState = "paused" end
+    if explicitObservationOnly then outputState = "paused" end
 
-    runtimeReason = runtimeReason or inputFocusReason or sessionPolicyReason
+    runtimeReason = runtimeReason or inputFocusReason or sessionPolicyReason or bindingReason
+    -- Persisted Burst attempts must keep one TEAP sequence even if the immutable
+    -- official recommendation changes while the current Burst step awaits proof.
+    -- A retry/next step changes dispatchAttempt and therefore receives a new key.
+    local signatureOfficialSpellID = officialSpellID
+    if autoDecision and autoDecision.kind == "candidate" and dispatchOrigin == "burst" then
+        signatureOfficialSpellID = 0
+    end
     local signature = table.concat({
-        tostring(outputState), tostring(actionCode), tostring(spellID),
+        tostring(outputState), tostring(dispatchOrigin), tostring(actionCode), tostring(signatureOfficialSpellID), tostring(dispatchSpellID),
         tostring(bindingInfo and bindingInfo.bindingToken or 0), tostring(inCombat),
         tostring(inputFocusActive), tostring(sessionPolicy), tostring(runtimeReason),
         tostring(castLock.active == true), tostring(castLock.kind or "none"), tostring(castLock.spellID or 0),
+        tostring(autoDecision and autoDecision.planId or 0), tostring(autoDecision and autoDecision.stepRole or "none"),
+        tostring(autoDecision and autoDecision.dispatchAttempt or 0), tostring(observationOnly),
     }, ":")
     if signature ~= lastSignature then
         sequence = sequence + 1
@@ -832,7 +926,14 @@ function SignalFrame:BuildMessage(reason)
         frameFreshnessCounter = frameFreshnessCounter,
         actionCode = actionCode,
         actionId = actionId,
-        spellID = spellID,
+        -- Legacy spellID remains the actual dispatch spell for tools that read
+        -- only one field.  officialSpellID and dispatchSpellID make the two
+        -- sources explicit for HUD, SavedVariables and diagnostics.
+        spellID = dispatchSpellID,
+        officialSpellID = officialSpellID,
+        dispatchSpellID = dispatchSpellID,
+        dispatchOrigin = dispatchOrigin,
+        burstPlan = autoDecision,
         inCombat = inCombat,
         observationOnly = observationOnly,
         unresolvedReason = runtimeReason or bindingReason,
@@ -840,11 +941,11 @@ function SignalFrame:BuildMessage(reason)
         legacyCatalogReason = legacyCatalogReason,
         actionRegistryReason = legacyCatalogReason,
         bindingToken = bindingInfo and bindingInfo.bindingToken or 0,
-        -- Display can retain a real action-bar label even when the binding is
-        -- intentionally unsupported for dispatch (for example SHIFT+A).  The
-        -- token above remains zero, and outputState is therefore blocked.
         binding = bindingInfo and (bindingInfo.binding or bindingInfo.rawBinding) or nil,
         bindingInfo = bindingInfo,
+        officialBindingInfo = officialBindingInfo,
+        officialBindingReason = officialBindingReason,
+        observationReason = burstHoldObservation and autoDecision and autoDecision.reason or nil,
         inputFocusActive = inputFocusActive,
         inputFocusReason = inputFocusReason,
         manualHoldActive = outputState == "manual_hold",
@@ -867,7 +968,6 @@ function SignalFrame:BuildMessage(reason)
         monitor = monitor,
     }
 end
-
 function SignalFrame:GetLastMessage()
     return lastMessage
 end

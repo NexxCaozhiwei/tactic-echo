@@ -35,6 +35,7 @@ class TraceRecord:
     target_interruptible: bool = False
     player_health_critical: bool = False
     monitor_flags: int = 0
+    dispatch_origin: str = "official"
     checksum: int | None = None
     raw_fields: tuple[int, ...] | None = None
     action_id: str | None = None
@@ -398,7 +399,12 @@ class TEKEngine:
             )
 
         self.failure_tracker.record_success()
-        self.safety_gate.mark_dispatched(frame, context, sent=bool(dispatch_result and dispatch_result.sent))
+        self.safety_gate.mark_dispatched(
+            frame,
+            context,
+            sent=bool(dispatch_result and dispatch_result.sent),
+            attempted=True,
+        )
         if dispatch_result and dispatch_result.sent:
             recorder = getattr(self.physical_input_guard, "note_auto_dispatch", None)
             if callable(recorder):
@@ -445,6 +451,7 @@ class TEKEngine:
             target_interruptible=frame.target_interruptible,
             player_health_critical=frame.player_health_critical,
             monitor_flags=frame.monitor_flags,
+            dispatch_origin=frame.dispatch_origin,
             checksum=frame.checksum,
             raw_fields=frame.raw_fields,
             action_id=kwargs.get("action_id"),

@@ -30,6 +30,11 @@ class SafetyContext:
     current_session_epoch: int | None = None
     last_action_sequence: int | None = None
     last_frame_freshness_counter: int | None = None
+    # AutoBurst re-offers one logical candidate for a short sampler-observation
+    # window. Remember the native attempt so fresh duplicate frames cannot
+    # produce a second physical keypress.
+    last_burst_dispatch_sequence: int | None = None
+    last_burst_dispatch_freshness: int | None = None
     state: str = "Waiting"
     dispatch_budget: int | None = None
     foreground_before_read: ForegroundSnapshot | None = None
@@ -124,10 +129,14 @@ class SafetyGate:
             context.current_session_epoch = frame.session_epoch
             context.last_action_sequence = None
             context.last_frame_freshness_counter = None
+            context.last_burst_dispatch_sequence = None
+            context.last_burst_dispatch_freshness = None
         elif context.current_session_epoch != frame.session_epoch:
             context.current_session_epoch = frame.session_epoch
             context.last_action_sequence = None
             context.last_frame_freshness_counter = None
+            context.last_burst_dispatch_sequence = None
+            context.last_burst_dispatch_freshness = None
             context.bootstrapped = False
 
         # Preserve the dry-run/bootstrap diagnostic path. The real UI-linked
@@ -159,6 +168,14 @@ class SafetyGate:
                 context.state = "Blocked"
                 return False, "old_action_sequence"
 
+        # A Burst candidate remains visible until the AddOn sees success,
+        # explicit invalidation or its bounded deadline. It keeps one stable
+        # sequence for that entire logical attempt. Once TEK has attempted it,
+        # never send it again; a controlled retry/next step gets a new sequence.
+        if frame.dispatch_origin == "burst" and context.last_burst_dispatch_sequence == frame.sequence:
+            context.state = "Armed"
+            return False, "burst_sequence_already_dispatched"
+
         if send_input and context.dispatch_budget is not None and context.dispatch_budget <= 0:
             context.state = "Blocked"
             return False, "dispatch_budget_exhausted"
@@ -174,9 +191,16 @@ class SafetyGate:
             return "Waiting"
         return "Blocked"
 
-    def mark_dispatched(self, frame, context: SafetyContext, *, sent: bool) -> None:
+    def mark_dispatched(self, frame, context: SafetyContext, *, sent: bool, attempted: bool = False) -> None:
         context.last_sequence = frame.sequence
         context.last_action_sequence = frame.sequence
+        # "attempted" is intentionally broader than native sent=True. A
+        # Windows dispatcher can report a non-sent/ambiguous result after a
+        # native attempt; repeating the same burst offer would be less safe than
+        # waiting for the normal confirmation timeout and one controlled retry.
+        if attempted and getattr(frame, "dispatch_origin", "official") == "burst":
+            context.last_burst_dispatch_sequence = frame.sequence
+            context.last_burst_dispatch_freshness = frame.frame_freshness_counter
         if sent:
             if context.dispatch_budget is not None:
                 context.dispatch_budget -= 1

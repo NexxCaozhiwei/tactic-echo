@@ -2,7 +2,7 @@
 ## Title: Tactic Echo
 ## Notes: Tactic Echo v3 dynamic-action-bar dispatch with a queue-oriented tactical HUD, settings center, and secret-safe advisory monitoring and visibility-first HUD rendering.
 ## Author: Tactic Echo Project
-## Version: 0.9.51
+## Version: 1.0.07
 ## SavedVariables: TacticEchoDB
 
 Core/Bootstrap.lua
@@ -26,10 +26,12 @@ Tactics/TacticalState.lua
 Tactics/CooldownTracker.lua
 Tactics/CooldownResolver.lua
 Tactics/IconState.lua
+Tactics/GCDGate.lua
 Tactics/AbilityProfiles.lua
 Tactics/BurstProfiles.lua
 Tactics/BurstStateMachine.lua
 Tactics/BurstPlanner.lua
+Tactics/AutoBurst.lua
 Tactics/AdvisoryPlanner.lua
 Tactics/TacticalTelemetry.lua
 Tactics/TacticalAdvisors.lua

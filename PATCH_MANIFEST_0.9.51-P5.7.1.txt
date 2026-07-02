@@ -1,0 +1,19 @@
+Tactic Echo 0.9.51 P5.7.1 — SimC Parser CMD runner portability hotfix
+
+Package type: direct-overlay source patch
+Target baseline: 0.9.51 P5.7 (or compatible source tree containing tools/simc_window_inject)
+
+Scope:
+- Repairs only the two Windows CMD launchers for the standalone SimC Window / Inject parser.
+- CMD runners are ASCII-only and CRLF-terminated.
+- Adds `py -3` / `python` fallback discovery.
+- Adds a unit test that guards batch-file portability assumptions.
+- Does not modify AddOn runtime code, HUD, TEAP, BindingToken, TEK input, recommendations, or parser semantics.
+
+Files:
+- CHANGELOG.md
+- PATCH_MANIFEST_0.9.51-P5.7.1.txt
+- tools/simc_window_inject/README.md
+- tools/simc_window_inject/RUN_SIMC_WINDOW_INJECT.CMD
+- tools/simc_window_inject/RUN_SIMC_WINDOW_INJECT_DOWNLOAD.CMD
+- tests/unit/test_simc_window_inject_tool.py

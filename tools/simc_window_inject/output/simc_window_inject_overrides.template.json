@@ -1,0 +1,414 @@
+{
+  "schema_version": 1,
+  "description": "复制后填写 include/exclude/pairs；window/include/exclude 使用候选 candidate_key（窗口候选通常等于 action），pairs.injects 必须使用注入候选 candidate_key，例如 trinket1/trinket2/potion。",
+  "spec_overrides": {
+    "deathknight_blood": {
+      "window": {
+        "include": [],
+        "exclude": []
+      },
+      "inject": {
+        "include": [],
+        "exclude": []
+      },
+      "pairs": [],
+      "notes": ""
+    },
+    "deathknight_frost": {
+      "window": {
+        "include": [],
+        "exclude": []
+      },
+      "inject": {
+        "include": [],
+        "exclude": []
+      },
+      "pairs": [],
+      "notes": ""
+    },
+    "deathknight_unholy": {
+      "window": {
+        "include": [],
+        "exclude": []
+      },
+      "inject": {
+        "include": [],
+        "exclude": []
+      },
+      "pairs": [],
+      "notes": ""
+    },
+    "demonhunter_devourer": {
+      "window": {
+        "include": [],
+        "exclude": []
+      },
+      "inject": {
+        "include": [],
+        "exclude": []
+      },
+      "pairs": [],
+      "notes": ""
+    },
+    "demonhunter_havoc": {
+      "window": {
+        "include": [],
+        "exclude": []
+      },
+      "inject": {
+        "include": [],
+        "exclude": []
+      },
+      "pairs": [],
+      "notes": ""
+    },
+    "demonhunter_vengeance": {
+      "window": {
+        "include": [],
+        "exclude": []
+      },
+      "inject": {
+        "include": [],
+        "exclude": []
+      },
+      "pairs": [],
+      "notes": ""
+    },
+    "druid_balance": {
+      "window": {
+        "include": [],
+        "exclude": []
+      },
+      "inject": {
+        "include": [],
+        "exclude": []
+      },
+      "pairs": [],
+      "notes": ""
+    },
+    "druid_feral": {
+      "window": {
+        "include": [],
+        "exclude": []
+      },
+      "inject": {
+        "include": [],
+        "exclude": []
+      },
+      "pairs": [],
+      "notes": ""
+    },
+    "druid_guardian": {
+      "window": {
+        "include": [],
+        "exclude": []
+      },
+      "inject": {
+        "include": [],
+        "exclude": []
+      },
+      "pairs": [],
+      "notes": ""
+    },
+    "druid_restoration": {
+      "window": {
+        "include": [],
+        "exclude": []
+      },
+      "inject": {
+        "include": [],
+        "exclude": []
+      },
+      "pairs": [],
+      "notes": ""
+    },
+    "evoker_augmentation": {
+      "window": {
+        "include": [],
+        "exclude": []
+      },
+      "inject": {
+        "include": [],
+        "exclude": []
+      },
+      "pairs": [],
+      "notes": ""
+    },
+    "evoker_devastation": {
+      "window": {
+        "include": [],
+        "exclude": []
+      },
+      "inject": {
+        "include": [],
+        "exclude": []
+      },
+      "pairs": [],
+      "notes": ""
+    },
+    "hunter_beast_mastery": {
+      "window": {
+        "include": [],
+        "exclude": []
+      },
+      "inject": {
+        "include": [],
+        "exclude": []
+      },
+      "pairs": [],
+      "notes": ""
+    },
+    "hunter_marksmanship": {
+      "window": {
+        "include": [],
+        "exclude": []
+      },
+      "inject": {
+        "include": [],
+        "exclude": []
+      },
+      "pairs": [],
+      "notes": ""
+    },
+    "hunter_survival": {
+      "window": {
+        "include": [],
+        "exclude": []
+      },
+      "inject": {
+        "include": [],
+        "exclude": []
+      },
+      "pairs": [],
+      "notes": ""
+    },
+    "mage_arcane": {
+      "window": {
+        "include": [],
+        "exclude": []
+      },
+      "inject": {
+        "include": [],
+        "exclude": []
+      },
+      "pairs": [],
+      "notes": ""
+    },
+    "mage_fire": {
+      "window": {
+        "include": [],
+        "exclude": []
+      },
+      "inject": {
+        "include": [],
+        "exclude": []
+      },
+      "pairs": [],
+      "notes": ""
+    },
+    "mage_frost": {
+      "window": {
+        "include": [],
+        "exclude": []
+      },
+      "inject": {
+        "include": [],
+        "exclude": []
+      },
+      "pairs": [],
+      "notes": ""
+    },
+    "monk_brewmaster": {
+      "window": {
+        "include": [],
+        "exclude": []
+      },
+      "inject": {
+        "include": [],
+        "exclude": []
+      },
+      "pairs": [],
+      "notes": ""
+    },
+    "monk_windwalker": {
+      "window": {
+        "include": [],
+        "exclude": []
+      },
+      "inject": {
+        "include": [],
+        "exclude": []
+      },
+      "pairs": [],
+      "notes": ""
+    },
+    "paladin_protection": {
+      "window": {
+        "include": [],
+        "exclude": []
+      },
+      "inject": {
+        "include": [],
+        "exclude": []
+      },
+      "pairs": [],
+      "notes": ""
+    },
+    "paladin_retribution": {
+      "window": {
+        "include": [],
+        "exclude": []
+      },
+      "inject": {
+        "include": [],
+        "exclude": []
+      },
+      "pairs": [],
+      "notes": ""
+    },
+    "priest_shadow": {
+      "window": {
+        "include": [],
+        "exclude": []
+      },
+      "inject": {
+        "include": [],
+        "exclude": []
+      },
+      "pairs": [],
+      "notes": ""
+    },
+    "rogue_assassination": {
+      "window": {
+        "include": [],
+        "exclude": []
+      },
+      "inject": {
+        "include": [],
+        "exclude": []
+      },
+      "pairs": [],
+      "notes": ""
+    },
+    "rogue_outlaw": {
+      "window": {
+        "include": [],
+        "exclude": []
+      },
+      "inject": {
+        "include": [],
+        "exclude": []
+      },
+      "pairs": [],
+      "notes": ""
+    },
+    "rogue_subtlety": {
+      "window": {
+        "include": [],
+        "exclude": []
+      },
+      "inject": {
+        "include": [],
+        "exclude": []
+      },
+      "pairs": [],
+      "notes": ""
+    },
+    "shaman_elemental": {
+      "window": {
+        "include": [],
+        "exclude": []
+      },
+      "inject": {
+        "include": [],
+        "exclude": []
+      },
+      "pairs": [],
+      "notes": ""
+    },
+    "shaman_enhancement": {
+      "window": {
+        "include": [],
+        "exclude": []
+      },
+      "inject": {
+        "include": [],
+        "exclude": []
+      },
+      "pairs": [],
+      "notes": ""
+    },
+    "warlock_affliction": {
+      "window": {
+        "include": [],
+        "exclude": []
+      },
+      "inject": {
+        "include": [],
+        "exclude": []
+      },
+      "pairs": [],
+      "notes": ""
+    },
+    "warlock_demonology": {
+      "window": {
+        "include": [],
+        "exclude": []
+      },
+      "inject": {
+        "include": [],
+        "exclude": []
+      },
+      "pairs": [],
+      "notes": ""
+    },
+    "warlock_destruction": {
+      "window": {
+        "include": [],
+        "exclude": []
+      },
+      "inject": {
+        "include": [],
+        "exclude": []
+      },
+      "pairs": [],
+      "notes": ""
+    },
+    "warrior_arms": {
+      "window": {
+        "include": [],
+        "exclude": []
+      },
+      "inject": {
+        "include": [],
+        "exclude": []
+      },
+      "pairs": [],
+      "notes": ""
+    },
+    "warrior_fury": {
+      "window": {
+        "include": [],
+        "exclude": []
+      },
+      "inject": {
+        "include": [],
+        "exclude": []
+      },
+      "pairs": [],
+      "notes": ""
+    },
+    "warrior_protection": {
+      "window": {
+        "include": [],
+        "exclude": []
+      },
+      "inject": {
+        "include": [],
+        "exclude": []
+      },
+      "pairs": [],
+      "notes": ""
+    }
+  }
+}

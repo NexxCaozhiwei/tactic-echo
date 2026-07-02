@@ -1477,9 +1477,64 @@ local function buildBurst(pane)
     local tactics = select(1, ensureTactics())
     y = createSection(pane, "爆发逻辑", y)
     createCheckbox(pane, "启用爆发窗口辅助", 14, y, function() return tactics.burstEnabled end, function(value) tactics.burstEnabled = value end,
-        "进入战斗并选择敌对目标后，TE 会独立检查当前专精的已知、已绑定、可用爆发触发技能。只做 HUD 提示：不会改写官方主推荐、不会创建 BindingToken，也不会请求 TEK 使用技能、饰品或药水。")
+        "显示层独立检查当前专精的已知、已绑定爆发窗口与注入技能；关闭后不显示爆发候选栏。")
     createCheckbox(pane, "显示爆发候选栏", RIGHT_X, y, function() return tactics.burstShowCandidates end, function(value) tactics.burstShowCandidates = value end)
     y = y - 38
+
+    y = createSection(pane, "自动爆发测试（仅窗口技能 + 注入技能）", y)
+    createCheckbox(pane, "启用自动爆发", 14, y, function() return tactics.autoBurstEnabled == true end, function(value) tactics.autoBurstEnabled = value end,
+        "必须同时处于“运行中”并且当前官方推荐首次命中窗口技能。第一阶段只接管一条当前专精规则，不包含饰品、药水或组合宏。")
+    createCheckbox(pane, "完整调试日志", RIGHT_X, y, function() return tactics.autoBurstDebug == true end, function(value) tactics.autoBurstDebug = value end)
+    y = y - 38
+    createChoice(pane, "注入顺序", 14, y, 230, {
+        { value = "pre", label = "前置：注入 → 窗口" }, { value = "post", label = "后置：窗口 → 注入" },
+    }, function() return tactics.autoBurstDirection end, function(value) tactics.autoBurstDirection = value end)
+    createChoice(pane, "联动模式", RIGHT_X, y, 230, {
+        { value = "simple", label = "简易：注入不可用可跳过" }, { value = "focused", label = "集中：两步均就绪才启动" },
+    }, function() return tactics.autoBurstMode end, function(value) tactics.autoBurstMode = value end)
+    createText(pane, "GameFontDisableSmall", 14, y - 32, 720,
+        "每轮只派发一个动作；占 GCD 技能会在客户端预输入窗口内单次发送，随后等待技能专属 CD 或充能确认。自动爆发等待确认、软暂停或等待窗口推荐离开期间会发送非派发 TEAP 帧。")
+    y = y - 68
+
+    y = createSection(pane, "Phase 1 测试规则（推荐显式填写）", y)
+    createText(pane, "GameFontDisableSmall", 14, y, 720,
+        "“官方窗口技能”必须是暴雪官方推荐实际会给出的触发锚点；“注入技能”是 TE 要在其前或后插入的技能。两个 ID 必须同时填写；空白时才会使用当前爆发列表首项。")
+    y = y - 34
+    local windowBox = createEditBox(pane, "官方窗口 SpellID", LEFT_X, y, 196, tostring(tactics.autoBurstWindowSpellID or 0))
+    local injectionBox = createEditBox(pane, "注入 SpellID", RIGHT_X, y, 196, tostring(tactics.autoBurstInjectionSpellID or 0))
+    y = y - 36
+    createActionButton(pane, "保存测试规则", LEFT_X, y, 146, function()
+        local windowSpellID = math.max(0, math.floor(tonumber(windowBox:GetText()) or 0))
+        local injectionSpellID = math.max(0, math.floor(tonumber(injectionBox:GetText()) or 0))
+        if (windowSpellID == 0) ~= (injectionSpellID == 0) then
+            panelStatus("窗口与注入 SpellID 必须同时填写，或同时清空。")
+            return
+        end
+        tactics.autoBurstWindowSpellID = windowSpellID
+        tactics.autoBurstInjectionSpellID = injectionSpellID
+        windowBox:SetText(tostring(windowSpellID))
+        injectionBox:SetText(tostring(injectionSpellID))
+        panelStatus(windowSpellID > 0 and "自动爆发测试规则已保存。" or "已清空显式规则；将按下方设置决定是否使用爆发列表首项。")
+        ControlPanel:ApplyVisuals(true)
+    end)
+    createCheckbox(pane, "未填写 ID 时使用爆发列表首项", 176, y, function() return tactics.autoBurstUseProfileFallback == true end, function(value) tactics.autoBurstUseProfileFallback = value end,
+        "仅用于兼容旧列表。若官方推荐不会显示该首项，自动爆发不会触发；请优先填写上方两个 SpellID。")
+    y = y - 38
+    createReadout(pane, "autoBurstRuntime", "自动爆发诊断", LEFT_X, y, 720, "GameFontHighlightSmall")
+    registerControl(function()
+        local data = TE.AutoBurst and type(TE.AutoBurst.GetDiagnostics) == "function" and TE.AutoBurst:GetDiagnostics() or nil
+        if type(data) ~= "table" then setLabel("autoBurstRuntime", "AutoBurst 未加载") return end
+        local rule = data.resolvedRule or {}
+        local decision = data.lastDecision or {}
+        local source = rule.source or (data.ruleReason and "无有效规则") or "未解析"
+        setLabel("autoBurstRuntime", "规则=" .. tostring(source)
+            .. " 窗口=" .. tostring(rule.windowSpellID or "-")
+            .. " 注入=" .. tostring(rule.injectionSpellID or "-")
+            .. " · 最近=" .. tostring(decision.reason or data.ruleReason or "等待官方窗口")
+            .. " · 计划=" .. tostring(data.plan and data.plan.state or "IDLE"))
+    end)
+    y = y - 70
+
     createChoice(pane, "爆发策略", 14, y, 230, {
         { value = "immediate", label = "立即提示" }, { value = "align", label = "对齐主推荐" }, { value = "hold", label = "保留爆发" },
     }, function() return tactics.burstPolicy end, function(value) tactics.burstPolicy = value end)
@@ -1528,7 +1583,7 @@ local function buildBurst(pane)
     createCheckbox(pane, "允许种族提示", RIGHT_X, y - 34, function() return override.allowRacialHint ~= false end, function(value) override.allowRacialHint = value end)
     createCheckbox(pane, "允许主推荐状态标记", 14, y - 68, function() return override.allowBurstOverlay ~= false end, function(value) override.allowBurstOverlay = value end)
     createText(pane, "GameFontDisableSmall", 14, y - 110, 720,
-        "当前专精键：" .. tostring(profileKey) .. "。立即提示：战斗中有敌对目标即可提示已就绪窗口技能；对齐主推荐：还需当前官方主推荐存在；保留爆发：不主动提示窗口技能。所有建议均为只读 HUD，不进入 TEAP / TEK。")
+        "当前专精键：" .. tostring(profileKey) .. "。立即提示：战斗中有敌对目标即可提示已就绪窗口技能；对齐主推荐：还需当前官方主推荐存在；保留爆发：不主动提示窗口技能。候选栏始终只读；仅上方“自动爆发测试”可在严格双开关、单规则和 TEAP/TEK 门禁下临时接管下一步。")
     y = y - 164
 
     local function currentBurstContext()

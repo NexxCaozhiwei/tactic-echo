@@ -1,10 +1,10 @@
 # Tactic Echo Handoff
 
-Current source release: `0.9.51`
+Current source release: `1.0.07`
 
 ## Current State
 
-The repository is on the 0.9.0 maintenance baseline with current source release `0.9.51`. The dispatch architecture is TEAP v3 dynamic action-bar binding:
+The repository is on the `1.0.07` development baseline. Its historical code ancestry is `0.9.51`; the current source release is `1.0.07`. The dispatch architecture is TEAP v3 dynamic action-bar binding:
 
 ```text
 official primary recommendation
@@ -15,7 +15,7 @@ official primary recommendation
 -> SendInput
 ```
 
-The current pass intentionally does not change macro behavior.
+当前版本新增了 AutoBurst Phase 1；复杂宏策略仍保持保守，不在本阶段扩展。
 
 ## Recent Functional State
 
@@ -25,6 +25,15 @@ The current pass intentionally does not change macro behavior.
 - TEK auto-location searches bounded top-left WoW client regions for the v3 header and requires complete-frame proof before dispatch.
 - Non-dispatch states retain their meaning: `waiting`, `paused`, `manual_hold`, `channeling`, `empowering`.
 - `ProtocolMonitor` target-cast values are secret-safe; protected interruptibility falls back to unknown instead of raising a taint/protected-value error.
+
+## AutoBurst Phase 1
+
+- 代码入口：`Tactics/AutoBurst.lua`；默认 `autoBurstEnabled=false`。
+- 仅一条 Profile 声明的窗口 + 注入规则，支持 pre/post、simple/focused。
+- 只读取 CD、充能和 `GCDGate` 标签；不使用 Buff、资源、目标或范围。
+- TEAP flags bit 5 标记 `dispatchOrigin=burst`；TEK 对同一 burst sequence 去重。
+- AutoBurst 内部 hold 使用 `armed + observationOnly`，不再错误转写成全局 `paused`；这避免 GCD/确认等待将计划自锁。
+- 真正输入仍需 Windows 实机验收；AddOn 没有 SendInput 回执。
 
 ## Boundaries
 
@@ -69,3 +78,11 @@ texluac -p <each addon lua file>
 - User has previously validated Retribution Paladin key dispatch after TE/TEK updates.
 - Holy Paladin dynamic v3 binding required later code updates and should be rechecked after AddOn sync.
 - Macro behavior is intentionally deferred; do not "fix" it unless the user reopens that scope.
+
+## 1.0.07 Field Fixes
+
+- `active=true` without reliable own-CD/GCD provenance is `UNKNOWN`, never a skip-eligible cooldown. Front injection holds/revalidates for a bounded interval.
+- Every created Phase 1 plan retains its window departure lock when it aborts or times out; ordinary official dispatch cannot bypass an unconfirmed front injection.
+- A Burst candidate remains visible with one stable TEAP sequence until success, explicit invalidation or deadline. TEK attempts that sequence at most once.
+- `UNIT_SPELLCAST_SUCCEEDED` can confirm only the current dispatched step; it is not a timing/trigger input.
+- Observation-only Burst frames retain `BindingToken=0` for TEK safety but carry a separate official display binding for HUD/diagnostics.

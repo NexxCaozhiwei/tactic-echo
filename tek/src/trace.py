@@ -73,6 +73,7 @@ def trace_signature(record: TraceRecord, *, full_debug: bool = True) -> tuple[An
         record.dispatchAttempted,
         record.inputSent,
         record.dispatchError,
+        record.dispatch_origin,
         diagnostics.get("physical_input_pause"),
         diagnostics.get("manual_held"),
         diagnostics.get("manual_reason"),

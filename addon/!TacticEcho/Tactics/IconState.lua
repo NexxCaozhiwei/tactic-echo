@@ -14,6 +14,13 @@ local lastError
 -- observation is display-only and is never used as a recommendation, token,
 -- or input condition.
 local GLOBAL_COOLDOWN_SPELL_ID = 61304
+-- Some Retail cooldown responses do not expose `isOnGCD` for every spell.  In
+-- that case a currently READY spell can temporarily look like it has a short
+-- personal cooldown merely because the shared GCD is active.  Keep this
+-- normalization inside the read-only icon/timing adapter so AutoBurst only
+-- receives the public boolean `cooldownOnGCD`, never raw GCD arithmetic.
+local GCD_ALIGNMENT_TOLERANCE_SECONDS = 0.12
+local GCD_ALIGNMENT_MAX_DURATION_SECONDS = 2.25
 
 local function call(fn, ...)
     if type(fn) ~= "function" then return false, nil end
@@ -76,11 +83,15 @@ local function deriveCooldown(startValue, durationValue)
     return { known = true, remaining = remaining, duration = duration, start = startTime }
 end
 
-local function spellCooldown(spellID)
-    -- P5 routes spell presentation through the shared CooldownResolver first.
-    -- The resolver caches event-driven snapshots and normalizes spell, item and
-    -- inventory identities without exposing raw protected values to HUD state.
-    if TE.CooldownResolver and type(TE.CooldownResolver.GetSpell) == "function" then
+local function spellCooldown(spellID, options)
+    options = type(options) == "table" and options or {}
+    -- HUD rendering remains event-driven through CooldownResolver.  AutoBurst
+    -- timing, however, must not inherit an old event snapshot: a stale shared
+    -- GCD can make a ready injection appear to be on personal cooldown forever.
+    -- `liveOnly` therefore bypasses the resolver cache and queries the current
+    -- public spell snapshot for this evaluation tick.
+    if options.liveOnly ~= true
+        and TE.CooldownResolver and type(TE.CooldownResolver.GetSpell) == "function" then
         local ok, snapshot = pcall(TE.CooldownResolver.GetSpell, TE.CooldownResolver, spellID)
         if ok and type(snapshot) == "table" then
             return snapshot.remaining, snapshot.duration, snapshot.start, snapshot.enabled, nil,
@@ -90,9 +101,9 @@ local function spellCooldown(spellID)
     end
 
     local startTime, duration, enabled, modRate
-    -- `isActive` and `isOnGCD` are public presentation booleans on current
-    -- clients.  They may cross the model boundary because they are not raw
-    -- countdown values and are never used for recommendation or input logic.
+    -- `isActive` and `isOnGCD` are public non-numeric API booleans. They enter
+    -- only the read-only timing adapter to distinguish own cooldown from shared
+    -- GCD waiting when countdown numerics are protected; no raw timing escapes.
     local isActive, isOnGCD
     if C_Spell and type(C_Spell.GetSpellCooldown) == "function" then
         local ok, info = call(C_Spell.GetSpellCooldown, spellID)
@@ -114,7 +125,12 @@ local function spellCooldown(spellID)
 end
 
 local function collectGcdSnapshot()
-    local remaining, duration, start, _, _, known, reason, active = spellCooldown(GLOBAL_COOLDOWN_SPELL_ID)
+    -- The global cooldown is a moving time boundary rather than a durable
+    -- cooldown record. Always read it live; the event-driven resolver cache is
+    -- intentionally not a scheduler clock.
+    local remaining, duration, start, _, _, known, reason, active = spellCooldown(GLOBAL_COOLDOWN_SPELL_ID, {
+        liveOnly = true,
+    })
     return {
         remaining = remaining,
         duration = duration,
@@ -122,7 +138,41 @@ local function collectGcdSnapshot()
         known = known == true,
         reason = reason,
         active = active == true,
+        activeKnown = active ~= nil,
     }
+end
+
+-- Return a boolean-only classification.  This is deliberately stricter than
+-- comparing only remaining time: a genuine short personal cooldown must not be
+-- hidden merely because a GCD happens to be active at the same moment.
+local function normalizeCooldownAgainstGcd(state, gcd)
+    if type(state) ~= "table" or type(gcd) ~= "table" then return false end
+    if state.cooldownOnGCD == true then return true end
+    if state.cooldownKnown ~= true or state.cooldownActive ~= true then return false end
+    if gcd.known ~= true or gcd.active ~= true then return false end
+
+    local spellStart = numeric(state.cooldownStart)
+    local spellDuration = numeric(state.cooldownDuration)
+    local spellRemaining = numeric(state.cooldownRemaining)
+    local gcdStart = numeric(gcd.start)
+    local gcdDuration = numeric(gcd.duration)
+    local gcdRemaining = numeric(gcd.remaining)
+    if not spellDuration or not gcdDuration or spellDuration <= 0 or gcdDuration <= 0 then return false end
+    if spellDuration > GCD_ALIGNMENT_MAX_DURATION_SECONDS or gcdDuration > GCD_ALIGNMENT_MAX_DURATION_SECONDS then
+        return false
+    end
+
+    local durationAligned = math.abs(spellDuration - gcdDuration) <= GCD_ALIGNMENT_TOLERANCE_SECONDS
+    local startAligned = spellStart and gcdStart and math.abs(spellStart - gcdStart) <= GCD_ALIGNMENT_TOLERANCE_SECONDS
+    local remainingAligned = spellRemaining and gcdRemaining and math.abs(spellRemaining - gcdRemaining) <= GCD_ALIGNMENT_TOLERANCE_SECONDS
+    if durationAligned and (startAligned or remainingAligned) then
+        state.cooldownOnGCD = true
+        state.cooldownActive = false
+        state.cooldownGcdAlias = true
+        state.cooldownGcdAliasReason = "gcd_snapshot_aligned"
+        return true
+    end
+    return false
 end
 
 -- One TacticalAdvisors refresh can decorate many cards. The global cooldown is
@@ -250,6 +300,144 @@ local function cooldownBlocked(remaining, charges)
     return true
 end
 
+-- Narrow read-only sampler used by AutoBurst.  Unlike Collect(), this path
+-- never calls spell-usability, target/range, proc or aura APIs, so burst
+-- policy cannot accidentally acquire resource, target, Buff or enemy-count
+-- inputs while it only needs spell CD, charges and the shared GCD snapshot.
+function IconState:CollectCooldownOnly(spellID, options)
+    options = options or {}
+    spellID = numeric(spellID)
+    local trackerMeta = {
+        actionSlot = options.actionSlot or options.slot,
+        directActionSlot = options.directActionSlot == true,
+        actionBarStateTrusted = options.actionBarStateTrusted == true,
+        matchedSpellID = options.matchedSpellID,
+        requestedSpellID = options.requestedSpellID,
+        equivalentSpellIDs = options.equivalentSpellIDs,
+    }
+    local state = {
+        schema = 1,
+        spellID = spellID,
+        known = spellID ~= nil and spellID > 0,
+        cooldownKnown = false,
+        cooldownActive = nil,
+        cooldownOnGCD = nil,
+        -- Preserve public boolean provenance so false can be distinguished from
+        -- unknown without materializing protected countdown values.
+        cooldownPublicActive = nil,
+        cooldownPublicActiveKnown = false,
+        cooldownPublicOnGCD = nil,
+        cooldownPublicOnGCDKnown = false,
+        cooldownUnknownReason = nil,
+        cooldownSource = nil,
+        cooldownIdentityKey = nil,
+        cooldownConfirmationPending = false,
+        cooldownGcdAlias = false,
+        cooldownGcdAliasReason = nil,
+        cooldownLiveRead = options.liveCooldown == true,
+        charges = nil,
+        maxCharges = nil,
+        chargeCooldownKnown = false,
+        gcdKnown = false,
+        gcdActive = nil,
+        gcdActiveKnown = false,
+        gcdUnknownReason = nil,
+    }
+    if not state.known then
+        state.cooldownUnknownReason = "缺少可解释的技能编号"
+        return state
+    end
+
+    if TE.CooldownTracker and type(TE.CooldownTracker.RegisterSpell) == "function" then
+        TE.CooldownTracker:RegisterSpell(spellID, trackerMeta)
+    end
+
+    -- AutoBurst requests a fresh spell snapshot per state-machine tick.
+    -- This avoids treating a cached shared-GCD overlay as a personal cooldown.
+    local remaining, duration, start, _, _, cooldownKnown, cooldownReason, cooldownActive, cooldownOnGCD, resolverSource, resolverIdentity = spellCooldown(spellID, {
+        liveOnly = options.liveCooldown == true,
+    })
+    state.cooldownRemaining, state.cooldownDuration, state.cooldownStart = remaining, duration, start
+    state.cooldownKnown = cooldownKnown == true
+    state.cooldownUnknownReason = cooldownReason
+    state.cooldownPublicActive = cooldownActive
+    state.cooldownPublicActiveKnown = cooldownActive ~= nil
+    state.cooldownPublicOnGCD = cooldownOnGCD
+    state.cooldownPublicOnGCDKnown = cooldownOnGCD ~= nil
+    state.cooldownOnGCD = cooldownOnGCD
+    state.cooldownActive = cooldownActive == true and cooldownOnGCD ~= true
+    if state.cooldownKnown then
+        state.cooldownSource = resolverSource or "spell_api"
+        state.cooldownIdentityKey = resolverIdentity
+    end
+
+    local trackerPending = TE.CooldownTracker and TE.CooldownTracker.IsConfirmationPending
+        and TE.CooldownTracker:IsConfirmationPending(spellID, trackerMeta) or false
+    state.cooldownConfirmationPending = trackerPending == true
+
+    local trackedCooldown
+    if TE.CooldownTracker and type(TE.CooldownTracker.GetCooldown) == "function" then
+        local ok, value = pcall(TE.CooldownTracker.GetCooldown, TE.CooldownTracker, spellID, trackerMeta)
+        if ok and type(value) == "table" then trackedCooldown = value end
+    end
+    local apiExplicitlyReady = state.cooldownKnown == true and state.cooldownActive == false and state.cooldownOnGCD ~= true
+    -- A fresh public spell snapshot is authoritative for AutoBurst. In
+    -- particular, `isOnGCD=true` must not be overwritten by an older
+    -- CooldownTracker entry; doing so makes a ready pre-injection look like a
+    -- real personal cooldown and lets the simple path incorrectly skip it.
+    local liveApiAuthoritative = options.liveCooldown == true and state.cooldownKnown == true
+    if trackedCooldown and liveApiAuthoritative ~= true and not (apiExplicitlyReady and trackerPending ~= true) then
+        state.cooldownRemaining = numeric(trackedCooldown.remaining)
+        state.cooldownDuration = numeric(trackedCooldown.duration)
+        state.cooldownStart = numeric(trackedCooldown.start)
+        state.cooldownKnown = state.cooldownRemaining ~= nil and state.cooldownDuration ~= nil and state.cooldownStart ~= nil
+        state.cooldownActive = state.cooldownKnown and state.cooldownRemaining > 0 or state.cooldownActive
+        state.cooldownSource = trackedCooldown.source or "local_tracker_cached"
+        state.cooldownIdentityKey = trackedCooldown.identityKey or state.cooldownIdentityKey
+        state.cooldownUnknownReason = nil
+    elseif state.cooldownKnown == false and state.cooldownConfirmationPending == true then
+        state.cooldownUnknownReason = state.cooldownUnknownReason or "技能冷却正在与动作条确认"
+    end
+
+    local gcd = type(options.gcdSnapshot) == "table" and options.gcdSnapshot or collectGcdSnapshot()
+    state.gcdKnown = gcd.known == true
+    state.gcdActive = gcd.active == true
+    state.gcdActiveKnown = gcd.activeKnown == true
+    state.gcdUnknownReason = gcd.reason
+    -- This must run after the tracker reconciliation above so a cached
+    -- cooldown cannot re-introduce a false personal CD during the shared GCD.
+    normalizeCooldownAgainstGcd(state, gcd)
+
+    local charges = spellCharges(spellID)
+    local trackedCharges
+    if TE.CooldownTracker and type(TE.CooldownTracker.GetCharges) == "function" then
+        local ok, value = pcall(TE.CooldownTracker.GetCharges, TE.CooldownTracker, spellID, trackerMeta)
+        if ok and type(value) == "table" then trackedCharges = value end
+    end
+    if trackedCharges then
+        charges = charges or {}
+        if charges.current == nil then charges.current = numeric(trackedCharges.current) end
+        if charges.maximum == nil then charges.maximum = numeric(trackedCharges.maximum) end
+        if charges.cooldownKnown ~= true and trackedCharges.cooldownKnown == true then
+            charges.cooldownRemaining = numeric(trackedCharges.cooldownRemaining)
+            charges.cooldownDuration = numeric(trackedCharges.cooldownDuration)
+            charges.cooldownStart = numeric(trackedCharges.cooldownStart)
+            charges.cooldownKnown = charges.cooldownDuration ~= nil and charges.cooldownDuration > 0
+            charges.cooldownUnknownReason = nil
+        end
+    end
+    if charges then
+        state.charges, state.maxCharges = charges.current, charges.maximum
+        state.chargeCooldownRemaining, state.chargeCooldownDuration = charges.cooldownRemaining, charges.cooldownDuration
+        state.chargeCooldownStart = charges.cooldownStart
+        state.chargeCooldownKnown = charges.cooldownKnown == true
+        if charges.cooldownKnown == false and not state.cooldownUnknownReason then
+            state.cooldownUnknownReason = charges.cooldownUnknownReason
+        end
+    end
+    return state
+end
+
 function IconState:Collect(spellID, options)
     options = options or {}
     spellID = numeric(spellID)
@@ -330,7 +518,11 @@ function IconState:Collect(spellID, options)
         return state
     end
 
-    local remaining, duration, start, _, _, cooldownKnown, cooldownReason, cooldownActive, cooldownOnGCD, resolverSource, resolverIdentity = spellCooldown(spellID)
+    -- AutoBurst requests a fresh spell snapshot per state-machine tick.
+    -- This avoids treating a cached shared-GCD overlay as a personal cooldown.
+    local remaining, duration, start, _, _, cooldownKnown, cooldownReason, cooldownActive, cooldownOnGCD, resolverSource, resolverIdentity = spellCooldown(spellID, {
+        liveOnly = options.liveCooldown == true,
+    })
     state.cooldownRemaining, state.cooldownDuration, state.cooldownStart = remaining, duration, start
     state.cooldownKnown = cooldownKnown == true
     state.cooldownUnknownReason = cooldownReason

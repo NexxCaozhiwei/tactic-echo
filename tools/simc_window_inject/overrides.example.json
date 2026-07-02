@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "description": "示例：确认候选分类与一条手动爆发配对。动作名必须与生成的 candidates.json 中 action 字段完全一致。",
+  "spec_overrides": {
+    "paladin_retribution": {
+      "window": {
+        "include": [],
+        "exclude": []
+      },
+      "inject": {
+        "include": [],
+        "exclude": []
+      },
+      "pairs": [
+        {
+          "window": "wake_of_ashes",
+          "injects": [
+            "avenging_wrath",
+            "potion"
+          ],
+          "readiness_mode": "any_ready",
+          "min_ready_injects": 1,
+          "order": "pre"
+        }
+      ],
+      "notes": "示例仅说明结构；实际搭配必须按当前游戏版本、天赋和角色习惯审核。"
+    }
+  }
+}

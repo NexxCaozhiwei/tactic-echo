@@ -4,7 +4,7 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 
 
-STATUS_SCHEMA_VERSION = 4
+STATUS_SCHEMA_VERSION = 5
 
 
 def utc_now_iso() -> str:
@@ -29,6 +29,7 @@ class TEKStatusSnapshot:
     error_message: str | None
     trace_path: str | None
     worker_alive: bool
+    last_dispatch_origin: str = "official"
     log_dir: str | None = None
     foreground_diagnostics: dict | None = None
     signal_diagnostics: dict | None = None
@@ -59,6 +60,7 @@ class TEKStatusSnapshot:
             last_reason=None,
             last_action_code=None,
             last_action_id=None,
+            last_dispatch_origin="official",
             last_binding=None,
             last_gate_passed=False,
             last_input_sent=False,
@@ -99,6 +101,7 @@ class TEKStatusSnapshot:
             "last_reason": self.last_reason,
             "last_action_code": self.last_action_code,
             "last_action_id": self.last_action_id,
+            "last_dispatch_origin": self.last_dispatch_origin,
             "last_binding": self.last_binding,
             "last_gate_passed": self.last_gate_passed,
             "last_input_sent": self.last_input_sent,
@@ -119,7 +122,7 @@ class TEKStatusSnapshot:
     @classmethod
     def from_dict(cls, data: dict) -> "TEKStatusSnapshot":
         stored_version = data.get("schema_version", data.get("schemaVersion", 1))
-        if stored_version not in (1, 2, 3, STATUS_SCHEMA_VERSION):
+        if stored_version not in (1, 2, 3, 4, STATUS_SCHEMA_VERSION):
             raise ValueError("unsupported_status_schema")
         normalized = dict(data)
         normalized.pop("schemaVersion", None)

@@ -1,0 +1,280 @@
+{
+  "simc_root": "G:\\CODES\\tactic-echo\\tools\\simc_window_inject\\_cache\\simc-midnight",
+  "apl_root": "G:\\CODES\\tactic-echo\\tools\\simc_window_inject\\_cache\\simc-midnight\\ActionPriorityLists",
+  "git_revision": null,
+  "generated_at_utc": "2026-07-01T15:03:59+00:00",
+  "files": {
+    "assisted_combat\\deathknight_blood.simc": {
+      "sha256": "eef573f4a316c06726bc45fcf5675de1d7eeefe1ba7eaa281b3ad3557d4a62d5",
+      "source": "assisted_combat"
+    },
+    "default\\deathknight_blood.simc": {
+      "sha256": "fdd61950bc34689e792bb14015d45d4f729320260da1883a6ef734e5a35d657b",
+      "source": "default"
+    },
+    "assisted_combat\\deathknight_frost.simc": {
+      "sha256": "cc609d91d46357bd04b09eff7848b2df0170221b95cef68b10b746bce7d69310",
+      "source": "assisted_combat"
+    },
+    "default\\deathknight_frost.simc": {
+      "sha256": "483f5528a11b05c40ae033d96cabfff6a1138689ec793d43c207051016fec903",
+      "source": "default"
+    },
+    "assisted_combat\\deathknight_unholy.simc": {
+      "sha256": "7af4f6d65b06eff4f0023f40f22b5050de9a406b842081aa2c8fa07db8989f82",
+      "source": "assisted_combat"
+    },
+    "default\\deathknight_unholy.simc": {
+      "sha256": "ff64fc96bd07823e25f2154af9682ea796db04fdeb3fb738cf26ec05b0bd6fa1",
+      "source": "default"
+    },
+    "assisted_combat\\demonhunter_devourer.simc": {
+      "sha256": "880468ee344160aaa6492a6d8ed0502207986bc2f81c26579769bf863f52b710",
+      "source": "assisted_combat"
+    },
+    "default\\demonhunter_devourer.simc": {
+      "sha256": "c05deec1182d17a3479c6f75509d1f04de9d605e038392204edb62e2903fd008",
+      "source": "default"
+    },
+    "assisted_combat\\demonhunter_havoc.simc": {
+      "sha256": "666744cb3bbd397b703dd8ebd50c908618528ee7f8816b7b55f4419dae9288a9",
+      "source": "assisted_combat"
+    },
+    "default\\demonhunter_havoc.simc": {
+      "sha256": "0f5adfc045c204c8332f5b2d619cdda4d45403fbc52824a4dab142b654a2b0a6",
+      "source": "default"
+    },
+    "assisted_combat\\demonhunter_vengeance.simc": {
+      "sha256": "9d932a1a478e02487edc6e8268be27aa2359255abaf4f3cb769df44635176196",
+      "source": "assisted_combat"
+    },
+    "default\\demonhunter_vengeance.simc": {
+      "sha256": "52ba08dea1e3e535275738381b93b291ee474c2e2f1efc4bbee9b21429a88850",
+      "source": "default"
+    },
+    "assisted_combat\\druid_balance.simc": {
+      "sha256": "cab9d1812f0fcb797809d0813d74b2e0e7b53b68365ad255ec02b0c7e2af4df6",
+      "source": "assisted_combat"
+    },
+    "default\\druid_balance.simc": {
+      "sha256": "e60dc1122988007004badee5bd13e488a42934346b3a6a474107e55c60cb7d8b",
+      "source": "default"
+    },
+    "assisted_combat\\druid_feral.simc": {
+      "sha256": "a7542ca7d3e907635b00d5aa77f01ff5119752cb6567a4d64f685406bd889697",
+      "source": "assisted_combat"
+    },
+    "default\\druid_feral.simc": {
+      "sha256": "4c4d4f67a76ac1aa21cf8a41bff11ea1c4cd32b0e38e476013739bd396c884e9",
+      "source": "default"
+    },
+    "assisted_combat\\druid_guardian.simc": {
+      "sha256": "3fe40d3aa27849b5ffa9da0aed08d861c32fab695551f9ce27e487c7b4cb50dc",
+      "source": "assisted_combat"
+    },
+    "default\\druid_guardian.simc": {
+      "sha256": "a79024e09a082b40538dbbda934e0df54d180683de59e9cf15f9f277ddff2357",
+      "source": "default"
+    },
+    "assisted_combat\\druid_restoration.simc": {
+      "sha256": "bc485380be877b4c0560a2cccde910c230f29789a3252273c7f976e2ab6aa396",
+      "source": "assisted_combat"
+    },
+    "default\\druid_restoration.simc": {
+      "sha256": "99d7e7fd2da699ee7026de3aac160fba9a54bf9136e4718cda3e0ec3e4f6acda",
+      "source": "default"
+    },
+    "assisted_combat\\evoker_augmentation.simc": {
+      "sha256": "9683f028e248acd76ec4edc9a215bd8a7d007b8ebacea71335295dd37d42d72e",
+      "source": "assisted_combat"
+    },
+    "default\\evoker_augmentation.simc": {
+      "sha256": "6e4c094ec8e0cdaaf9cd7d2f8db7e2ec51802243560ccf2ee8a3a6ea0b4932d9",
+      "source": "default"
+    },
+    "assisted_combat\\evoker_devastation.simc": {
+      "sha256": "1a4cca4c7bd3ab59f6f9e27a7f26d620b5596a7fd5308e87daa307a027a27883",
+      "source": "assisted_combat"
+    },
+    "default\\evoker_devastation.simc": {
+      "sha256": "36721c55819943780c1b4b999ca401df4fa0ea3d7f67aa5e392b40085091db1e",
+      "source": "default"
+    },
+    "assisted_combat\\hunter_beast_mastery.simc": {
+      "sha256": "31911dc40cb83351fbbadb7d07fcd537c8960cc5c83615bd995962e780a5c73a",
+      "source": "assisted_combat"
+    },
+    "default\\hunter_beast_mastery.simc": {
+      "sha256": "50cda096750f6f54dd2a58043473baccd209687a4b7bb08d074a449b3672269e",
+      "source": "default"
+    },
+    "assisted_combat\\hunter_marksmanship.simc": {
+      "sha256": "201168cc2a2e01a1aa87cf2bb8a8df1fed787122c3f521f0797604de3f1ded4b",
+      "source": "assisted_combat"
+    },
+    "default\\hunter_marksmanship.simc": {
+      "sha256": "b36610dff4b4a58a32eeeafebd898225f020bf03f1ac154731de2431abc7c8ff",
+      "source": "default"
+    },
+    "assisted_combat\\hunter_survival.simc": {
+      "sha256": "63ab0e17176209ce4889d9aadfa75eac5fe51b970ac7aca541fecd1b53a89b71",
+      "source": "assisted_combat"
+    },
+    "default\\hunter_survival.simc": {
+      "sha256": "a643b77c5c8dbe9ff9f55de53100753ca96a7a91c4c74aa270c3f61fab08b342",
+      "source": "default"
+    },
+    "assisted_combat\\mage_arcane.simc": {
+      "sha256": "88c5c65512245e32c79e05b4e29387584505362a3d68900935d20391da23e954",
+      "source": "assisted_combat"
+    },
+    "default\\mage_arcane.simc": {
+      "sha256": "7e7a10711d6f943a6b15646478206895e5cad7c0db3790fa3f4d20c469e55584",
+      "source": "default"
+    },
+    "assisted_combat\\mage_fire.simc": {
+      "sha256": "8ce21aa1ba4e3b12551f2c557bf327760b93ff8a10545eb77b92fd13cf4a9b51",
+      "source": "assisted_combat"
+    },
+    "default\\mage_fire.simc": {
+      "sha256": "59148174a79e06c48115b1f7bfe9d0cc8517356e0bd745896996b0f4d31a97cb",
+      "source": "default"
+    },
+    "assisted_combat\\mage_frost.simc": {
+      "sha256": "b7a79b931756eb662859eec86bf9883633f352f01dcb50ba1de32ae94c5e8f33",
+      "source": "assisted_combat"
+    },
+    "default\\mage_frost.simc": {
+      "sha256": "184acc3dd3b9439c4d82504bdea67625aa6e73d896a6061389f2fa1120344203",
+      "source": "default"
+    },
+    "assisted_combat\\monk_brewmaster.simc": {
+      "sha256": "d1087e4ba03277ea04c4322097d83374cb72d4dbe085bf4402acac20060fe33f",
+      "source": "assisted_combat"
+    },
+    "default\\monk_brewmaster.simc": {
+      "sha256": "e0c5d3e9a34e57513a977689851aa23c1e79d7342c33fde9c4c50b2f9c4adf3c",
+      "source": "default"
+    },
+    "assisted_combat\\monk_windwalker.simc": {
+      "sha256": "d15099df3874aa88335b4dcce0eabb8bc9c06c39ea315a89c82f4756af448f06",
+      "source": "assisted_combat"
+    },
+    "default\\monk_windwalker.simc": {
+      "sha256": "15a185c98d894e1cbd0f0ad56fe6b058ff81ac4fda51cd0cb5df0bbe5e302bc8",
+      "source": "default"
+    },
+    "assisted_combat\\paladin_protection.simc": {
+      "sha256": "673442f994916c334840b63bcd9a09227db01771510631ca01a7ea05e1d449e8",
+      "source": "assisted_combat"
+    },
+    "default\\paladin_protection.simc": {
+      "sha256": "a8da466a9c13a6a177a732062e1ec63b57e4611a86d11dc7d034b5c8c7e75330",
+      "source": "default"
+    },
+    "assisted_combat\\paladin_retribution.simc": {
+      "sha256": "2f114a0c548d0ff8e5f327ec236496799fbd023eeb0e24b9278a65e54a7396e1",
+      "source": "assisted_combat"
+    },
+    "default\\paladin_retribution.simc": {
+      "sha256": "4ad97a73050b6d3e87cd7b1333debcd3c3b56d0bf164eab9cdd20f8dcac88bd3",
+      "source": "default"
+    },
+    "assisted_combat\\priest_shadow.simc": {
+      "sha256": "c178d2e182216b1e7c7190b233d682b97b93893f4e4b6575c2895729add315d8",
+      "source": "assisted_combat"
+    },
+    "default\\priest_shadow.simc": {
+      "sha256": "c20f47a308a661183f270149ede398c07bf4bea15a7e84e2bbb9c435336b2b62",
+      "source": "default"
+    },
+    "assisted_combat\\rogue_assassination.simc": {
+      "sha256": "0f9c3b881ac33e1feb3b9ef5d84c2519102c6120ede409e0f74060688323e277",
+      "source": "assisted_combat"
+    },
+    "default\\rogue_assassination.simc": {
+      "sha256": "0b59701669b19b3c791768a0db43beb3365db0a7efcec39cf2d3373548ded26b",
+      "source": "default"
+    },
+    "assisted_combat\\rogue_outlaw.simc": {
+      "sha256": "c1ccb2c5adf0d559ca23a78407e9961110f52dbb372f8390adb548039d0e84b6",
+      "source": "assisted_combat"
+    },
+    "default\\rogue_outlaw.simc": {
+      "sha256": "7e5fcbf8419de88876d6c9447ba93f8d0936647c91d5a4f50f6900fd47e9808c",
+      "source": "default"
+    },
+    "assisted_combat\\rogue_subtlety.simc": {
+      "sha256": "264d4e7a1244d64f75f75ee638b14add4ab86ddacdcaf996eebe0de431ab3574",
+      "source": "assisted_combat"
+    },
+    "default\\rogue_subtlety.simc": {
+      "sha256": "e713ffd86f21dabc25587b4757794e05739c932f61e852dc898f5b1789ca840e",
+      "source": "default"
+    },
+    "assisted_combat\\shaman_elemental.simc": {
+      "sha256": "5b82ce489cb9a05832d3bafc09adea75feb278f720205de960cdc3c5bb3f278b",
+      "source": "assisted_combat"
+    },
+    "default\\shaman_elemental.simc": {
+      "sha256": "fade4658ce23916abf4735f59d592f0675cfd6dfb311542258f385ff5554ae04",
+      "source": "default"
+    },
+    "assisted_combat\\shaman_enhancement.simc": {
+      "sha256": "3a21dbca1d344b6390facb409cb9d92d4f753acbdfce6236ec63955c56942d41",
+      "source": "assisted_combat"
+    },
+    "default\\shaman_enhancement.simc": {
+      "sha256": "128f1bf4c098b28932345bb5496240315d2619ed0967b5d49652d4da3ba25c02",
+      "source": "default"
+    },
+    "assisted_combat\\warlock_affliction.simc": {
+      "sha256": "2911e8b0b83906806e09e7600ce45c3128283f0cca020da64782bfbe0f760152",
+      "source": "assisted_combat"
+    },
+    "default\\warlock_affliction.simc": {
+      "sha256": "6bbded6f42446e1d5ad4cc34803f5439c506a78fa9da882eab5586f884bd5712",
+      "source": "default"
+    },
+    "assisted_combat\\warlock_demonology.simc": {
+      "sha256": "4d5cd4b7b36db642b128617597a3162e5ad2a381b0058d73a6394d71661b3925",
+      "source": "assisted_combat"
+    },
+    "default\\warlock_demonology.simc": {
+      "sha256": "a195bd49a7deaa1288ff15449afa212076feec8a7870c7af8a3f9529ed2e5e77",
+      "source": "default"
+    },
+    "assisted_combat\\warlock_destruction.simc": {
+      "sha256": "d395576db360593ce3cf8b3c262bbc389612f0ba1ab000d40e3ffaaaa9dae60e",
+      "source": "assisted_combat"
+    },
+    "default\\warlock_destruction.simc": {
+      "sha256": "b77c6f33c905e5f8281efdb057ec8f2324aef3a8d43f4e2f61df6aafb9ee0725",
+      "source": "default"
+    },
+    "assisted_combat\\warrior_arms.simc": {
+      "sha256": "1c15d6e1ad61cf7f0b625ed410a93eb4c8e5aa6b351a7900424be119d3940148",
+      "source": "assisted_combat"
+    },
+    "default\\warrior_arms.simc": {
+      "sha256": "22836fe0ad1b13c77ca976f1f10df27a87a49768fbd87feafe319a70976add2e",
+      "source": "default"
+    },
+    "assisted_combat\\warrior_fury.simc": {
+      "sha256": "d52bf0eb995c1ac02b9e0c067b2d6160233cc103b88791395751e8650a8450f2",
+      "source": "assisted_combat"
+    },
+    "default\\warrior_fury.simc": {
+      "sha256": "da027d104582353e63f76caebdb275aaf34965aa816676215868d706be44293f",
+      "source": "default"
+    },
+    "assisted_combat\\warrior_protection.simc": {
+      "sha256": "a69ceaff6248bac2572cefdd8260db2fa50c9469227fc8cf7c7d5cc151958665",
+      "source": "assisted_combat"
+    },
+    "default\\warrior_protection.simc": {
+      "sha256": "c5ea80265b605b5d4e139bb8913d68a744971c445cecc8a4c4dbf2ca6f004dc8",
+      "source": "default"
+    }
+  }
+}

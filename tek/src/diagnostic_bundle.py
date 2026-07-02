@@ -100,6 +100,16 @@ def _summary_markdown(snapshot: dict[str, Any], mapping: dict[str, Any] | None, 
     if not findings:
         findings.append("未发现可自动归因的硬阻断；请附带 trace 与验收清单复核。")
     mapping_note = "已包含脱敏映射快照。" if mapping else "未包含映射快照（未配置或未找到 SavedVariables）。"
+    auto_burst_note = None
+    if mapping and isinstance(mapping.get("autoBurst"), dict):
+        auto = mapping["autoBurst"]
+        rule = auto.get("resolvedRule") if isinstance(auto.get("resolvedRule"), dict) else {}
+        decision = auto.get("lastDecision") if isinstance(auto.get("lastDecision"), dict) else {}
+        auto_burst_note = (
+            "自动爆发：启用=" + str(auto.get("enabled") is True)
+            + "；规则=" + str(rule.get("windowSpellID") or "-") + "→" + str(rule.get("injectionSpellID") or "-")
+            + "；最近=" + str(decision.get("reason") or auto.get("ruleReason") or "无")
+        )
     return "\n".join([
         "# Tactic Echo 诊断摘要",
         "",
@@ -109,6 +119,7 @@ def _summary_markdown(snapshot: dict[str, Any], mapping: dict[str, Any] | None, 
         f"- 最近原因：`{reason}`",
         f"- WoW 前台：`{foreground}`",
         f"- 映射：{mapping_note}",
+        *( [f"- {auto_burst_note}"] if auto_burst_note else [] ),
         "",
         "## 自动结论",
         *[f"- {item}" for item in findings],

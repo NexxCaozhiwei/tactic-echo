@@ -132,6 +132,106 @@ local function copyBindingInfo(bindingInfo)
     }
 end
 
+local function copyAutoBurstDiagnostics()
+    if not (TE.AutoBurst and type(TE.AutoBurst.GetDiagnostics) == "function") then
+        return { available = false, reason = "autoburst_unavailable" }
+    end
+    local ok, data = pcall(TE.AutoBurst.GetDiagnostics, TE.AutoBurst)
+    if not ok or type(data) ~= "table" then
+        return { available = false, reason = "autoburst_diagnostics_failed" }
+    end
+    local rule = type(data.resolvedRule) == "table" and data.resolvedRule or {}
+    local plan = type(data.plan) == "table" and data.plan or {}
+    local decision = type(data.lastDecision) == "table" and data.lastDecision or {}
+    local fault = type(data.lastFault) == "table" and data.lastFault or {}
+    local step = type(data.lastStepObservation) == "table" and data.lastStepObservation or {}
+    return {
+        available = true,
+        build = data.build,
+        enabled = data.enabled == true,
+        direction = data.direction,
+        mode = data.mode,
+        manualWindowSpellID = asNumber(data.manualWindowSpellID),
+        manualInjectionSpellID = asNumber(data.manualInjectionSpellID),
+        useProfileFallback = data.useProfileFallback == true,
+        ruleReason = data.ruleReason,
+        resolvedRule = {
+            id = rule.id,
+            source = rule.source,
+            profileKey = rule.profileKey,
+            windowSpellID = asNumber(rule.windowSpellID),
+            injectionSpellID = asNumber(rule.injectionSpellID),
+        },
+        plan = {
+            active = plan.active == true,
+            planId = asNumber(plan.planId),
+            ruleId = plan.ruleId,
+            state = plan.state,
+            currentStep = asNumber(plan.currentStep),
+            currentRole = plan.currentRole,
+            currentSpellID = asNumber(plan.currentSpellID),
+            pauseReason = plan.pauseReason,
+            requireWindowDeparture = plan.requireWindowDeparture == true,
+            preInjectionRequired = plan.preInjectionRequired == true,
+            preInjectionSkipAllowed = plan.preInjectionSkipAllowed == true,
+            waitingForConfirmation = plan.waitingForConfirmation == true,
+            pendingConfirmationSpellID = asNumber(plan.pendingConfirmationSpellID),
+            confirmationEventSpellID = asNumber(plan.confirmationEventSpellID),
+            initialInjectionPhase = plan.initialInjectionPhase,
+            initialInjectionReason = plan.initialInjectionReason,
+            initialWindowPhase = plan.initialWindowPhase,
+            initialWindowReason = plan.initialWindowReason,
+            candidateOfferCount = asNumber(plan.candidateOfferCount),
+        },
+        lastDecision = {
+            phase = decision.phase,
+            reason = decision.reason,
+            officialSpellID = asNumber(decision.officialSpellID),
+            windowSpellID = asNumber(decision.windowSpellID),
+            injectionSpellID = asNumber(decision.injectionSpellID),
+            ruleSource = decision.ruleSource,
+            state = decision.state,
+        },
+        lastStepObservation = {
+            stage = step.stage,
+            role = step.role,
+            spellID = asNumber(step.spellID),
+            phase = step.phase,
+            reason = step.reason,
+            bindingStatus = step.bindingStatus,
+            bindingReason = step.bindingReason,
+            bindingToken = asNumber(step.bindingToken),
+            binding = step.binding,
+            matchedSpellID = asNumber(step.matchedSpellID),
+            cooldownKnown = step.cooldownKnown == true,
+            cooldownActive = step.cooldownActive == true,
+            cooldownOnGCD = step.cooldownOnGCD == true,
+            cooldownPublicActiveKnown = step.cooldownPublicActiveKnown == true,
+            cooldownPublicActive = step.cooldownPublicActive,
+            cooldownPublicOnGCDKnown = step.cooldownPublicOnGCDKnown == true,
+            cooldownPublicOnGCD = step.cooldownPublicOnGCD,
+            cooldownGcdAlias = step.cooldownGcdAlias == true,
+            cooldownLiveRead = step.cooldownLiveRead == true,
+            cooldownSource = step.cooldownSource,
+            chargeCount = asNumber(step.chargeCount),
+            chargeMaximum = asNumber(step.chargeMaximum),
+        },
+        lastCandidate = {
+            spellID = asNumber(type(data.lastCandidate) == "table" and data.lastCandidate.spellID),
+            role = type(data.lastCandidate) == "table" and data.lastCandidate.role or nil,
+            bindingToken = asNumber(type(data.lastCandidate) == "table" and data.lastCandidate.bindingToken),
+            dispatchAttempt = asNumber(type(data.lastCandidate) == "table" and data.lastCandidate.dispatchAttempt),
+            offerCount = asNumber(type(data.lastCandidate) == "table" and data.lastCandidate.offerCount),
+        },
+        lastSpellcastSuccess = {
+            spellID = asNumber(type(data.lastSpellcastSuccess) == "table" and data.lastSpellcastSuccess.spellID),
+        },
+        lastFault = {
+            reason = fault.reason,
+        },
+    }
+end
+
 local function copyCastLockTransitions()
     local source = TE.SignalFrame and type(TE.SignalFrame.GetCastLockDiagnostics) == "function"
         and TE.SignalFrame:GetCastLockDiagnostics() or {}
@@ -194,7 +294,13 @@ local function copyLastMessage()
         sequence = asNumber(message.sequence),
         frameFreshnessCounter = asNumber(message.frameFreshnessCounter),
         spellID = asNumber(message.spellID),
+        officialSpellID = asNumber(message.officialSpellID),
+        dispatchSpellID = asNumber(message.dispatchSpellID),
+        dispatchOrigin = message.dispatchOrigin,
+        observationOnly = message.observationOnly == true,
+        observationReason = message.observationReason,
         binding = message.binding,
+        officialBinding = type(message.officialBindingInfo) == "table" and message.officialBindingInfo.binding or nil,
         bindingToken = asNumber(message.bindingToken),
         bindingReason = message.bindingReason,
         unresolvedReason = message.unresolvedReason,
@@ -253,6 +359,7 @@ function MappingExport:Capture(reason)
         lastSignal = copyLastMessage(),
         movementBindings = copyMovementBindings(),
         castLockTransitions = copyCastLockTransitions(),
+        autoBurst = copyAutoBurstDiagnostics(),
     }
 
     local store = ensureStore()

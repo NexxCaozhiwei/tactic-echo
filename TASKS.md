@@ -1,39 +1,40 @@
 # Tactic Echo Tasks
 
-Current version: `0.9.51`
+当前版本：`1.0.07`
 
-## Active Scope
+## 当前范围
 
-- Keep the 0.9.0 maintenance baseline intact.
-- Preserve the v3 dispatch path: official primary recommendation -> visible default action-bar binding -> BindingToken -> TEAP -> TEK gates -> SendInput.
-- Do not change macro behavior in this pass.
-- Keep tactical HUD, burst, defense, interrupt/control and cooldown work presentation-only.
+- 保持常规主派发：官方推荐 → 默认动作条 → BindingToken → TEAP → TEK → SendInput。
+- AutoBurst Phase 1 已接入：单窗口 + 单注入，前置/后置、简易/集中，默认关闭。
+- 当前不接入饰品、药水、第二注入技能、多规则竞争、组合宏或 `/castsequence`。
 
-## Current Validation Queue
+## 首轮实机验证
 
-- Sync `addon/!TacticEcho` into the WoW AddOns directory before live AddOn checks.
-- Verify WoW Retail loads without Lua errors after `/reload`.
-- Verify TEAP v3 signal remains visible in `waiting`, `paused`, `armed`, `manual_hold`, `channeling` and `empowering`.
-- Verify TEK auto-location in windowed, borderless/fullscreen, moved window and changed DPI/resolution cases.
-- Verify TEK real SendInput only after foreground, hook, freshness, BindingToken and rate-limit gates pass.
-- Verify the ProtocolMonitor secret-boolean hotfix against target casts that previously produced protected-value errors.
+1. 将 `addon/!TacticEcho` 同步至 WoW AddOns 目录并 `/reload`，确认无 Lua 错误。
+2. 为当前专精确认 Burst Profile 的窗口与注入技能均已放入可见默认动作条，并使用支持的键位。
+3. 控制面板依次测试前置简易、前置集中、后置简易、后置集中。
+4. 先实测前置简易：窗口=处决宣判、注入=复仇之怒；确认 GCD 等待期间 TEK Trace 是 `dispatch_origin=burst + observation_only=true + state=armed`，随后出现带非零 BindingToken 的 Burst 候选。
+5. 查验 AddOn `TacticEchoDB.autoBurst.events`、TEK Trace 的 `dispatch_origin=burst`、TEK status 的 `last_dispatch_origin`。
+6. 检查窗口进入边沿、GCD 预输入、CD/充能确认、窗口单次重试、注入不重试、脱战清空与手动接管/失焦 fail-closed。
+7. 检查不同急速、网络、窗口模式、DPI、多显示器和真实 Windows SendInput。
 
-## Known Open Items
+## 已知限制
 
-- Complex healing macros are still conservative: conditional mouseover/target/fallback macro bodies are not parsed as dispatch associations unless Blizzard APIs report the current macro spell.
-- Custom action-bar addons are diagnostic-only; only Blizzard default visible action buttons are supported.
-- Windows GUI/tray/hook/SendInput behavior must be treated as live-machine validation unless the user provides test evidence.
-- This workspace was not a git repository before the current cleanup, so remote configuration must be confirmed before pushing.
+- 成功确认不使用 Buff；没有可用 CD/充能确认信号的技能不得加入 Phase 1。
+- TEAP 没有 TEK → AddOn 回执，AddOn 只能通过 CD/充能或超时判断步骤结果。
+- 复杂宏与自定义动作条插件不属于 Phase 1 自动爆发来源。
 
-## Next Engineering Candidates
+## 后续候选
 
-- Add clearer in-game diagnostics for "visible default action button missing" versus "custom action-bar addon ownership".
-- Expand specialization-aware defensive profiles beyond Paladin using live-client verification.
-- Keep documenting live test evidence in `HANDOFF.md` or `CHANGELOG.md` instead of adding duplicate "current version" blocks to README/TASKS.
+- 实机稳定后再设计饰品、药水与互斥组。
+- 在确认策略不需要 Buff 后，才考虑多注入或多规则优先级。
+- 依据实机 Trace 校准候选保持窗口、确认期限和 GCDGate 的队列窗口边界。
 
-## Completed Current Checks
+## 1.0.07 本轮重点复测
 
-- Baseline contract passes for the current tree.
-- Python unit and pytest suites pass.
-- Python compile check for TEK source passes.
-- Lua syntax check should be run whenever `luac` or `texluac` is available.
+1. 前置简易规则：窗口 `343527`（处决宣判，键 `1`），注入 `31884`（复仇之怒，键 `4`）。官方推荐进入 `1` 后，先检查 `/temapping` 中 `plan.preInjectionSkipAllowed`：只有明确自身 CD 才能为 `true`。
+2. 当 `4` 可用时，TEK Trace 必须先出现 `dispatch_origin=burst + binding=4`；在 `4` 成功回执前不得出现官方来源的 `binding=1`。
+3. 当 `4` 的 CD/GCD 来源未知时，应看到 `step_revalidate_started / step_revalidate_wait` 与 Burst observation 帧；超时后只观察到窗口离开，`1` 不得绕过。
+4. `4` 成功后，诊断应出现 `step_spellcast_succeeded` 或专属 CD/充能确认；随后 `1` 在下一合法队列窗口只派发一次。
+5. `/temapping autoburst_107` 后检查 `lastCandidate`、`candidateOfferCount`、`lastSpellcastSuccess`、`lastStepObservation`、`plan` 和 `lastDecision`。
+6. 测试结束执行 `/reload` 或完全退出游戏，上传新的 TEK 诊断包及 `TacticEcho.lua`。

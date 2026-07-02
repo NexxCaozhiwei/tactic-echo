@@ -49,6 +49,7 @@ def _snapshot_signature(snapshot: TEKStatusSnapshot) -> tuple:
         snapshot.error_message,
         snapshot.worker_alive,
         snapshot.last_protocol_version,
+        snapshot.last_dispatch_origin,
         snapshot.last_in_combat,
         snapshot.monitor_flags,
     )

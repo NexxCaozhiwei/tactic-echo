@@ -45,6 +45,7 @@ def trace_record_to_snapshot(
         last_reason=record.reason,
         last_action_code=record.action_code,
         last_action_id=record.action_id,
+        last_dispatch_origin=record.dispatch_origin,
         last_binding=record.binding,
         last_gate_passed=record.gatePassed,
         last_input_sent=record.inputSent,

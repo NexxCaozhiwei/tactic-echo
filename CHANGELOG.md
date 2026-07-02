@@ -1,3 +1,67 @@
+## 1.0.07 — 前置未知状态、候选持续与施法成功回执
+
+- **未知不跳过**：前置简易仅允许在窗口推荐边沿已明确识别注入技能自身 `COOLDOWN` 时跳过。受保护冷却、共享 GCD 来源不明、`active=true` 但 `isOnGCD` 缺失等一律为 `UNKNOWN`，进入有界重采样。
+- **严格窗口所有权**：所有已创建的 Burst 计划在未知重采样、确认失败、超时、绑定失效或规则变化后都保持窗口离开锁；窗口技能不得回落到 ordinary official 派发链。
+- **候选持续**：候选从首次发送起保持同一 TEAP sequence，直到成功确认、明确失效或有界超时；TEK 按稳定 Burst sequence 只尝试一次物理输入。
+- **成功回执**：接入 `UNIT_SPELLCAST_SUCCEEDED`，仅确认当前已经 `WAIT_CONFIRM` 且 SpellID 精确匹配的步骤；不使用 Buff，不改变触发时机。
+- **诊断**：新增初始窗口阶段、候选发布次数、最后 Burst 候选与最近成功施法事件摘要。
+- **回归**：更新 AutoBurst 静态合同，覆盖未知不跳过、`active=true` 来源未知、候选持续、事件确认与终态窗口锁。
+
+## 1.0.05
+
+
+## 1.0.06 — 前置注入严格序列与实时冷却修复
+
+- 修复 AutoBurst 前置计划在注入未确认时，错误回落到官方窗口技能派发链的问题。
+- AutoBurst 步骤冷却与 GCD 采样改为实时读取，避免 HUD 事件缓存将共享 GCD 误判为注入技能自身冷却。
+- 前置注入一旦在窗口边沿确认自身可用，即获得窗口所有权；候选失败、确认超时或采样抖动不允许 `window` 绕过 `injection`。
+- 增加导出诊断字段：实时冷却读取标记、冷却来源、前置注入所有权和初始注入阶段。
+
+- **前置注入 GCD 误判修复**：部分 Retail 冷却响应在公共冷却期间未可靠标记 `isOnGCD`，会让已就绪的 `复仇之怒（31884）` 被误判为自身 CD 并在前置简易模式中跳过。`IconState` 现仅在技能冷却与全局 GCD 的开始/持续/剩余时间严格对齐时，将其归类为共享 GCD；AutoBurst 随后等待 `QUEUE_WINDOW`，不会跳过该步骤。
+- **窗口 HUD 绑定修复**：Burst 观察帧仍保持真实 `BindingToken=0`，但额外携带只读的官方展示绑定。窗口锁、GCD 等待或确认等待期间，HUD 会继续显示 `处决宣判（343527）` 的动作条键位，而不会误报“未绑定”。
+- **窗口离开锁精化**：窗口步骤已被候选派发或确认后，若官方推荐短暂仍显示旧窗口技能，AutoBurst 发送 `armed + observationOnly` 帧等待推荐离开，防止重复发送 `1`；若窗口步骤从未派发，计划中止后立即归还普通官方派发。
+- **自动爆发战斗边沿修复**：进入战斗的 `PLAYER_REGEN_DISABLED` 会创建新的 combat epoch，清除上一战斗残留的窗口边沿和离开锁；进入战斗时已显示的窗口技能可以作为本次战斗的首次健康触发边沿。
+- **诊断**：`/temapping` 增加最近步骤的绑定、阶段、CD/GCD 对齐与计划终态原因，用于区分“真实 CD”“仅 GCD 锁定”“绑定缺失”和“窗口离开锁观察”。
+- **回归**：新增/更新 AutoBurst 静态合同，覆盖 combat epoch、共享 GCD 对齐、窗口锁观察与 HUD 官方展示绑定。
+
+# 变更日志
+
+## 1.0.04
+
+- **根因修复**：实机 Trace 已证明 AutoBurst 在 `GCD_LOCKED`、确认等待或窗口离开锁期间，把内部 `hold` 编码为 `state=paused + BindingToken=0`。TEK 正确拒绝该帧，但 AddOn 又把这个“暂停”反馈给 AutoBurst，造成计划永久自锁。
+- **新的 hold 合同**：内部等待改为 `state=armed + observationOnly=true + dispatchOrigin=burst + BindingToken=0`。TEK 只观察、不验证空 Token、不发送输入；AddOn 继续保持真实运行状态，并能在 `QUEUE_WINDOW` 或确认状态变化后推进下一步。
+- **控制语义修复**：窗口离开锁移动到“自动爆发启用 / 自动运行 / 真实运行门禁”之后，启动、暂停和关闭不再被旧 Burst 锁掩盖。
+- **集中模式修复**：集中模式的必需步骤未就绪时，只拒绝 Burst 接管，不再伪造 hold 去压制官方推荐。
+- **回归**：新增 Armed Observation Burst Hold 测试，确认内部等待不会派发、不会被 TEK 记录成 `Paused`，同时保留原 Burst 候选去重测试。
+
+## 1.0.03
+
+- 修复自动爆发 Phase 1 的测试规则可观测性：新增显式“官方窗口 SpellID + 注入 SpellID”规则，避免将 HUD 爆发列表首项错误假定为暴雪官方推荐锚点。
+- 新增 `/teab status|on|off|clear|set <窗口ID> <注入ID>`；状态输出构建号、实际解析规则、最近拒绝原因和计划状态。
+- AutoBurst 记录 `official_not_window`、`window_edge_missing`、规则缺失与求值错误，映射导出和 TEK 诊断包会携带安全摘要。
+- SignalFrame 不再静默吞掉 AutoBurst 评估异常。
+- 新增 1.0.03 实机安装与诊断说明，修正旧 `!WR.lua` 与 `TacticEcho.lua` SavedVariables 混淆。
+
+# Tactic Echo 1.0.02 — 自动爆发 Phase 1 双技能注入状态机
+
+- 实装 `Tactics/AutoBurst.lua`：单一人工声明窗口技能 + 注入技能，支持前置/后置与简易/集中四种组合；默认关闭。
+- 新增 `Tactics/GCDGate.lua`：将底层 GCD 时序收敛为 `READY_NOW / QUEUE_WINDOW / GCD_LOCKED / UNKNOWN`，自动爆发状态机不读取原始剩余毫秒。
+- 新增 `IconState:CollectCooldownOnly()`：AutoBurst 只读取技能自身冷却、充能和共享 GCD 快照，不调用资源、目标、距离、Proc 或 Aura 读取。
+- 窗口触发改为官方推荐边沿；计划完成、拒绝或中止后必须等待推荐离开窗口、再次进入才允许重建。
+- Phase 1 成功确认仅接受技能自身非 GCD 冷却开始或充能减少；窗口技能最多受控重试一次，注入技能不重试。
+- TEAP v3 保持 20 字节；flags bit 5 现标记 `dispatchOrigin=burst`。AddOn 保存 `officialSpellID / dispatchSpellID / dispatchOrigin / burstPlan` 的简化审计元数据。
+- 为处理 AddOn 与 TEK 采样相位，候选可短暂保持同一 action sequence；TEK 新增 burst sequence 去重，同一逻辑步骤最多尝试一次物理输入。
+- TEK Trace 与 runtime status 新增派发来源字段；status schema 升级到 5，兼容读取 schema 1–4。
+- 新增协议、去重和 AddOn 静态合同回归；本地全量 pytest 已通过。Windows/WoW 实机仍待验证。
+
+# Tactic Echo 1.0.01 — 受控自动爆发接管合同与基线升级
+
+- 将当前可开发源码状态正式定位为 `1.0.01`；根目录 `VERSION`、插件 TOC、`Core/Bootstrap.lua` 与版本合同测试同步更新。
+- 新增受控自动爆发接管合同：仅人工白名单、双开关启用、官方推荐与 TEAP 健康前提、单步单键、每步确认、异常立即清空队列。
+- 明确爆发策略可以在满足合同的爆发窗口内临时覆盖官方主推荐，但不得绕过默认动作条绑定、BindingToken、TEAP、TEK、手动接管、前台、协议、限频或其他安全门禁。
+- 明确支持已存在且已扫描确认的普通按键、修饰键、`/use 13`、`/use 14`、种族/职业爆发及组合爆发宏入口；TE 不创建、修改、拆分或解释复杂宏。
+- 本版本仅更新开发边界、中文 README、版本标识与验证合同；自动爆发策略的实际实现留待后续功能迭代。
+
 # Tactic Echo 0.9.51 — P5.6.1 冷却事件注册热修
 
 - **修复启动阻断**：移除 `CooldownResolver.lua` 对不存在的 `ITEM_COOLDOWN_CHANGED` 事件的订阅；该事件会使当前客户端在加载阶段报错并中止 AddOn 初始化。
@@ -169,4 +233,3 @@
 - Fixed `ProtocolMonitor` comparing the `notInterruptible` value returned by `UnitCastingInfo` / `UnitChannelInfo` directly. On current Retail clients this value can be secret, causing a taint error during the monitor poll.
 - Target cast name, spell ID and interruptibility now pass through secret-safe scalar probes. Any protected value becomes unknown; tactical telemetry remains advisory-only and does not alter recommendation, TEAP or TEK input eligibility.
 - Added a regression contract that rejects direct raw comparison of `notInterruptible`.
-

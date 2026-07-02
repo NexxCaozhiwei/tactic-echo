@@ -20,6 +20,7 @@ logs/
 *.tmp
 *.bak
 *.local
+tools/simc_window_inject/_cache/
 
 # Tactic Echo / WoW local state
 WTF/
