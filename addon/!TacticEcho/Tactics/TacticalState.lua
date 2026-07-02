@@ -65,7 +65,9 @@ local function snapshotFrom(message, encoded)
     -- Observation-only burst frames have no dispatch BindingToken by design.
     -- Their HUD card should nevertheless retain the official action-bar label
     -- and never be styled as “无绑定”.
-    local binding = message.bindingInfo or message.officialBindingInfo or {}
+    local officialBinding = message.officialBindingInfo or {}
+    local binding = message.observationOnly == true and officialBinding or (message.bindingInfo or officialBinding)
+    if type(binding) ~= "table" then binding = {} end
     local state = message.state or "waiting"
     local reason = message.unresolvedReason or message.bindingReason
     local dispatchSpellID = tonumber(message.dispatchSpellID or message.spellID)
@@ -109,11 +111,13 @@ local function snapshotFrom(message, encoded)
         inCombat = message.inCombat == true,
         -- `rawBinding` is presentation metadata only.  Unsupported dispatch
         -- modifiers still keep BindingToken=0 and dispatchAllowed=false.
-        binding = message.binding or binding.rawBinding,
+        binding = message.binding or binding.binding or binding.rawBinding,
         rawBinding = binding.rawBinding,
         -- Keep this as the transport token (zero for observation frames), not
         -- the display-only official binding token.
         bindingToken = tonumber(message.bindingToken) or 0,
+        displayBindingToken = tonumber(binding.bindingToken) or nil,
+        dispatchBindingToken = tonumber(message.bindingToken) or 0,
         bindingStatus = binding.status,
         bindingSource = binding.source,
         bindingButton = binding.buttonName,
@@ -219,6 +223,7 @@ end
 
 local function publishSignature(message)
     local binding = message and message.bindingInfo or {}
+    local officialBinding = message and message.officialBindingInfo or {}
     return table.concat({
         tostring(message and message.state or "waiting"),
         tostring(message and message.intentState or "waiting"),
@@ -229,6 +234,7 @@ local function publishSignature(message)
         tostring(message and message.dispatchOrigin or "official"),
         tostring(message and message.inCombat == true),
         tostring(message and message.bindingToken or 0),
+        tostring(message and message.observationOnly == true and (officialBinding.binding or officialBinding.rawBinding) or ""),
         tostring(message and message.bindingReason or ""),
         tostring(binding and binding.source or ""),
         tostring(message and message.sessionPolicy or ""),

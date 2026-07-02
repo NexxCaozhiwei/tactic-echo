@@ -1,6 +1,6 @@
 # Tactic Echo Tasks
 
-当前版本：`1.0.07`
+当前版本：`1.0.08`
 
 ## 当前范围
 
@@ -30,11 +30,13 @@
 - 在确认策略不需要 Buff 后，才考虑多注入或多规则优先级。
 - 依据实机 Trace 校准候选保持窗口、确认期限和 GCDGate 的队列窗口边界。
 
-## 1.0.07 本轮重点复测
+## 1.0.08 本轮重点复测
 
 1. 前置简易规则：窗口 `343527`（处决宣判，键 `1`），注入 `31884`（复仇之怒，键 `4`）。官方推荐进入 `1` 后，先检查 `/temapping` 中 `plan.preInjectionSkipAllowed`：只有明确自身 CD 才能为 `true`。
 2. 当 `4` 可用时，TEK Trace 必须先出现 `dispatch_origin=burst + binding=4`；在 `4` 成功回执前不得出现官方来源的 `binding=1`。
 3. 当 `4` 的 CD/GCD 来源未知时，应看到 `step_revalidate_started / step_revalidate_wait` 与 Burst observation 帧；超时后只观察到窗口离开，`1` 不得绕过。
 4. `4` 成功后，诊断应出现 `step_spellcast_succeeded` 或专属 CD/充能确认；随后 `1` 在下一合法队列窗口只派发一次。
-5. `/temapping autoburst_107` 后检查 `lastCandidate`、`candidateOfferCount`、`lastSpellcastSuccess`、`lastStepObservation`、`plan` 和 `lastDecision`。
-6. 测试结束执行 `/reload` 或完全退出游戏，上传新的 TEK 诊断包及 `TacticEcho.lua`。
+5. 暂停后再启动时，如果首个健康帧已经显示 `1` 且该窗口 generation 未消费，应仍先出现 Burst `binding=4`。
+6. 完成、中止或超时后，官方仍显示 `1` 时只能 observation-only；HUD 显示官方键位 `1`，TEAP `BindingToken=0`。
+7. `/temapping autoburst_108` 后检查 `armedEpoch`、`firstHealthyFramePending`、`windowGeneration`、`consumedWindowGeneration`、`departureLockGeneration`、`lastCandidate`、`candidateOfferCount`、`lastConfirmationSource`、`lastAbortReason`、`lastWindowRejectReason`。
+8. 测试结束执行 `/reload` 或完全退出游戏，上传新的 TEK 诊断包及 `TacticEcho.lua`。

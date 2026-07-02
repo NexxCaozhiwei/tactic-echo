@@ -299,7 +299,7 @@ local function textStyleMarker(style)
     return table.concat({
         styleMarker(style.enabled), styleMarker(style.fontSize), styleMarker(style.scale),
         styleMarker(style.point), styleMarker(style.offsetX), styleMarker(style.offsetY),
-        styleMarker(style.fontPreset), styleMarker(color.r or color[1]), styleMarker(color.g or color[2]),
+        styleMarker(style.fontPreset), styleMarker(style.mode), styleMarker(color.r or color[1]), styleMarker(color.g or color[2]),
         styleMarker(color.b or color[3]), styleMarker(color.a or color[4]),
     }, ":")
 end
@@ -497,6 +497,11 @@ local function showDurationObjectCooldown(frame, item, enabled, ignoreGCD, showN
     return true, renderMode or "duration_object", nativeNumbersVisible == true
 end
 
+local function cooldownTextMode(style)
+    style = type(style) == "table" and style or {}
+    return ({ auto = true, custom = true, duration = true })[style.mode] and style.mode or "auto"
+end
+
 local function cooldownPresentationSignature(item, spellStyle, gcdStyle, cooldownTextStyle)
     item = item or {}
     return table.concat({
@@ -527,6 +532,8 @@ local function updateCooldown(card, item, spellStyle, gcdStyle)
     local gcdKnown, gcdStart, gcdDuration = cooldownData(item, "gcd")
     local actionSlot = safeNumber(item and (item.actionSlot or item.slot))
     local preferNativeActionbar = actionSlot ~= nil and item and item.directActionSlot == true
+    local textMode = cooldownTextMode(card.resolvedCooldownStyle)
+    local nativeNumbersRequested = textMode ~= "custom"
 
     -- Direct action-bar cards use Blizzard's own DurationObject as the first
     -- authority.  This avoids a local spell estimate or base/override SpellID
@@ -542,7 +549,7 @@ local function updateCooldown(card, item, spellStyle, gcdStyle)
             item,
             spellEnabled,
             true,
-            true
+            nativeNumbersRequested
         )
         -- A direct action-bar DurationObject is exact and always wins. Only
         -- when that renderer is genuinely unavailable/failed (not when it
@@ -562,7 +569,7 @@ local function updateCooldown(card, item, spellStyle, gcdStyle)
             item,
             spellEnabled,
             true,
-            true
+            nativeNumbersRequested
         )
         if nativeSpell ~= true and spellKnown == true and spellMode ~= "ready" then
             spellShown = showCooldown(card.cooldown, spellStart, spellDuration, spellEnabled and not globalOnly)
@@ -1110,11 +1117,13 @@ function TacticalIconButton:RefreshDynamic(card, item)
     local cooldownKnown, gcdShown, globalOnly, nativeCooldownRendered, nativeCountdownVisible = updateCooldown(card, item, card.resolvedSwipeStyle, card.resolvedGcdSwipeStyle)
     card.nativeCooldownRendered = nativeCooldownRendered == true
     card.nativeCountdownVisible = nativeCountdownVisible == true
+    local cooldownMode = cooldownTextMode(card.resolvedCooldownStyle)
 
     -- CD text no longer multiplexes state labels. It remains central and is
     -- shown whenever a reliable own-CD/charge value exists, even if the card is
     -- also paused, casting, unbound or blocked.
-    if not card.resolvedCooldownStyle or card.resolvedCooldownStyle.enabled == false or card.nativeCountdownVisible == true then
+    if not card.resolvedCooldownStyle or card.resolvedCooldownStyle.enabled == false
+        or card.nativeCountdownVisible == true or cooldownMode == "duration" then
         -- Direct action-bar DurationObjects render Blizzard's own countdown
         -- digits. Keeping the custom badge empty prevents a second, potentially
         -- different number from being drawn over the authoritative timer.

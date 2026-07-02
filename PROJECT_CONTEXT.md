@@ -1,8 +1,8 @@
 # Project Context
 
-Current version: `1.0.07`
+Current version: `1.0.08`
 
-Tactic Echo is a World of Warcraft AddOn plus the Windows TEK companion. The current development baseline is `1.0.07`; its source state derives from `0.9.51`.
+Tactic Echo is a World of Warcraft AddOn plus the Windows TEK companion. The current development baseline is `1.0.08`; its source state derives from `0.9.51`.
 
 Use these current entry points first:
 
@@ -27,4 +27,8 @@ Macro behavior is intentionally unchanged in the current cleanup: complex condit
 
 ## 1.0.07 AutoBurst Field Corrections
 
-The active baseline distinguishes explicit own cooldown from protected/ambiguous state, keeps strict front-plan window ownership through unknown/revalidation and timeout, persists one Burst candidate through confirmation, and uses `UNIT_SPELLCAST_SUCCEEDED` only as an already-dispatched-step receipt. See `BASELINE_1.0.07.md` and `docs/AUTOBURST_PHASE1.md` for the exact contract.
+The previous baseline distinguished explicit own cooldown from protected/ambiguous state, kept strict front-plan window ownership through unknown/revalidation and timeout, persisted one Burst candidate through confirmation, and used `UNIT_SPELLCAST_SUCCEEDED` only as an already-dispatched-step receipt. See `BASELINE_1.0.07.md` and `docs/AUTOBURST_PHASE1.md` for that contract.
+
+## 1.0.08 AutoBurst Generation Corrections
+
+The active baseline adds armed/window generation ownership so the first healthy frame after `paused -> armed` can start the explicit `31884 -> 343527` pre/simple plan even when the official window icon was already visible. Completed or aborted generations remain consumed until official recommendation departs. See `BASELINE_1.0.08.md` for the current field-test contract.

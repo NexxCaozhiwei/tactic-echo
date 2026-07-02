@@ -1,11 +1,11 @@
 # Tactic Echo
 
 更新时间：2026-07-02  
-当前版本：`1.0.07`
+当前版本：`1.0.08`
 
 Tactic Echo 由《魔兽世界》AddOn 与 Windows 端 TEK 组成。AddOn 读取官方辅助战斗推荐，解析当前可见 Blizzard 默认动作条上的现实按键；TEK 只在前台、协议、Hook、手动接管、限频等门禁均通过时，才执行一次 Windows 输入。
 
-`1.0.07` 按实测问答重写前置注入的未知状态与确认链：只有窗口边沿明确证明注入技能自身 CD 时才允许跳过；受保护冷却、共享 GCD 来源不明或其他 `UNKNOWN` 均会限时重采样并锁住窗口。Burst 候选持续发布至确认、明确失效或超时，且 `UNIT_SPELLCAST_SUCCEEDED` 仅作为当前已派发步骤的成功回执。最小双技能自动爆发仍默认关闭，且需要 WoW + Windows 实机验收。
+`1.0.08` 修复前置简易自动爆发在多轮循环中偶发未建立计划的问题：触发从单纯图标边沿升级为 armed/window generation，`paused -> armed` 后首个健康帧若已显示未消费窗口，也会建立 `4 -> 1` 计划；已消费窗口必须等官方推荐离开后才可重触发。Burst 观察帧继续保持 `BindingToken=0`，但 HUD 会显示只读官方绑定，避免等待期间误报 `1` 未绑定。最小双技能自动爆发仍默认关闭，且需要 WoW + Windows 实机验收。
 
 ## 主派发架构
 
@@ -40,10 +40,10 @@ OfficialRecommendation（保持不变）
 - 控制面板“启用自动爆发”已开启；
 - 玩家在战斗中；
 - 当前专精存在人工声明的窗口技能与注入技能；
-- 官方推荐首次进入窗口技能；
+- 官方推荐进入新的窗口 generation，或 `paused -> armed` 后首个健康帧已显示未消费窗口技能；
 - 两个技能均在当前可见默认动作条上有可用 BindingToken。
 
-同一窗口只会在官方推荐离开后再次进入时重新触发。临时开启自动爆发时，不会插入已持续显示的旧窗口。
+同一窗口 generation 完成、中止或超时后只会观察，直到官方推荐离开窗口并再次进入。临时开启自动爆发时，不会插入已经消费或已锁定的旧窗口。
 
 ### 当前四种组合
 
@@ -100,7 +100,7 @@ python -m compileall -q tek/src tek/app tek/runtime
 
 本包的离线测试只能证明代码路径与协议合同。仍需在真实 WoW/Windows 环境检查：TEAP 采样相位、窗口技能/注入技能 CD 确认、GCD 预输入、Hook、前台识别、手动接管、SendInput、不同急速与窗口模式。
 
-## 自动爆发 1.0.07 实机安装与诊断
+## 自动爆发 1.0.08 实机安装与诊断
 
 自动爆发 Phase 1 的测试规则现支持显式填写“官方窗口 SpellID + 注入 SpellID”。官方窗口技能必须是 Blizzard 官方推荐实际会出现的锚点；请不要默认把 HUD 爆发列表的首项当作该锚点。
 
@@ -113,3 +113,10 @@ python -m compileall -q tek/src tek/app tek/runtime
 - **严格前置所有权**：官方推荐进入窗口后，前置计划一经创建即持有窗口。`4` 未确认成功、候选超时或未知重采样超时，`1` 均不得回落到普通官方链；只能等待官方推荐离开窗口后再次进入。
 - **候选持续与回执**：同一 Burst 候选保持同一 TEAP sequence 直到结果明确；TEK 去重避免重复物理输入。`UNIT_SPELLCAST_SUCCEEDED` 只可确认已经处于 `WAIT_CONFIRM` 的同一技能，不参与触发时机判断。
 - **诊断**：`/temapping` 新增初始窗口状态、候选帧计数、最后候选与最近施法成功摘要，用于直接区分“计划未建立”“候选未进入 TEAP”“TEK 未派发”和“等待确认”。
+
+## 自动爆发 1.0.08 实机复测重点
+
+- 规则：窗口 `343527`（键 `1`），注入 `31884`（键 `4`），`pre simple`。
+- 观察 `/temapping` 中 `armedEpoch`、`windowGeneration`、`consumedWindowGeneration`、`departureLockGeneration`、`lastCandidate`、`lastConfirmationSource`、`lastAbortReason`。
+- 暂停后再启动，如果官方推荐首帧已经是 `1` 且当前 generation 未消费，应先派发 Burst `4`。
+- 完成或中止后，官方仍显示 `1` 时应为 observation-only，不得重发 `1`；HUD 应显示官方键位 `1`，TEAP token 仍为 `0`。

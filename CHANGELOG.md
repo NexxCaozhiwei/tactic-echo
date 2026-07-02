@@ -1,3 +1,13 @@
+## 1.0.08 — 前置注入首帧、窗口 generation 与 HUD 绑定稳定性
+
+- **根因修复**：旧触发只认 `previousOfficial != window` 的图标边沿。实机中暂停/重采样/战斗首帧可能已经持续显示 `343527`，导致第 1/3/4 轮没有建立 `31884 -> 343527` 计划，普通官方 `1` 回落派发。
+- **窗口 generation**：新增 `armedEpoch`、`firstHealthyFramePending`、`windowGeneration`、`consumedWindowGeneration`、`activePlanGeneration`、`departureLockGeneration`。`paused -> armed` 后首个健康帧若仍是未消费窗口，可创建计划；已消费窗口必须等官方推荐离开后才可再触发。
+- **所有权收敛**：所有完成、跳过、UNKNOWN 超时、确认超时和中止路径统一进入窗口离开锁；前置注入未确认时，`1` 不得回落到 official 链路。
+- **诊断增强**：`/temapping` 的 AutoBurst 摘要导出官方/派发 SpellID、展示/派发绑定、计划状态、当前步骤、候选次数、最后候选、最后施法成功、最后确认来源、最后中止原因和最近窗口拒绝原因。
+- **HUD 修复**：Burst hold/WAIT_CONFIRM/GCD 等待/离开锁观察帧保持 `BindingToken=0`，但 HUD 使用只读官方绑定展示 `1`，不再误报未绑定。
+- **冷却数字模式**：`cooldownText.mode = auto | duration | custom`，可明确选择 Blizzard 原生倒计时或 HUD 自绘数字；AutoBurst 仍不读取 HUD 文本或视觉灰度。
+- **行为回归**：新增真实 Lua 行为测试，覆盖严格 `4 -> 1`、暂停后首帧、消费锁、own-CD skip、公共 GCD hold、UNKNOWN timeout、双绑定门、错误施法事件、post/simple unknown skip、观察帧官方绑定展示。
+
 ## 1.0.07 — 前置未知状态、候选持续与施法成功回执
 
 - **未知不跳过**：前置简易仅允许在窗口推荐边沿已明确识别注入技能自身 `COOLDOWN` 时跳过。受保护冷却、共享 GCD 来源不明、`active=true` 但 `isOnGCD` 缺失等一律为 `UNKNOWN`，进入有界重采样。

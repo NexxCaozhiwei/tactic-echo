@@ -145,6 +145,12 @@ local function copyAutoBurstDiagnostics()
     local decision = type(data.lastDecision) == "table" and data.lastDecision or {}
     local fault = type(data.lastFault) == "table" and data.lastFault or {}
     local step = type(data.lastStepObservation) == "table" and data.lastStepObservation or {}
+    local message = TE.SignalFrame and type(TE.SignalFrame.GetLastMessage) == "function"
+        and TE.SignalFrame:GetLastMessage() or nil
+    message = type(message) == "table" and message or {}
+    local officialBindingInfo = type(message.officialBindingInfo) == "table" and message.officialBindingInfo or {}
+    local dispatchBindingInfo = type(message.bindingInfo) == "table" and message.bindingInfo or {}
+    local candidate = type(data.lastCandidate) == "table" and data.lastCandidate or {}
     return {
         available = true,
         build = data.build,
@@ -155,6 +161,38 @@ local function copyAutoBurstDiagnostics()
         manualInjectionSpellID = asNumber(data.manualInjectionSpellID),
         useProfileFallback = data.useProfileFallback == true,
         ruleReason = data.ruleReason,
+        armedEpoch = asNumber(data.armedEpoch),
+        firstHealthyFramePending = data.firstHealthyFramePending == true,
+        windowGeneration = asNumber(data.windowGeneration),
+        consumedWindowGeneration = asNumber(data.consumedWindowGeneration),
+        activePlanGeneration = asNumber(data.activePlanGeneration),
+        departureLockGeneration = asNumber(data.departureLockGeneration),
+        officialSpellID = asNumber(message.officialSpellID or decision.officialSpellID),
+        officialBinding = officialBindingInfo.binding or officialBindingInfo.rawBinding,
+        dispatchSpellID = asNumber(message.dispatchSpellID or candidate.spellID),
+        dispatchBinding = message.binding or dispatchBindingInfo.binding or dispatchBindingInfo.rawBinding or candidate.binding,
+        dispatchOrigin = message.dispatchOrigin or "official",
+        observationOnly = message.observationOnly == true,
+        planState = plan.planState or plan.state,
+        currentStep = asNumber(plan.currentStep),
+        stepState = plan.stepState,
+        stepStatusReason = plan.stepStatusReason or step.reason,
+        lastCandidate = {
+            spellID = asNumber(candidate.spellID),
+            role = candidate.role,
+            bindingToken = asNumber(candidate.bindingToken),
+            binding = candidate.binding,
+            dispatchAttempt = asNumber(candidate.dispatchAttempt),
+            offerCount = asNumber(candidate.offerCount),
+            windowGeneration = asNumber(candidate.windowGeneration),
+        },
+        candidateOfferCount = asNumber(plan.candidateOfferCount),
+        lastSpellcastSuccess = {
+            spellID = asNumber(type(data.lastSpellcastSuccess) == "table" and data.lastSpellcastSuccess.spellID),
+        },
+        lastConfirmationSource = data.lastConfirmationSource,
+        lastAbortReason = data.lastAbortReason,
+        lastWindowRejectReason = data.lastWindowRejectReason,
         resolvedRule = {
             id = rule.id,
             source = rule.source,
@@ -177,6 +215,16 @@ local function copyAutoBurstDiagnostics()
             waitingForConfirmation = plan.waitingForConfirmation == true,
             pendingConfirmationSpellID = asNumber(plan.pendingConfirmationSpellID),
             confirmationEventSpellID = asNumber(plan.confirmationEventSpellID),
+            armedEpoch = asNumber(plan.armedEpoch),
+            firstHealthyFramePending = plan.firstHealthyFramePending == true,
+            windowGeneration = asNumber(plan.windowGeneration),
+            consumedWindowGeneration = asNumber(plan.consumedWindowGeneration),
+            activePlanGeneration = asNumber(plan.activePlanGeneration),
+            departureLockGeneration = asNumber(plan.departureLockGeneration),
+            planWindowGeneration = asNumber(plan.planWindowGeneration),
+            planState = plan.planState,
+            stepState = plan.stepState,
+            stepStatusReason = plan.stepStatusReason,
             initialInjectionPhase = plan.initialInjectionPhase,
             initialInjectionReason = plan.initialInjectionReason,
             initialWindowPhase = plan.initialWindowPhase,
@@ -215,16 +263,6 @@ local function copyAutoBurstDiagnostics()
             cooldownSource = step.cooldownSource,
             chargeCount = asNumber(step.chargeCount),
             chargeMaximum = asNumber(step.chargeMaximum),
-        },
-        lastCandidate = {
-            spellID = asNumber(type(data.lastCandidate) == "table" and data.lastCandidate.spellID),
-            role = type(data.lastCandidate) == "table" and data.lastCandidate.role or nil,
-            bindingToken = asNumber(type(data.lastCandidate) == "table" and data.lastCandidate.bindingToken),
-            dispatchAttempt = asNumber(type(data.lastCandidate) == "table" and data.lastCandidate.dispatchAttempt),
-            offerCount = asNumber(type(data.lastCandidate) == "table" and data.lastCandidate.offerCount),
-        },
-        lastSpellcastSuccess = {
-            spellID = asNumber(type(data.lastSpellcastSuccess) == "table" and data.lastSpellcastSuccess.spellID),
         },
         lastFault = {
             reason = fault.reason,

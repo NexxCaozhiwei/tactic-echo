@@ -18,6 +18,14 @@ local AutoBurst = {
     requireWindowDeparture = false,
     lockedWindowSpellID = nil,
     lastOfficialSpellID = nil,
+    lastIntentState = nil,
+    armedEpoch = 0,
+    firstHealthyFramePending = false,
+    windowGeneration = 0,
+    consumedWindowGeneration = 0,
+    activePlanGeneration = nil,
+    departureLockGeneration = nil,
+    currentWindowSpellID = nil,
     eventPauseUntil = 0,
     eventPauseReason = nil,
     deadPaused = false,
@@ -34,6 +42,9 @@ local AutoBurst = {
     -- Last direct player spell-success event observed while a Phase-1 plan was
     -- active. This scalar audit record never decides whether a plan starts.
     lastSpellcastSuccess = nil,
+    lastConfirmationSource = nil,
+    lastAbortReason = nil,
+    lastWindowRejectReason = nil,
     -- Last logical candidate offered to SignalFrame. It contains no macro body,
     -- raw cooldown value or player-identifying data; it only makes the next
     -- diagnostic bundle show whether Burst ever reached TEAP.
@@ -149,8 +160,19 @@ local function recordDecision(self, phase, reason, fields)
         ruleSource = fields.ruleSource,
         ruleId = self.plan and self.plan.rule and self.plan.rule.id or fields.ruleId,
         state = self.plan and self.plan.state or fields.state,
+        armedEpoch = self.armedEpoch or 0,
+        firstHealthyFramePending = self.firstHealthyFramePending == true,
+        windowGeneration = self.windowGeneration or 0,
+        consumedWindowGeneration = self.consumedWindowGeneration or 0,
+        activePlanGeneration = self.activePlanGeneration,
+        departureLockGeneration = self.departureLockGeneration,
     }
     self.lastDecision = record
+    if phase == "armed" and reason then
+        self.lastWindowRejectReason = tostring(reason)
+    elseif phase == "plan_created" then
+        self.lastWindowRejectReason = nil
+    end
     local signature = table.concat({
         tostring(phase), tostring(reason), tostring(record.planId or 0),
         tostring(record.officialSpellID or 0), tostring(record.windowSpellID or 0),
@@ -349,6 +371,7 @@ local function ownReadyState(iconState)
 end
 
 local sequenceFor
+local rememberStepObservation
 
 local function stepSample(step, cycle)
     local bindingInfo, bindingState, bindingReason = resolveBinding(step.spellID)
@@ -437,7 +460,7 @@ sequenceFor = function(rule)
     }
 end
 
-local function rememberStepObservation(self, plan, step, sample, stage)
+rememberStepObservation = function(self, plan, step, sample, stage)
     sample = type(sample) == "table" and sample or {}
     local binding = type(sample.bindingInfo) == "table" and sample.bindingInfo or {}
     local icon = type(sample.iconState) == "table" and sample.iconState or {}
@@ -481,9 +504,11 @@ local function candidateResult(self, plan, step, sample)
         schema = 1,
         elapsed = offeredAt,
         planId = plan.id,
+        windowGeneration = plan.windowGeneration,
         role = step.role,
         spellID = positiveSpellID(step.spellID),
         bindingToken = sample and sample.bindingInfo and number(sample.bindingInfo.bindingToken) or nil,
+        binding = sample and sample.bindingInfo and (sample.bindingInfo.binding or sample.bindingInfo.rawBinding) or nil,
         dispatchAttempt = plan.wait and plan.wait.dispatchAttempt or 0,
         offerCount = plan.candidateOfferCount,
     }
@@ -494,6 +519,7 @@ local function candidateResult(self, plan, step, sample)
         officialSpellID = plan.officialSpellID,
         bindingInfo = sample.bindingInfo,
         planId = plan.id,
+        windowGeneration = plan.windowGeneration,
         ruleId = plan.rule.id,
         ruleSource = plan.rule.source,
         direction = plan.rule.direction,
@@ -524,6 +550,46 @@ end
 
 local function noneResult()
     return { kind = "none", dispatchOrigin = "official" }
+end
+
+local function lockWindowDeparture(self, plan)
+    if not (self and plan and plan.rule) then return end
+    local generation = number(plan.windowGeneration) or number(self.windowGeneration)
+    self.lockedWindowSpellID = plan.rule.windowSpellID
+    self.requireWindowDeparture = true
+    self.departureLockGeneration = generation
+    if generation then self.consumedWindowGeneration = generation end
+    self.activePlanGeneration = nil
+end
+
+local function observeWindowFrame(self, officialSpellID, rule, previousOfficialSpellID, firstHealthyFramePending)
+    if not officialSpellID or officialSpellID ~= rule.windowSpellID then
+        if self.currentWindowSpellID and officialSpellID ~= self.currentWindowSpellID then
+            self.currentWindowSpellID = nil
+        end
+        return false, "official_not_window"
+    end
+
+    local edgeEntry = previousOfficialSpellID ~= officialSpellID
+    if edgeEntry then
+        self.windowGeneration = (self.windowGeneration or 0) + 1
+        self.currentWindowSpellID = officialSpellID
+        return true, "official_window_edge"
+    end
+
+    if firstHealthyFramePending == true then
+        if self.currentWindowSpellID ~= officialSpellID or (self.windowGeneration or 0) <= 0 then
+            self.windowGeneration = (self.windowGeneration or 0) + 1
+            self.currentWindowSpellID = officialSpellID
+        end
+        local generation = self.windowGeneration or 0
+        if generation ~= (self.consumedWindowGeneration or 0)
+            and generation ~= (self.departureLockGeneration or 0) then
+            return true, "first_healthy_window"
+        end
+    end
+
+    return false, "window_edge_missing"
 end
 
 -- A completed window must not be re-sent while the official recommendation
@@ -582,14 +648,14 @@ local function revalidateUnknownStep(self, plan, step, sample, reason)
 end
 
 function AutoBurst:Abort(reason, hard)
+    self.lastAbortReason = tostring(reason or "unknown")
     if self.plan then
         log(self, hard and "hard_abort" or "plan_aborted", { reason = reason, currentStep = self.plan.stepIndex })
         -- A created Burst plan owns its official window through terminal state.
         -- It must never fail open to the ordinary recommendation after UNKNOWN,
         -- confirmation timeout or a rejected candidate; a new plan requires the
         -- official recommendation to leave the window and re-enter.
-        self.lockedWindowSpellID = self.plan.rule.windowSpellID
-        self.requireWindowDeparture = true
+        lockWindowDeparture(self, self.plan)
     end
     self.plan = nil
 end
@@ -604,7 +670,11 @@ function AutoBurst:BeginCombatEpoch(reason)
     self.plan = nil
     self.requireWindowDeparture = false
     self.lockedWindowSpellID = nil
+    self.departureLockGeneration = nil
+    self.activePlanGeneration = nil
+    self.currentWindowSpellID = nil
     self.lastOfficialSpellID = nil
+    self.firstHealthyFramePending = true
     self.eventPauseUntil = 0
     self.eventPauseReason = nil
     log(self, "combat_epoch_started", {
@@ -659,8 +729,7 @@ local function stepFailure(self, plan, step, reason)
             plan.state = "PENDING"
             if plan.stepIndex > #plan.steps then
                 log(self, "plan_completed", { reason = "post_injection_skipped" })
-                self.lockedWindowSpellID = plan.rule.windowSpellID
-                self.requireWindowDeparture = true
+                lockWindowDeparture(self, plan)
                 self.plan = nil
                 return terminalResult(self, "post_injection_skipped", {
                     windowSpellID = plan.rule.windowSpellID,
@@ -699,8 +768,7 @@ local function skipOptionalInjection(self, plan, reason)
     plan.stepIndex = plan.stepIndex + 1
     if plan.stepIndex > #plan.steps then
         log(self, "plan_completed", { reason = reason })
-        self.lockedWindowSpellID = plan.rule.windowSpellID
-        self.requireWindowDeparture = true
+        lockWindowDeparture(self, plan)
         self.plan = nil
         return terminalResult(self, reason, {
             windowSpellID = plan.rule.windowSpellID,
@@ -714,6 +782,7 @@ end
 
 local function finishStep(self, plan, source)
     local step = plan.steps[plan.stepIndex]
+    self.lastConfirmationSource = source
     plan.completed[#plan.completed + 1] = step.role
     plan.wait = nil
     plan.revalidate = nil
@@ -725,8 +794,7 @@ local function finishStep(self, plan, source)
     log(self, "step_confirmed", { role = step.role, spellID = step.spellID, confirmation = source, currentStep = plan.stepIndex - 1 })
     if plan.stepIndex > #plan.steps then
         log(self, "plan_completed", { reason = "all_steps_confirmed" })
-        self.lockedWindowSpellID = plan.rule.windowSpellID
-        self.requireWindowDeparture = true
+        lockWindowDeparture(self, plan)
         self.plan = nil
         return terminalResult(self, "all_steps_confirmed", {
             windowSpellID = plan.rule.windowSpellID,
@@ -745,6 +813,8 @@ local function createPlan(self, rule, officialSpellID, creation)
         id = self.nextPlanId,
         rule = rule,
         officialSpellID = officialSpellID,
+        windowGeneration = number(creation.windowGeneration) or number(self.windowGeneration) or 0,
+        armedEpoch = self.armedEpoch or 0,
         createdAt = t,
         deadlineAt = t + PLAN_TOTAL_SECONDS,
         steps = sequenceFor(rule),
@@ -771,6 +841,10 @@ local function createPlan(self, rule, officialSpellID, creation)
     }
     self.nextPlanId = self.nextPlanId + 1
     self.plan = plan
+    self.activePlanGeneration = plan.windowGeneration
+    self.lastAbortReason = nil
+    self.lastConfirmationSource = nil
+    self.lastWindowRejectReason = nil
     log(self, "plan_created", { direction = rule.direction, mode = rule.mode, officialSpellID = officialSpellID })
     return plan
 end
@@ -790,6 +864,7 @@ function AutoBurst:Evaluate(official, runtime)
     local settings = tactics()
     local officialSpellID = official and positiveSpellID(official.spellID) or nil
     local previousOfficialSpellID = self.lastOfficialSpellID
+    local intentState = runtime.intentState
 
     if self.lastOfficialSpellID ~= officialSpellID then
         self.lastOfficialSpellID = officialSpellID
@@ -797,8 +872,22 @@ function AutoBurst:Evaluate(official, runtime)
             log(self, "window_departed", { spellID = self.lockedWindowSpellID })
             self.requireWindowDeparture = false
             self.lockedWindowSpellID = nil
+            self.departureLockGeneration = nil
+        end
+        if self.currentWindowSpellID and officialSpellID ~= self.currentWindowSpellID then
+            self.currentWindowSpellID = nil
         end
     end
+
+    if intentState == "armed" and self.lastIntentState ~= "armed" then
+        self.armedEpoch = (self.armedEpoch or 0) + 1
+        self.firstHealthyFramePending = true
+        log(self, "armed_epoch_started", {
+            armedEpoch = self.armedEpoch,
+            officialSpellID = officialSpellID,
+        })
+    end
+    self.lastIntentState = intentState
 
     if not isInCombat(runtime) then
         self:Abort("out_of_combat", true)
@@ -825,6 +914,9 @@ function AutoBurst:Evaluate(official, runtime)
         recordDecision(self, self.plan and "paused" or "idle", pauseReason or "runtime_paused", { officialSpellID = officialSpellID })
         return self.plan and holdResult(self.plan, pauseReason) or noneResult()
     end
+
+    local firstHealthyFramePending = self.firstHealthyFramePending == true
+    self.firstHealthyFramePending = false
 
     -- A completed/aborted plan must not reacquire the same still-visible window
     -- recommendation.  This internal suppression is evaluated only after the
@@ -854,18 +946,21 @@ function AutoBurst:Evaluate(official, runtime)
     local cycle = TE.GCDGate and TE.GCDGate:BeginCycle(runtime.primary) or { phase = "UNKNOWN" }
     if not self.plan then
         if not officialSpellID or officialSpellID ~= rule.windowSpellID then
+            self.lastWindowRejectReason = "official_not_window"
             recordDecision(self, "armed", "official_not_window", { officialSpellID = officialSpellID, windowSpellID = rule.windowSpellID, injectionSpellID = rule.injectionSpellID, ruleSource = rule.source, ruleId = rule.id })
             return noneResult()
         end
-        -- A window plan is an edge-triggered takeover. Enabling AutoBurst in
-        -- the middle of an already displayed official window must not create a
-        -- late plan; the recommendation has to leave and enter again first.
-        local windowEntry = previousOfficialSpellID ~= officialSpellID
+        -- A window plan is generation-triggered. A real official edge creates
+        -- a new generation, while the first healthy frame after paused->armed
+        -- can claim an already-visible, not-yet-consumed generation. A consumed
+        -- generation stays locked until the official recommendation leaves.
+        local windowEntry, windowReason = observeWindowFrame(self, officialSpellID, rule, previousOfficialSpellID, firstHealthyFramePending)
         if not windowEntry then
-            recordDecision(self, "armed", "window_edge_missing", { officialSpellID = officialSpellID, windowSpellID = rule.windowSpellID, injectionSpellID = rule.injectionSpellID, ruleSource = rule.source, ruleId = rule.id })
+            self.lastWindowRejectReason = windowReason or "window_edge_missing"
+            recordDecision(self, "armed", windowReason or "window_edge_missing", { officialSpellID = officialSpellID, windowSpellID = rule.windowSpellID, injectionSpellID = rule.injectionSpellID, ruleSource = rule.source, ruleId = rule.id })
             return noneResult()
         end
-        local creation = {}
+        local creation = { windowGeneration = self.windowGeneration }
         local bindingsReady, blockedStep, bindingPhase, bindingReason = validateRuleBindings(self, rule)
         if not bindingsReady then
             log(self, "plan_rejected", {
@@ -928,7 +1023,7 @@ function AutoBurst:Evaluate(official, runtime)
             end
         end
         createPlan(self, rule, officialSpellID, creation)
-        recordDecision(self, "plan_created", "official_window_edge", { officialSpellID = officialSpellID, windowSpellID = rule.windowSpellID, injectionSpellID = rule.injectionSpellID, ruleSource = rule.source, ruleId = rule.id })
+        recordDecision(self, "plan_created", windowReason or "official_window_edge", { officialSpellID = officialSpellID, windowSpellID = rule.windowSpellID, injectionSpellID = rule.injectionSpellID, ruleSource = rule.source, ruleId = rule.id })
     end
 
     local plan = self.plan
@@ -1069,6 +1164,17 @@ function AutoBurst:GetSnapshot()
             requireWindowDeparture = self.requireWindowDeparture == true,
             lockedWindowSpellID = self.lockedWindowSpellID,
             combatEpoch = self.combatEpoch or 0,
+            armedEpoch = self.armedEpoch or 0,
+            firstHealthyFramePending = self.firstHealthyFramePending == true,
+            windowGeneration = self.windowGeneration or 0,
+            consumedWindowGeneration = self.consumedWindowGeneration or 0,
+            activePlanGeneration = self.activePlanGeneration,
+            departureLockGeneration = self.departureLockGeneration,
+            currentWindowSpellID = self.currentWindowSpellID,
+            planState = nil,
+            stepState = nil,
+            stepStatusReason = self.lastStepObservation and self.lastStepObservation.reason or nil,
+            candidateOfferCount = 0,
             lastStepObservation = shallowCopy(self.lastStepObservation),
         }
     end
@@ -1084,6 +1190,12 @@ function AutoBurst:GetSnapshot()
         currentStep = plan.stepIndex,
         currentRole = step and step.role,
         currentSpellID = step and step.spellID,
+        planState = plan.state,
+        stepState = plan.state,
+        stepStatusReason = plan.pauseReason
+            or (plan.revalidate and "revalidating")
+            or (plan.wait and plan.wait.phase)
+            or (self.lastStepObservation and self.lastStepObservation.reason),
         completed = plan.completed,
         windowRetryCount = plan.windowRetryCount,
         windowDispatchAttempted = plan.windowDispatchAttempted == true,
@@ -1101,6 +1213,15 @@ function AutoBurst:GetSnapshot()
         pauseReason = plan.pauseReason,
         requireWindowDeparture = self.requireWindowDeparture == true,
         combatEpoch = self.combatEpoch or 0,
+        armedEpoch = self.armedEpoch or 0,
+        firstHealthyFramePending = self.firstHealthyFramePending == true,
+        windowGeneration = self.windowGeneration or 0,
+        consumedWindowGeneration = self.consumedWindowGeneration or 0,
+        activePlanGeneration = self.activePlanGeneration,
+        departureLockGeneration = self.departureLockGeneration,
+        currentWindowSpellID = self.currentWindowSpellID,
+        planWindowGeneration = plan.windowGeneration,
+        planArmedEpoch = plan.armedEpoch,
         lastStepObservation = shallowCopy(self.lastStepObservation),
     }
 end
@@ -1130,11 +1251,20 @@ function AutoBurst:GetDiagnostics()
         } or nil,
         ruleReason = ruleReason,
         plan = snapshot,
+        armedEpoch = self.armedEpoch or 0,
+        firstHealthyFramePending = self.firstHealthyFramePending == true,
+        windowGeneration = self.windowGeneration or 0,
+        consumedWindowGeneration = self.consumedWindowGeneration or 0,
+        activePlanGeneration = self.activePlanGeneration,
+        departureLockGeneration = self.departureLockGeneration,
         combatEpoch = self.combatEpoch or 0,
         lastDecision = shallowCopy(self.lastDecision),
         lastStepObservation = shallowCopy(self.lastStepObservation),
         lastCandidate = shallowCopy(self.lastCandidate),
         lastSpellcastSuccess = shallowCopy(self.lastSpellcastSuccess),
+        lastConfirmationSource = self.lastConfirmationSource,
+        lastAbortReason = self.lastAbortReason,
+        lastWindowRejectReason = self.lastWindowRejectReason,
         lastFault = shallowCopy(self.lastFault),
     }
 end

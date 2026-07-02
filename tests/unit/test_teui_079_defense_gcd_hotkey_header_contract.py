@@ -65,7 +65,7 @@ class Teui079DefenseGcdHotkeyHeaderContractTests(unittest.TestCase):
         self.assertIn('local MODIFIERS = { [""]=0, ALT=1, CTRL=2 }', self.resolver)
         self.assertNotIn('SHIFT = 3', self.resolver)
         self.assertIn('binding = bindingInfo and (bindingInfo.binding or bindingInfo.rawBinding) or nil', self.signal)
-        self.assertIn('binding = message.binding or binding.rawBinding', self.state)
+        self.assertIn('binding = message.binding or binding.binding or binding.rawBinding', self.state)
         self.assertIn('binding = primary.binding or primary.rawBinding', self.advisors)
 
     def test_header_state_is_anchored_before_window_actions(self) -> None:

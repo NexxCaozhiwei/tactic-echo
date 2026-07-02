@@ -155,6 +155,9 @@ local function ensureTextStyle(style, defaults)
         and style.point or (defaults.point or "TOPRIGHT")
     style.offsetX = tonumber(style.offsetX) or (defaults.offsetX or -3)
     style.offsetY = tonumber(style.offsetY) or (defaults.offsetY or -3)
+    if defaults.mode ~= nil or style.mode ~= nil then
+        style.mode = ({ auto = true, custom = true, duration = true })[style.mode] and style.mode or (defaults.mode or "auto")
+    end
     style.color = copyColor(style.color, defaults.color or COLOR_PRESETS.white.color)
     style.colorKey = COLOR_PRESETS[style.colorKey] and style.colorKey or colorKey(style.color)
     return style
@@ -173,7 +176,7 @@ local function ensureModuleStyle(hud, key)
         point = "BOTTOMRIGHT", offsetX = -3, offsetY = 3, color = COLOR_PRESETS.white.color,
     })
     module.cooldownText = ensureTextStyle(module.cooldownText, {
-        enabled = true, fontPreset = "highlight", fontSize = 14, scale = 1,
+        enabled = true, mode = "auto", fontPreset = "highlight", fontSize = 14, scale = 1,
         point = "CENTER", offsetX = 0, offsetY = 0, color = COLOR_PRESETS.white.color,
     })
     module.stateText = ensureTextStyle(module.stateText, {
@@ -1198,12 +1201,19 @@ function ControlPanel:UpdateInputStatus()
     for _, refresh in ipairs(controls) do pcall(refresh) end
 end
 
-local function buildTextStyleSection(pane, style, label, y)
+local function buildTextStyleSection(pane, style, label, y, options)
+    options = type(options) == "table" and options or {}
     y = createSection(pane, label, y)
     createCheckbox(pane, "显示", 14, y, function() return style.enabled end, function(value) style.enabled = value end)
     createChoice(pane, "字体", RIGHT_X, y, 160, {
         { value = "normal", label = "标准" }, { value = "highlight", label = "高亮" }, { value = "disable", label = "弱化" },
     }, function() return style.fontPreset end, function(value) style.fontPreset = value end)
+    if options.cooldownMode == true then
+        y = y - 38
+        createChoice(pane, "CD 数字", 14, y, 160, {
+            { value = "auto", label = "自动" }, { value = "duration", label = "原生" }, { value = "custom", label = "HUD" },
+        }, function() return style.mode or "auto" end, function(value) style.mode = value end)
+    end
     y = y - 38
     createNumberStepper(pane, "字号", 14, y, 64, function() return style.fontSize end, function(value) style.fontSize = value end, 1, 8, 30, "")
     createNumberStepper(pane, "缩放", RIGHT_X, y, 64, function() return math.floor(style.scale * 100 + 0.5) end, function(value) style.scale = value / 100 end, 10, 60, 200, "%")
@@ -1229,7 +1239,7 @@ local function buildIconStyleEditor(pane, moduleKey, title, y)
     y = y - 48
     y = buildTextStyleSection(pane, style.keyLabel, "按键标签", y)
     y = buildTextStyleSection(pane, style.chargeLabel, "充能次数", y)
-    y = buildTextStyleSection(pane, style.cooldownText, "CD 时间", y)
+    y = buildTextStyleSection(pane, style.cooldownText, "CD 时间", y, { cooldownMode = true })
     y = buildTextStyleSection(pane, style.stateText, "状态标签（施法 / 暂停等）", y)
 
     y = createSection(pane, "图标外观", y)

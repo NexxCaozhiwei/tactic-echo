@@ -15,7 +15,7 @@ local NUMERIC_FIELDS = {
     "cooldownRemaining", "cooldownDuration", "cooldownStart",
     "gcdRemaining", "gcdDuration", "gcdStart",
     "chargeCooldownRemaining", "chargeCooldownDuration", "chargeCooldownStart", "castingSpellID", "castingStartTimeMS", "castingEndTimeMS", "defensivePriority",
-    "actionSlot", "slot", "inventorySlot", "bindingSourceIndex", "burstOrder", "channelingSpellID", "empoweringSpellID",
+    "actionSlot", "slot", "inventorySlot", "bindingSourceIndex", "bindingToken", "displayBindingToken", "dispatchBindingToken", "burstOrder", "channelingSpellID", "empoweringSpellID",
 }
 
 local BOOLEAN_FIELDS = {

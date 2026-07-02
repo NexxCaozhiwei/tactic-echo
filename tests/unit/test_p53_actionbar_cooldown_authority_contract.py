@@ -35,7 +35,7 @@ class P53ActionbarCooldownAuthorityContractTests(unittest.TestCase):
             '"duration_object_spell"',
             "setNativeCountdownNumbers(frame, useNativeNumbers)",
             "card.nativeCountdownVisible = nativeNumbersVisible == true",
-            "or card.nativeCountdownVisible == true then",
+            "or card.nativeCountdownVisible == true or cooldownMode == \"duration\" then",
             "custom badge empty prevents a second, potentially",
         ):
             self.assertIn(marker, self.icon)

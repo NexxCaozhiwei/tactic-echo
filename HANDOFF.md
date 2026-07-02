@@ -1,10 +1,10 @@
 # Tactic Echo Handoff
 
-Current source release: `1.0.07`
+Current source release: `1.0.08`
 
 ## Current State
 
-The repository is on the `1.0.07` development baseline. Its historical code ancestry is `0.9.51`; the current source release is `1.0.07`. The dispatch architecture is TEAP v3 dynamic action-bar binding:
+The repository is on the `1.0.08` development baseline. Its historical code ancestry is `0.9.51`; the current source release is `1.0.08`. The dispatch architecture is TEAP v3 dynamic action-bar binding:
 
 ```text
 official primary recommendation
@@ -86,3 +86,11 @@ texluac -p <each addon lua file>
 - A Burst candidate remains visible with one stable TEAP sequence until success, explicit invalidation or deadline. TEK attempts that sequence at most once.
 - `UNIT_SPELLCAST_SUCCEEDED` can confirm only the current dispatched step; it is not a timing/trigger input.
 - Observation-only Burst frames retain `BindingToken=0` for TEK safety but carry a separate official display binding for HUD/diagnostics.
+
+## 1.0.08 Field Fixes
+
+- AutoBurst trigger ownership now uses `armedEpoch` and window generation counters, not only `previousOfficial != window`.
+- `paused -> armed` can claim an already visible, not-yet-consumed `343527` window and start the expected `31884 -> 343527` plan.
+- Completion, skip, timeout and abort all consume the current window generation and keep a departure lock until official recommendation leaves.
+- `/temapping` exports generation, plan, step, candidate, confirmation, abort and official/dispatch binding fields for post-fight diagnosis.
+- Tactical HUD observation frames display the official binding while preserving dispatch `BindingToken=0`.

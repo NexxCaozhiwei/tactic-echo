@@ -54,7 +54,7 @@ local Defaults = {
     text = {
         keyLabel = { enabled = true, fontPreset = "normal", fontSize = 12, scale = 1.00, point = "TOPRIGHT", offsetX = -3, offsetY = -3 },
         chargeLabel = { enabled = true, fontPreset = "normal", fontSize = 12, scale = 1.00, point = "BOTTOMRIGHT", offsetX = -3, offsetY = 3 },
-        cooldownText = { enabled = true, fontPreset = "highlight", fontSize = 14, scale = 1.00, point = "CENTER", offsetX = 0, offsetY = 0 },
+        cooldownText = { enabled = true, mode = "auto", fontPreset = "highlight", fontSize = 14, scale = 1.00, point = "CENTER", offsetX = 0, offsetY = 0 },
         -- P5: state is no longer multiplexed into the CD text. “施法 / 暂停 /
         -- 引导 / 蓄力 / 阻止 / 未绑定” has its own style and anchor.
         stateText = { enabled = true, fontPreset = "normal", fontSize = 11, scale = 1.00, point = "BOTTOMLEFT", offsetX = 3, offsetY = 3 },

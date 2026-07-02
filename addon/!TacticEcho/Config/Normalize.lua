@@ -65,6 +65,9 @@ local function normalizeTextStyle(style, defaults)
     }, defaults.point or "TOPRIGHT")
     style.offsetX = number(style.offsetX, defaults.offsetX or 0, -30, 30)
     style.offsetY = number(style.offsetY, defaults.offsetY or 0, -30, 30)
+    if defaults.mode ~= nil or style.mode ~= nil then
+        style.mode = isEnum(style.mode, { auto = true, custom = true, duration = true }, defaults.mode or "auto")
+    end
     style.color = color(style.color)
     return style
 end

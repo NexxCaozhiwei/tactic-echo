@@ -110,8 +110,11 @@ def test_window_departure_lock_runs_after_real_auto_run_gates() -> None:
 def test_any_created_plan_keeps_window_ownership_after_terminal_abort() -> None:
     source = read(ADDON / "Tactics" / "AutoBurst.lua")
     abort = source.split("function AutoBurst:Abort", 1)[1].split("function AutoBurst:BeginCombatEpoch", 1)[0]
-    assert "self.lockedWindowSpellID = self.plan.rule.windowSpellID" in abort
-    assert "self.requireWindowDeparture = true" in abort
+    lock = source.split("local function lockWindowDeparture", 1)[1].split("local function observeWindowFrame", 1)[0]
+    assert "lockWindowDeparture(self, self.plan)" in abort
+    assert "self.lockedWindowSpellID = plan.rule.windowSpellID" in lock
+    assert "self.requireWindowDeparture = true" in lock
+    assert "self.consumedWindowGeneration = generation" in lock
     assert "Fail open" not in abort
     assert "planOwnsWindowBeforeDispatch" not in abort
 
@@ -132,7 +135,9 @@ def test_burst_hold_keeps_display_only_official_binding() -> None:
     tactical = read(ADDON / "Tactics" / "TacticalState.lua")
     assert "officialBindingInfo" in signal
     assert "officialBindingReason" in signal
-    assert "message.bindingInfo or message.officialBindingInfo" in tactical
+    assert "message.observationOnly == true and officialBinding" in tactical
+    assert "message.binding or binding.binding or binding.rawBinding" in tactical
+    assert "displayBindingToken" in tactical
     assert "message.observationOnly ~= true" in tactical
 
 
@@ -176,3 +181,35 @@ def test_hud_model_sanitizes_cast_timing_fields_used_by_effects() -> None:
     assert '"castingEndTimeMS"' in model
     assert "item.castingStartTimeMS" in effects
     assert "item.castingEndTimeMS" in effects
+
+
+def test_autoburst_exports_generation_and_candidate_diagnostics() -> None:
+    auto = read(ADDON / "Tactics" / "AutoBurst.lua")
+    mapping = read(ADDON / "Diagnostics" / "MappingExport.lua")
+    for token in (
+        "armedEpoch",
+        "firstHealthyFramePending",
+        "windowGeneration",
+        "consumedWindowGeneration",
+        "activePlanGeneration",
+        "departureLockGeneration",
+        "lastConfirmationSource",
+        "lastAbortReason",
+        "lastWindowRejectReason",
+    ):
+        assert token in auto
+        assert token in mapping
+    for token in ("officialBinding", "dispatchBinding", "stepStatusReason", "candidateOfferCount"):
+        assert token in mapping
+
+
+def test_cooldown_text_has_explicit_native_or_custom_mode_without_autoburst_dependency() -> None:
+    defaults = read(ADDON / "Config" / "Defaults.lua")
+    normalize = read(ADDON / "Config" / "Normalize.lua")
+    button = read(ADDON / "UI" / "TacticalIconButton.lua")
+    auto = read(ADDON / "Tactics" / "AutoBurst.lua")
+    assert 'mode = "auto"' in defaults
+    assert "{ auto = true, custom = true, duration = true }" in normalize
+    assert "cooldownTextMode" in button
+    assert 'cooldownMode == "duration"' in button
+    assert "cooldownText(" not in auto
