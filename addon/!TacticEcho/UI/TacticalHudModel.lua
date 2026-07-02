@@ -14,7 +14,7 @@ local NUMERIC_FIELDS = {
     "spellID", "itemID", "itemCount", "itemSlot", "charges", "maxCharges",
     "cooldownRemaining", "cooldownDuration", "cooldownStart",
     "gcdRemaining", "gcdDuration", "gcdStart",
-    "chargeCooldownRemaining", "chargeCooldownDuration", "chargeCooldownStart", "castingSpellID", "defensivePriority",
+    "chargeCooldownRemaining", "chargeCooldownDuration", "chargeCooldownStart", "castingSpellID", "castingStartTimeMS", "castingEndTimeMS", "defensivePriority",
     "actionSlot", "slot", "inventorySlot", "bindingSourceIndex", "burstOrder", "channelingSpellID", "empoweringSpellID",
 }
 

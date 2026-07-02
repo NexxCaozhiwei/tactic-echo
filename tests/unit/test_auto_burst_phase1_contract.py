@@ -151,3 +151,28 @@ def test_front_window_unknown_creates_bounded_plan_instead_of_official_fallback(
     assert "plan_gate_window_unknown" in auto
     assert "create a bounded plan and revalidate" in auto
     assert "burst_window_not_ready" in auto
+
+
+def test_plan_creation_requires_both_window_and_injection_bindings() -> None:
+    auto = read(ADDON / "Tactics" / "AutoBurst.lua")
+    assert "validateRuleBindings" in auto
+    assert "plan_gate_binding" in auto
+    assert "burst_binding_not_ready" in auto
+    assert auto.index("local bindingsReady") < auto.index("        createPlan(self, rule, officialSpellID")
+
+
+def test_post_simple_unknown_injection_is_optional_but_focused_unknown_aborts() -> None:
+    auto = read(ADDON / "Tactics" / "AutoBurst.lua")
+    assert "post_injection_unknown" in auto
+    assert "skipOptionalInjection" in auto
+    assert "burst_step_unknown_focused" in auto
+    assert auto.index('if plan.rule.mode == "focused" then') < auto.index('"post_injection_unknown"')
+
+
+def test_hud_model_sanitizes_cast_timing_fields_used_by_effects() -> None:
+    model = read(ADDON / "UI" / "TacticalHudModel.lua")
+    effects = read(ADDON / "UI" / "TacticalIconEffects.lua")
+    assert '"castingStartTimeMS"' in model
+    assert '"castingEndTimeMS"' in model
+    assert "item.castingStartTimeMS" in effects
+    assert "item.castingEndTimeMS" in effects

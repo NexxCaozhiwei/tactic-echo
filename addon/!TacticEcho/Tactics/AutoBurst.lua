@@ -348,6 +348,8 @@ local function ownReadyState(iconState)
     return "OWN_READY", nil
 end
 
+local sequenceFor
+
 local function stepSample(step, cycle)
     local bindingInfo, bindingState, bindingReason = resolveBinding(step.spellID)
     if bindingState then return { phase = bindingState, reason = bindingReason, bindingInfo = bindingInfo } end
@@ -366,6 +368,21 @@ local function stepSample(step, cycle)
         bindingInfo = bindingInfo,
         iconState = iconState,
     }
+end
+
+local function validateRuleBindings(self, rule)
+    for _, step in ipairs(sequenceFor(rule)) do
+        local bindingInfo, bindingState, bindingReason = resolveBinding(step.spellID)
+        if bindingState then
+            rememberStepObservation(self, nil, step, {
+                phase = bindingState,
+                reason = bindingReason,
+                bindingInfo = bindingInfo,
+            }, "plan_gate_binding")
+            return false, step, bindingState, bindingReason
+        end
+    end
+    return true, nil, nil, nil
 end
 
 local function confirmationBaseline(sample)
@@ -407,7 +424,7 @@ local function spellcastEventConfirmed(plan, step)
     return false, nil
 end
 
-local function sequenceFor(rule)
+sequenceFor = function(rule)
     if rule.direction == "post" then
         return {
             { role = "window", spellID = rule.windowSpellID },
@@ -673,6 +690,28 @@ local function stepFailure(self, plan, step, reason)
     return terminalResult(self, "burst_plan_aborted", { abortReason = reason })
 end
 
+local function skipOptionalInjection(self, plan, reason)
+    log(self, "injection_skipped", { phase = reason, reason = reason, currentStep = plan.stepIndex })
+    plan.revalidate = nil
+    plan.candidateOfferCount = 0
+    plan.candidateFirstOfferedAt = nil
+    plan.candidateLastOfferedAt = nil
+    plan.stepIndex = plan.stepIndex + 1
+    if plan.stepIndex > #plan.steps then
+        log(self, "plan_completed", { reason = reason })
+        self.lockedWindowSpellID = plan.rule.windowSpellID
+        self.requireWindowDeparture = true
+        self.plan = nil
+        return terminalResult(self, reason, {
+            windowSpellID = plan.rule.windowSpellID,
+            injectionSpellID = plan.rule.injectionSpellID,
+            ruleSource = plan.rule.source,
+            ruleId = plan.rule.id,
+        })
+    end
+    return holdResult(plan, "burst_next_step_pending")
+end
+
 local function finishStep(self, plan, source)
     local step = plan.steps[plan.stepIndex]
     plan.completed[#plan.completed + 1] = step.role
@@ -827,6 +866,22 @@ function AutoBurst:Evaluate(official, runtime)
             return noneResult()
         end
         local creation = {}
+        local bindingsReady, blockedStep, bindingPhase, bindingReason = validateRuleBindings(self, rule)
+        if not bindingsReady then
+            log(self, "plan_rejected", {
+                reason = bindingReason or bindingPhase,
+                role = blockedStep and blockedStep.role,
+                mode = rule.mode,
+            })
+            recordDecision(self, "armed", "burst_binding_not_ready", {
+                officialSpellID = officialSpellID,
+                windowSpellID = rule.windowSpellID,
+                injectionSpellID = rule.injectionSpellID,
+                ruleSource = rule.source,
+                ruleId = rule.id,
+            })
+            return noneResult()
+        end
         if rule.direction == "pre" then
             local injectionStep = { role = "injection", spellID = rule.injectionSpellID }
             local injectionSample = stepSample(injectionStep, cycle)
@@ -942,30 +997,19 @@ function AutoBurst:Evaluate(official, runtime)
                 -- front plan into permission to send the window first.
                 return revalidateUnknownStep(self, plan, step, sample, "pre_injection_revalidate:" .. tostring(sample.reason or sample.phase))
             end
-            log(self, "injection_skipped", { phase = sample.phase, reason = sample.reason, currentStep = plan.stepIndex })
-            plan.revalidate = nil
-            plan.candidateOfferCount = 0
-            plan.candidateFirstOfferedAt = nil
-            plan.candidateLastOfferedAt = nil
-            plan.stepIndex = plan.stepIndex + 1
-            if plan.stepIndex > #plan.steps then
-                log(self, "plan_completed", { reason = "injection_cooldown" })
-                self.lockedWindowSpellID = plan.rule.windowSpellID
-                self.requireWindowDeparture = true
-                self.plan = nil
-                return terminalResult(self, "injection_cooldown", {
-                    windowSpellID = plan.rule.windowSpellID,
-                    injectionSpellID = plan.rule.injectionSpellID,
-                    ruleSource = plan.rule.source,
-                    ruleId = plan.rule.id,
-                })
-            end
-            return holdResult(plan, "burst_next_step_pending")
+            return skipOptionalInjection(self, plan, "injection_cooldown")
         end
         self:Abort(sample.reason or sample.phase, false)
         return terminalResult(self, "burst_step_unavailable", { officialSpellID = officialSpellID, abortReason = sample.reason or sample.phase })
     end
     if sample.phase == "UNKNOWN" then
+        if plan.rule.mode == "focused" then
+            self:Abort(sample.reason or sample.phase, false)
+            return terminalResult(self, "burst_step_unknown_focused", { officialSpellID = officialSpellID, abortReason = sample.reason or sample.phase })
+        end
+        if step.role == "injection" and plan.rule.mode == "simple" and plan.rule.direction == "post" then
+            return skipOptionalInjection(self, plan, "post_injection_unknown")
+        end
         -- UNKNOWN is not cooldown. Keep sequence ownership and re-sample for a
         -- fixed step deadline; terminal abort keeps the window departure lock.
         return revalidateUnknownStep(self, plan, step, sample, "step_unknown:" .. tostring(sample.reason or "unknown"))
