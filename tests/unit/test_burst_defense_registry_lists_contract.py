@@ -95,15 +95,15 @@ class BurstDefenseRegistryListsContractTests(unittest.TestCase):
     def test_teui_has_justac_style_burst_and_defense_editors_with_safe_boundaries(self) -> None:
         for marker in (
             "createSpellPriorityEditor",
-            "爆发窗口技能",
-            "爆发后续技能",
+            "官方窗口候选库",
+            "注入技能",
             "防御优先列表",
             "添加触发技能",
             "添加注入技能",
-            "恢复当前专精爆发默认（两列）",
+            "恢复当前专精全部爆发默认",
             "恢复当前专精防御默认",
             "不能在 TEUI 手工加入其他专精技能",
-            "BindingToken=0",
+            "BindingToken 固定为 0",
             '"Interface\\\\Icons\\\\INV_Misc_QuestionMark"',
         ):
             self.assertIn(marker, self.ui)

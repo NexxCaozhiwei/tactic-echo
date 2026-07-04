@@ -24,6 +24,14 @@ local TE = _G.TacticEcho
 
 local INVENTORY_POLL_INTERVAL_SECONDS = 0.10
 local INVENTORY_CONFIRMATION_DELAYS = { 0.01, 0.05, 0.15, 0.35 }
+-- Item/inventory cooldown APIs do not consistently expose `isOnGCD`.  A
+-- ready trinket action button can therefore look like it has a short personal
+-- cooldown simply because the shared 61304 GCD is active.  Normalize that at
+-- the resolver boundary so every HUD lane receives the same source-specific
+-- result instead of reimplementing GCD guesses in individual renderers.
+local GLOBAL_COOLDOWN_SPELL_ID = 61304
+local GCD_ALIGNMENT_TOLERANCE_SECONDS = 0.12
+local GCD_MAX_DURATION_SECONDS = 2.25
 -- Spell cooldowns can still report ready for a fraction of a second after a
 -- successful cast. These probes are event-driven, not an OnUpdate poll.
 local SPELL_CONFIRMATION_DELAYS = { 0.01, 0.05, 0.15, 0.35 }
@@ -161,6 +169,49 @@ local function spellQuery(spellID)
     })
 end
 
+-- Normalize a slot/item snapshot only when it is demonstrably the same
+-- short shared GCD cooldown.  This function intentionally clears active
+-- presentation values instead of retaining the raw timer: a shared GCD is not
+-- a trinket/item cooldown and must not leak into a badge or DurationObject.
+local function normalizeItemSnapshotAgainstGcd(snapshot)
+    snapshot = type(snapshot) == "table" and snapshot or nil
+    if not snapshot or snapshot.known ~= true then return snapshot end
+
+    local active = snapshot.active == true
+    local onGCD = snapshot.onGCD == true
+    local gcd = spellQuery(GLOBAL_COOLDOWN_SPELL_ID)
+    local gcdActive = type(gcd) == "table" and gcd.known == true and gcd.active == true
+    local isAlias, reason = false, nil
+
+    if onGCD then
+        isAlias, reason = true, "item_api_on_gcd"
+    elseif active and gcdActive then
+        local start, duration, remaining = number(snapshot.start), number(snapshot.duration), number(snapshot.remaining)
+        local gcdStart, gcdDuration, gcdRemaining = number(gcd.start), number(gcd.duration), number(gcd.remaining)
+        -- Require a short cooldown and at least one time-domain agreement.
+        -- Exact API samples normally share both start and duration; remaining
+        -- is a safe fallback for a client that masks one public field.
+        local short = duration and duration > 0 and duration <= GCD_MAX_DURATION_SECONDS
+        local durationAligned = short and gcdDuration and math.abs(duration - gcdDuration) <= GCD_ALIGNMENT_TOLERANCE_SECONDS
+        local startAligned = start and gcdStart and math.abs(start - gcdStart) <= GCD_ALIGNMENT_TOLERANCE_SECONDS
+        local remainingAligned = remaining and gcdRemaining and math.abs(remaining - gcdRemaining) <= GCD_ALIGNMENT_TOLERANCE_SECONDS
+        if durationAligned and (startAligned or remainingAligned) then
+            isAlias, reason = true, "gcd_snapshot_aligned"
+        end
+    end
+
+    if not isAlias then return snapshot end
+    local out = copy(snapshot)
+    out.onGCD = true
+    out.gcdAlias = true
+    out.gcdAliasReason = reason
+    out.active = false
+    out.start = 0
+    out.duration = 0
+    out.remaining = 0
+    return out
+end
+
 local function inventoryItemID(slot)
     if type(GetInventoryItemID) ~= "function" then return nil end
     local ok, itemID = pcall(GetInventoryItemID, "player", slot)
@@ -209,7 +260,9 @@ local function readItemApiSnapshot(itemID, kind)
     end
 
     local firstUnknown, firstKnown
-    for _, snapshot in ipairs(candidates) do
+    for index, snapshot in ipairs(candidates) do
+        snapshot = normalizeItemSnapshotAgainstGcd(snapshot)
+        candidates[index] = snapshot
         firstUnknown = firstUnknown or snapshot
         if activeSnapshot(snapshot) then return snapshot end
         if knownSnapshot(snapshot) and firstKnown == nil then firstKnown = snapshot end
@@ -242,10 +295,10 @@ local function inventoryQuery(slot, expectedItemID)
         if ok then startTime, duration, enabled = a, b, c end
     end
 
-    local slotSnapshot = buildSnapshot("inventory", "inventory:" .. tostring(slot), "inventory_item_cooldown", startTime, duration, enabled, nil, nil, {
+    local slotSnapshot = normalizeItemSnapshotAgainstGcd(buildSnapshot("inventory", "inventory:" .. tostring(slot), "inventory_item_cooldown", startTime, duration, enabled, nil, nil, {
         inventorySlot = slot,
         itemID = currentItemID,
-    })
+    }))
     local itemSnapshot = currentItemID and readItemApiSnapshot(currentItemID, "inventory") or nil
 
     -- The equipped-slot API is authoritative when it reports an active CD.
@@ -350,6 +403,16 @@ function Resolver:GetInventory(slot, expectedItemID)
     }))
 end
 
+-- Narrow live snapshot for AutoBurst ordered-sequence inventory steps.  This does
+-- not mutate the display cache and does not add polling; it simply uses the
+-- existing slot + current-equipped-item fallback logic once for the current
+-- state-machine tick.
+function Resolver:GetInventoryLive(slot, expectedItemID)
+    slot = number(slot)
+    if slot ~= 13 and slot ~= 14 then return nil end
+    return inventoryQuery(math.floor(slot), expectedItemID)
+end
+
 function Resolver:GetItem(itemID, kind)
     itemID = number(itemID)
     if not itemID or itemID <= 0 then return nil end
@@ -452,14 +515,40 @@ function Resolver:ScheduleSpellConfirmation()
 end
 
 function Resolver:GetDurationObject(item)
-    -- This helper remains inside the addon presentation boundary. It does not
-    -- return or persist a raw object into the HUD model. Current clients expose
-    -- action-bar DurationObjects reliably; item-specific DurationObject APIs are
-    -- used only when the client explicitly provides them.
+    -- This helper remains inside the addon presentation boundary. It returns an
+    -- opaque transient object only to IconState's one-refresh presentation
+    -- snapshot; it is never persisted, serialized, logged or used for planning.
+    -- Direct spell cards use
+    -- their action-bar DurationObject first, but equipped trinket cards are
+    -- different: an action-bar button may expose the shared spell GCD even when
+    -- the item has no own cooldown. Prefer the equipped ItemID DurationObject
+    -- for inventory:13 / inventory:14 and retain the action bar only as a
+    -- fallback when no item object is available.
     item = type(item) == "table" and item or {}
-    local itemID = number(item.itemID)
+    local inventorySlot = number(item.inventorySlot)
+    local inventoryCard = inventorySlot == 13 or inventorySlot == 14
+    local itemID = number(item.itemID) or (inventoryCard and inventoryItemID(inventorySlot) or nil)
     local actionSlot = number(item.actionSlot or item.slot)
     local actionSlotTrusted = actionSlot and (itemID or item.directActionSlot == true or item.actionBarStateTrusted == true)
+
+    -- A 13/14 card may render a DurationObject only after the public
+    -- slot/item resolver has positively identified a non-GCD own cooldown.
+    -- Do not fall back to an action-bar DurationObject here: on retail that
+    -- object often represents only the shared 61304 timer for a ready trinket.
+    if inventoryCard then
+        local confirmedOwnCooldown = item.cooldownKnown == true
+            and item.cooldownActive == true
+            and item.cooldownOnGCD ~= true
+            and item.cooldownGcdAlias ~= true
+        if confirmedOwnCooldown ~= true then
+            return nil, "inventory_own_cooldown_unconfirmed"
+        end
+        if itemID and C_Item and type(C_Item.GetItemCooldownDuration) == "function" then
+            local ok, duration = pcall(C_Item.GetItemCooldownDuration, itemID)
+            if ok and duration ~= nil then return duration, "item_duration" end
+        end
+        return nil, "inventory_item_duration_unavailable"
+    end
     if actionSlotTrusted and C_ActionBar and type(C_ActionBar.GetActionCooldownDuration) == "function" then
         local ok, duration = pcall(C_ActionBar.GetActionCooldownDuration, actionSlot)
         if ok and duration ~= nil then return duration, "actionbar_duration" end

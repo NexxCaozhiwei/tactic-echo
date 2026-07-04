@@ -1,19 +1,19 @@
 -- Local cooldown/charge fallback tracker for HUD presentation only.
 --
--- Native DurationObjects remain the first presentation authority whenever the
--- client exposes them. This tracker exists for the complementary case: current
--- protected-cooldown clients can hide numeric start/duration fields in combat,
--- leaving a HUD card with no readable countdown even though the visible action
--- button is cooling down.
+-- A DurationObject remains the client-owned swipe source whenever the client
+-- exposes one. Its native countdown digits are deliberately never a HUD text
+-- source: TacticalIconButton owns the only visible countdown label. This
+-- tracker exists for protected-cooldown clients that can report an active own
+-- cooldown while temporarily withholding readable start/duration fields.
 --
 -- The fallback is deliberately layered:
 --   1. A post-cast public API confirmation always replaces the local timer.
 --   2. Out of combat, actual observed cooldowns and charge state are cached.
---   3. Only when the API numerics are protected/delayed do we start an
---      event-driven local timer from the cached spell duration.
---   4. A direct action-bar DurationObject still wins in TacticalIconButton, so
---      this module never replaces Blizzard's action-bar countdown when it is
---      available.
+--   3. Current-spec defensive, burst-window and burst-injection skills are
+--      proactively registered out of combat so their safe static duration cache
+--      exists before the first cast.
+--   4. Only when the API numerics are protected/delayed do we start an
+--      event-driven local timer from that already-cached duration.
 --
 -- It never changes recommendations, action bindings, TEAP, or TEK input.
 -- Cooldown identity is canonicalised to a directly mapped action-bar slot when
@@ -175,6 +175,18 @@ local function cacheFallbackDuration(entry)
     if normaliseCooldownDuration(entry.duration) then return entry.duration end
     if inCombat() then return nil end
 
+    -- Static tooltip/base cooldowns are normally not safe for a directly mapped
+    -- action button: talents, hero nodes and override spells can shorten the
+    -- real action-bar cooldown. The sole exception is a current-spec tactical
+    -- spell that was proactively registered out of combat before it acquired a
+    -- visible action-slot identity. That pre-cache is intentionally retained
+    -- through the later spell→slot identity migration so the first cast can use
+    -- one HUD-owned numeric fallback instead of Blizzard's MM:SS digits.
+    if entry.slot and entry.allowStaticFallback ~= true then
+        entry.durationSource = "direct_actionbar_static_forbidden"
+        return nil
+    end
+
     for _, spellID in ipairs(entry.ids or {}) do
         local duration = tooltipCooldownDuration(spellID)
         if duration then
@@ -310,16 +322,88 @@ local function cacheFromApi(entry)
     return live
 end
 
+local function moveTrackedStore(store, fromKey, toKey)
+    if fromKey == toKey or type(store) ~= "table" then return end
+    local source = store[fromKey]
+    if source == nil then return end
+    if store[toKey] == nil then store[toKey] = source end
+    store[fromKey] = nil
+end
+
+local function mergeTrackedEntry(target, source, slot)
+    if not target or not source or target == source then
+        if target and slot then target.slot = slot end
+        return target
+    end
+    if normaliseCooldownDuration(target.duration) == nil and normaliseCooldownDuration(source.duration) then
+        target.duration = source.duration
+        target.durationSource = source.durationSource
+    end
+    if not target.chargeDuration and source.chargeDuration then target.chargeDuration = source.chargeDuration end
+    if not target.maxCharges and source.maxCharges then target.maxCharges = source.maxCharges end
+    target.allowStaticFallback = target.allowStaticFallback == true or source.allowStaticFallback == true
+    target.confirmationPending = target.confirmationPending == true or source.confirmationPending == true
+    target.confirmationGeneration = math.max(target.confirmationGeneration or 0, source.confirmationGeneration or 0)
+    if slot then target.slot = slot end
+    mergeEntryIDs(target, source.ids or {})
+    return target
+end
+
+-- A profile pre-cache begins as `spell:<id>`. Once the card/action resolver
+-- establishes a trusted direct action slot, preserve the exact slot identity
+-- without dropping the out-of-combat cached duration. This is the critical
+-- first-cast bridge for skills whose in-combat numeric API is opaque.
+local function migrateEntryToKey(entry, newKey, slot)
+    if not entry or not newKey then return entry end
+    local oldKey = entry.key
+    if oldKey == newKey then
+        if slot then entry.slot = slot end
+        return entry
+    end
+
+    local existing = Tracker.entries[newKey]
+    if existing and existing ~= entry then
+        mergeTrackedEntry(existing, entry, slot)
+        Tracker.entries[oldKey] = nil
+        moveTrackedStore(Tracker.cooldowns, oldKey, newKey)
+        moveTrackedStore(Tracker.charges, oldKey, newKey)
+        for spellID, mappedKey in pairs(Tracker.aliases) do
+            if mappedKey == oldKey then Tracker.aliases[spellID] = newKey end
+        end
+        return existing
+    end
+
+    Tracker.entries[oldKey] = nil
+    entry.key = newKey
+    if slot then entry.slot = slot end
+    Tracker.entries[newKey] = entry
+    moveTrackedStore(Tracker.cooldowns, oldKey, newKey)
+    moveTrackedStore(Tracker.charges, oldKey, newKey)
+    for spellID, mappedKey in pairs(Tracker.aliases) do
+        if mappedKey == oldKey then Tracker.aliases[spellID] = newKey end
+    end
+    return entry
+end
+
 function Tracker:RegisterSpell(spellID, meta)
     spellID = number(spellID)
     if not spellID or spellID <= 0 then return nil end
 
+    meta = type(meta) == "table" and meta or {}
     local ids = normalizeIDs(meta, spellID)
-    local key, slot = directIdentity(meta)
-    if not key then key = existingAliasKey(ids) end
-    if not key then key = "spell:" .. tostring(math.floor(spellID)) end
-
+    local directKey, slot = directIdentity(meta)
+    local aliasKey = existingAliasKey(ids)
+    local key = directKey or aliasKey or ("spell:" .. tostring(math.floor(spellID)))
     local entry = self.entries[key]
+
+    -- A direct slot identity is more exact than a profile pre-cache's spell
+    -- identity. Migrate instead of creating a new entry, otherwise the cached
+    -- duration disappears precisely when the first opaque cast needs it.
+    if directKey and aliasKey and aliasKey ~= directKey and self.entries[aliasKey] then
+        entry = migrateEntryToKey(self.entries[aliasKey], directKey, slot)
+        key = directKey
+    end
+
     if not entry then
         entry = {
             key = key,
@@ -330,14 +414,89 @@ function Tracker:RegisterSpell(spellID, meta)
             confirmationPending = false,
             duration = nil,
             durationSource = nil,
+            allowStaticFallback = meta.allowStaticFallback == true,
         }
         self.entries[key] = entry
-    elseif slot then
-        entry.slot = slot
+    else
+        if slot then entry.slot = slot end
+        if meta.allowStaticFallback == true then entry.allowStaticFallback = true end
     end
     mergeEntryIDs(entry, ids)
     if not inCombat() then cacheFromApi(entry) end
     return entry
+end
+
+-- Proactively cache the exact tactical spell families that can be displayed as
+-- a cooldown before their first cast. Registration is out-of-combat only and
+-- still does not grant a binding, recommendation, TEAP payload or input action.
+-- It merely makes an existing tooltip/base duration available to RecordCast when
+-- a later protected API reports only "own cooldown active".
+local function registerProfileCooldown(spellID, family)
+    spellID = number(spellID)
+    if not spellID or spellID <= 0 then return false end
+    local entry = Tracker:RegisterSpell(spellID, {
+        allowStaticFallback = true,
+        cooldownProfileFamily = family,
+    })
+    if entry and type(entry.profileFamilies) ~= "table" then entry.profileFamilies = {} end
+    if entry and family then entry.profileFamilies[family] = true end
+    return entry ~= nil
+end
+
+local function collectProfileSpellIDs(out, seen, values)
+    for _, value in ipairs(type(values) == "table" and values or {}) do
+        local spellID = number(type(value) == "table" and value.spellID or value)
+        if spellID and spellID > 0 and not seen[spellID] then
+            seen[spellID] = true
+            out[#out + 1] = spellID
+        end
+    end
+end
+
+function Tracker:PrimeCurrentSpec()
+    if inCombat() then return 0 end
+    local context = TE.Context and type(TE.Context.GetPlayer) == "function" and TE.Context:GetPlayer() or {}
+    if type(context) ~= "table" or not context.class or not context.specIndex then return 0 end
+
+    local registered, seen = 0, {}
+    local defensiveIDs, burstWindowIDs, burstInjectionIDs = {}, {}, {}
+
+    if TE.AbilityProfiles and type(TE.AbilityProfiles.GetDefensivePriorityList) == "function" then
+        local ok, entries = pcall(TE.AbilityProfiles.GetDefensivePriorityList, TE.AbilityProfiles, context.class, context.specIndex)
+        if ok then collectProfileSpellIDs(defensiveIDs, seen, entries) end
+    end
+
+    -- The burst profile is specialization-scoped and already includes user
+    -- ordering/custom entries. Cache both the window and every injection
+    -- candidate; a disabled candidate remains harmless and can become enabled
+    -- later without needing a reload first.
+    local profile
+    if TE.BurstProfiles and type(TE.BurstProfiles.Get) == "function" then
+        local ok, value = pcall(TE.BurstProfiles.Get, TE.BurstProfiles, context)
+        if ok and type(value) == "table" then profile = value end
+    end
+    if profile then
+        collectProfileSpellIDs(burstWindowIDs, seen, profile.openerSpellIDs)
+        collectProfileSpellIDs(burstWindowIDs, seen, profile.triggerEntries)
+        collectProfileSpellIDs(burstInjectionIDs, seen, profile.injectionSpellIDs)
+        collectProfileSpellIDs(burstInjectionIDs, seen, profile.injectionEntries)
+    end
+
+    -- `seen` avoids duplicate probing across defense/window/injection lists;
+    -- retain the strongest family label only for diagnostics. A shared skill
+    -- remains a single tracker entry and a single HUD number.
+    local function prime(ids, family)
+        for _, spellID in ipairs(ids) do
+            if registerProfileCooldown(spellID, family) then registered = registered + 1 end
+        end
+    end
+    -- The lists above share one `seen` set, so an ID present in defense and
+    -- burst may only be stored in the list discovered first. Registering any
+    -- one family is sufficient to carry allowStaticFallback through migration.
+    prime(defensiveIDs, "defense")
+    prime(burstWindowIDs, "burst_window")
+    prime(burstInjectionIDs, "burst_injection")
+    return registered
 end
 
 function Tracker:ResolveIdentity(spellID, meta)
@@ -369,7 +528,7 @@ local function eventMeta(spellID)
     return {
         actionSlot = binding.actionSlot or binding.slot,
         directActionSlot = binding.directActionSlot == true,
-        actionBarStateTrusted = binding.directActionSlot == true,
+        actionBarStateTrusted = binding.actionBarStateTrusted == true,
         matchedSpellID = binding.matchedSpellID,
         requestedSpellID = binding.requestedSpellID,
         equivalentSpellIDs = binding.equivalentSpellIDs,
@@ -391,6 +550,9 @@ local function storeCooldown(entry, snapshot, source, isFallback)
         finish = finish,
         source = source or snapshot.source,
         fallback = isFallback == true,
+        -- Preserve whether a fallback originated from observed runtime data or
+        -- a static cache. It is display diagnostics only; no planner reads it.
+        fallbackOrigin = isFallback == true and entry.durationSource or nil,
     }
     return true
 end
@@ -445,6 +607,28 @@ function Tracker:ScheduleConfirmation(entry)
     end
 end
 
+-- Observe an already-sanitized numeric cooldown from IconState. This closes the
+-- HUD-only gap where an active cooldown existed before the addon saw its cast,
+-- then the retail API briefly makes the next numeric sample opaque. It never
+-- queries protected values and never seeds from static tooltip/base durations.
+function Tracker:ObserveCooldown(spellID, meta, snapshot)
+    spellID = number(spellID)
+    if not spellID or spellID <= 0 or type(snapshot) ~= "table" then return false end
+    local entry = self:RegisterSpell(spellID, meta)
+    if not entry then return false end
+    local start = number(snapshot.start)
+    local duration = normaliseCooldownDuration(snapshot.duration)
+    local remaining = number(snapshot.remaining)
+    if not start or not duration or duration <= 0 or not remaining or remaining <= 0 then return false end
+    -- The supplied start/duration have already passed the caller's direct-action
+    -- own-CD filter. Keep the tracker identity stable and preserve exact timing.
+    return storeCooldown(entry, {
+        start = start,
+        duration = duration,
+        source = snapshot.source or "actionbar_numeric_observed",
+    }, snapshot.source or "actionbar_numeric_observed", false)
+end
+
 function Tracker:RecordCast(spellID)
     spellID = number(spellID)
     if not spellID or spellID <= 0 then return end
@@ -488,6 +672,7 @@ function Tracker:GetCooldown(spellID, meta)
         start = data.start,
         source = data.source or "spell_api_confirmation",
         fallback = data.fallback == true,
+        fallbackOrigin = data.fallbackOrigin,
         identityKey = key,
         confirmationPending = self.entries[key] and self.entries[key].confirmationPending == true or false,
     }
@@ -572,6 +757,7 @@ TE:RegisterEventsSafe(watcher, {
     "UNIT_SPELLCAST_SUCCEEDED",
     "SPELL_UPDATE_COOLDOWN",
     "SPELL_UPDATE_CHARGES",
+    "PLAYER_LOGIN",
     "PLAYER_REGEN_ENABLED",
     "PLAYER_DEAD",
     "PLAYER_ENTERING_WORLD",
@@ -579,19 +765,26 @@ TE:RegisterEventsSafe(watcher, {
     "PLAYER_TALENT_UPDATE",
     "TRAIT_CONFIG_UPDATED",
 })
+
+local function primeAndRefreshOutOfCombat()
+    if inCombat() then return end
+    Tracker:PrimeCurrentSpec()
+    Tracker:RefreshOutOfCombat()
+end
+
 watcher:SetScript("OnEvent", function(_, event, ...)
     if event == "UNIT_SPELLCAST_SUCCEEDED" then
         local unit, _, spellID = ...
         if unit == "player" then Tracker:RecordCast(spellID) end
     elseif event == "SPELL_UPDATE_COOLDOWN" or event == "SPELL_UPDATE_CHARGES" then
         Tracker:ReconcileSpell(select(1, ...))
-    elseif event == "PLAYER_REGEN_ENABLED" then
-        Tracker:RefreshOutOfCombat()
+    elseif event == "PLAYER_LOGIN" or event == "PLAYER_REGEN_ENABLED" then
+        primeAndRefreshOutOfCombat()
     elseif event == "PLAYER_DEAD" or event == "PLAYER_ENTERING_WORLD" then
         Tracker:ClearTransient()
-        Tracker:RefreshOutOfCombat()
+        primeAndRefreshOutOfCombat()
     elseif event == "PLAYER_SPECIALIZATION_CHANGED" or event == "PLAYER_TALENT_UPDATE" or event == "TRAIT_CONFIG_UPDATED" then
         Tracker:InvalidateDurationCache()
-        Tracker:RefreshOutOfCombat()
+        primeAndRefreshOutOfCombat()
     end
 end)

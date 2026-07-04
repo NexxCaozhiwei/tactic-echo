@@ -1,6 +1,26 @@
+# 1.0.44 P5 决策：宏名不是宏身份
+
+- 动作条宏以 `GetActionInfo(actionSlot)` 返回的 numeric macro index 作为唯一身份锚点；宏名只能用于展示/诊断，绝不能回收正文或决定派发资格。
+- 为处理首读正文空窗，只对同一 numeric index 有界重读；不调用 `GetMacroInfo(name)`，不按名称枚举账号/角色宏。
+- 当前 macro index 无正文时必须 fail-closed。另一枚同名宏的任何正文、技能名、图标或绑定都不能补足自动打断资格。
+- 这项变更只加强 P2 宏发现的一致性，不改变 P4 可打断资格或 TEK 输入链。
+
+# 1.0.43 P4.6 决策：多行打断宏发现与 SpellID 关联
+
+- 宏动作条发现以 `GetMacroInfo(actionInfoID)` 为第一依据；当该调用首读只有宏名时，可使用同一索引名称在既有账号/角色宏列表回收正文，避免把“无 `GetActionText`”误判为宏不存在。
+- 宏内 `/cast` 令牌可只读解析为 SpellID，用于克服请求技能本地化名称暂不可材料化的关联空窗；不得以宏名、图标或不完整正文推断技能。
+- 只缓存正向 token→SpellID 结果，临时读取失败必须在下一次动作条重建后重试；宏正文仍不保存到任何导出或传输数据。
+- 这只修复映射发现，不改变 P4.4 可打断资格、P4.5 宏优先链守卫、BindingToken、TEAP 或 TEK 输入链。
+
+# 1.0.42 P4.5 决策：严格整合打断宏
+
+- 标准 `[@mouseover,harm,nodead][@focus,harm,nodead][harm,nodead]` 被视为一个 Blizzard 宏内优先链，不是三个可独立随意复用的来源按钮。
+- 自动化只在 AddOn 证明同一按键会命中候选来源时使用该宏；上游活敌会阻断下游 focus/target candidate。
+- 不将“未读条”解释成宏条件不成立；这是 WoW 宏语言没有提供的判定。
+
 # Tactic Echo 技术决策
 
-当前版本：`1.0.07`
+当前版本：`1.0.44 P5`
 
 ## D1. 主派发路径
 

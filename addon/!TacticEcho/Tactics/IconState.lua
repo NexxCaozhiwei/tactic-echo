@@ -124,6 +124,87 @@ local function spellCooldown(spellID, options)
     return cd.remaining, cd.duration, cd.start, plainBoolean(enabled), numeric(modRate), cd.known, cd.reason, isActive, isOnGCD, "spell_api", "spell:" .. tostring(spellID)
 end
 
+-- A directly trusted action-bar button is the authoritative public source for
+-- the exact action TEK will press.  Retail clients do not always expose the
+-- public `isActive` / `isOnGCD` booleans for that button, even while the same
+-- button visibly owns a long cooldown.  Keep the numeric inspection entirely
+-- inside this read-only timing adapter and export only scalar *classification*
+-- booleans to AutoBurst; raw duration/start values never leave IconState.
+local function actionBarPublicCooldown(actionSlot, trusted)
+    actionSlot = numeric(actionSlot)
+    if trusted ~= true or not actionSlot or actionSlot <= 0 then return nil end
+    if not (C_ActionBar and type(C_ActionBar.GetActionCooldown) == "function") then return nil end
+    local ok, info = call(C_ActionBar.GetActionCooldown, actionSlot)
+    if not ok or type(info) ~= "table" then return nil end
+
+    local active = plainBoolean(info.isActive)
+    local onGCD = plainBoolean(info.isOnGCD)
+    local numericCooldown = deriveCooldown(info.startTime, info.duration)
+    -- A duration above the existing maximum shared-GCD envelope can only be
+    -- an own cooldown for this exact visible action button. Short/opaque reads
+    -- remain UNKNOWN and can never authorize a simple-mode skip.
+    local longOwnCooldown = numericCooldown.known == true
+        and numericCooldown.remaining ~= nil and numericCooldown.remaining > 0
+        and numericCooldown.duration ~= nil
+        and numericCooldown.duration > GCD_ALIGNMENT_MAX_DURATION_SECONDS
+    -- Some protected clients omit the public booleans even when the exact
+    -- direct button exposes a normal 0/0 cooldown snapshot. Treat that as a
+    -- positive ready observation only for this same trusted button; a nonzero
+    -- short duration remains a possible shared GCD and is not promoted here.
+    local numericReady = numericCooldown.known == true
+        and numericCooldown.remaining ~= nil and numericCooldown.remaining <= 0
+    -- `deriveCooldown` returns ordinary Lua values only after its protected
+    -- value probe. When the exact current button proves a real own cooldown,
+    -- carry those sanitized values to the HUD so its configurable CD label can
+    -- remain visually consistent with trinkets and still match the action bar.
+    local numericOwnCooldown = numericCooldown.known == true
+        and numericCooldown.remaining ~= nil and numericCooldown.remaining > 0
+        and ((active == true and onGCD == false) or longOwnCooldown == true)
+
+    return {
+        active = active,
+        onGCD = onGCD,
+        numericKnown = numericCooldown.known == true,
+        longOwnCooldown = longOwnCooldown == true,
+        numericReady = numericReady == true,
+        numericOwnCooldown = numericOwnCooldown == true,
+        numericRemaining = numericOwnCooldown and numericCooldown.remaining or nil,
+        numericDuration = numericOwnCooldown and numericCooldown.duration or nil,
+        numericStart = numericOwnCooldown and numericCooldown.start or nil,
+    }
+end
+
+-- Only already-sanitized numeric values pass this boundary. It is used for
+-- HUD presentation and exact direct-button cooldown reconciliation; shared
+-- GCD, generic action-bar guesses and opaque protected readings stay excluded.
+local function applyDirectActionbarNumericCooldown(state, actionCooldown, spellID)
+    if type(state) ~= "table" or type(actionCooldown) ~= "table" then return false end
+    if actionCooldown.numericOwnCooldown ~= true then return false end
+    local remaining = numeric(actionCooldown.numericRemaining)
+    local duration = numeric(actionCooldown.numericDuration)
+    local start = numeric(actionCooldown.numericStart)
+    if remaining == nil or remaining <= 0 or duration == nil or duration <= 0 or start == nil then return false end
+
+    state.cooldownRemaining = remaining
+    state.cooldownDuration = duration
+    state.cooldownStart = start
+    state.cooldownKnown = true
+    state.cooldownActive = true
+    state.cooldownOnGCD = false
+    state.cooldownGcdAlias = false
+    state.cooldownGcdAliasReason = nil
+    state.cooldownPublicActive = true
+    state.cooldownPublicActiveKnown = true
+    state.cooldownPublicOnGCD = false
+    state.cooldownPublicOnGCDKnown = true
+    state.cooldownSource = "actionbar_numeric"
+    state.cooldownIdentityKey = "spell:" .. tostring(spellID)
+    state.cooldownUnknownReason = nil
+    state.cooldownDirectActionBarEvidence = true
+    state.cooldownActionBarNumericOwnEvidence = true
+    return true
+end
+
 local function collectGcdSnapshot()
     -- The global cooldown is a moving time boundary rather than a durable
     -- cooldown record. Always read it live; the event-driven resolver cache is
@@ -334,7 +415,21 @@ function IconState:CollectCooldownOnly(spellID, options)
         cooldownConfirmationPending = false,
         cooldownGcdAlias = false,
         cooldownGcdAliasReason = nil,
+        -- Set only when a trusted, direct default-action-bar button explicitly
+        -- reports an active non-GCD cooldown for this exact bound action.
+        cooldownDirectActionBarEvidence = false,
+        -- The symmetric positive-ready certificate.  It is intentionally
+        -- separate from the own-CD evidence: an exact visible button that
+        -- explicitly reports ready can correct a stale/base SpellID cooldown,
+        -- but it never authorizes a cooldown skip by itself.
+        cooldownDirectActionBarReadyEvidence = false,
+        cooldownActionBarDurationKnown = false,
+        cooldownActionBarDurationOwnEvidence = false,
+        cooldownActionBarNumericOwnEvidence = false,
         cooldownLiveRead = options.liveCooldown == true,
+        cooldownRequestedActionSlot = numeric(options.actionSlot or options.slot),
+        cooldownActionBarStateTrusted = options.actionBarStateTrusted == true,
+        cooldownRequestedSpellID = spellID,
         charges = nil,
         maxCharges = nil,
         chargeCooldownKnown = false,
@@ -369,6 +464,39 @@ function IconState:CollectCooldownOnly(spellID, options)
     if state.cooldownKnown then
         state.cooldownSource = resolverSource or "spell_api"
         state.cooldownIdentityKey = resolverIdentity
+    end
+
+    -- Prefer the actual trusted action button for GCD provenance. This does
+    -- not create a cooldown or binding; it only prevents a base/override spell
+    -- API disagreement from being misclassified as a personal CD by AutoBurst.
+    local actionCooldown = actionBarPublicCooldown(
+        options.actionSlot or options.slot,
+        options.directActionSlot == true or options.actionBarStateTrusted == true
+    )
+    -- Do not use `condition and value or nil` here: Lua would collapse the
+    -- explicit public boolean `false` into nil, turning a known non-GCD button
+    -- state into UNKNOWN and preventing the narrow direct-action certificate.
+    local actionActive, actionOnGCD, actionLongOwnCooldown, actionNumericReady, actionNumericOwnCooldown
+    if type(actionCooldown) == "table" then
+        actionActive = actionCooldown.active
+        actionOnGCD = actionCooldown.onGCD
+        actionLongOwnCooldown = actionCooldown.longOwnCooldown == true
+        actionNumericReady = actionCooldown.numericReady == true
+        actionNumericOwnCooldown = actionCooldown.numericOwnCooldown == true
+    end
+    state.cooldownActionBarPublicActive = actionActive
+    state.cooldownActionBarPublicActiveKnown = actionActive ~= nil
+    state.cooldownActionBarPublicOnGCD = actionOnGCD
+    state.cooldownActionBarPublicOnGCDKnown = actionOnGCD ~= nil
+    state.cooldownActionBarDurationKnown = type(actionCooldown) == "table" and actionCooldown.numericKnown == true
+    state.cooldownActionBarDurationOwnEvidence = actionLongOwnCooldown == true
+    state.cooldownActionBarNumericOwnEvidence = actionNumericOwnCooldown == true
+    state.cooldownActionBarNumericReady = actionNumericReady == true
+    if actionOnGCD == true then
+        state.cooldownOnGCD = true
+        state.cooldownActive = false
+        state.cooldownGcdAlias = true
+        state.cooldownGcdAliasReason = "actionbar_public_on_gcd"
     end
 
     local trackerPending = TE.CooldownTracker and TE.CooldownTracker.IsConfirmationPending
@@ -408,6 +536,80 @@ function IconState:CollectCooldownOnly(spellID, options)
     -- cooldown cannot re-introduce a false personal CD during the shared GCD.
     normalizeCooldownAgainstGcd(state, gcd)
 
+    -- A direct, trusted default action-bar button is the authoritative public
+    -- source for the exact action the player will actually press. Some
+    -- transformed/override spell APIs can transiently report the requested
+    -- SpellID as ready while its visible button is already on a real personal
+    -- cooldown. When that button explicitly says active and not-on-GCD, retain
+    -- it as a narrow own-CD certificate candidate for AutoBurst. This never
+    -- promotes generic gray styling, an opaque DurationObject, or a shared GCD.
+    -- The same direct button is also authoritative when it explicitly says
+    -- READY.  This closes the inverse of the long-CD compatibility issue:
+    -- talent/hero/override variants can leave C_Spell reporting the declared
+    -- SpellID's old/base cooldown (for example 120s) after the actual bound
+    -- action has already recovered (for example 60s).  For AutoBurst this is
+    -- not a speculative UI signal: it is the exact trusted default-action-bar
+    -- action TEK would press.  Let GCDGate decide any shared queue/GCD phase;
+    -- only clear the false *own cooldown* classification here.
+    if (actionActive == false or actionNumericReady == true) and actionActive ~= true and actionOnGCD ~= true
+        and options.directActionSlot == true
+        and options.actionBarStateTrusted == true then
+        state.cooldownRemaining = 0
+        state.cooldownDuration = 0
+        state.cooldownStart = 0
+        state.cooldownKnown = true
+        state.cooldownActive = false
+        state.cooldownOnGCD = false
+        state.cooldownGcdAlias = false
+        state.cooldownGcdAliasReason = nil
+        state.cooldownPublicActive = false
+        state.cooldownPublicActiveKnown = true
+        state.cooldownPublicOnGCD = actionOnGCD
+        state.cooldownPublicOnGCDKnown = actionOnGCD ~= nil
+        state.cooldownSource = "actionbar_api_ready"
+        state.cooldownIdentityKey = "spell:" .. tostring(spellID)
+        state.cooldownUnknownReason = nil
+        state.cooldownDirectActionBarReadyEvidence = true
+    elseif actionActive == true and actionOnGCD == false
+        and options.directActionSlot == true
+        and options.actionBarStateTrusted == true then
+        if applyDirectActionbarNumericCooldown(state, actionCooldown, spellID) ~= true then
+            state.cooldownKnown = true
+            state.cooldownActive = true
+            state.cooldownOnGCD = false
+            state.cooldownGcdAlias = false
+            state.cooldownGcdAliasReason = nil
+            state.cooldownPublicActive = true
+            state.cooldownPublicActiveKnown = true
+            state.cooldownPublicOnGCD = false
+            state.cooldownPublicOnGCDKnown = true
+            state.cooldownSource = "actionbar_api"
+            state.cooldownIdentityKey = "spell:" .. tostring(spellID)
+            state.cooldownUnknownReason = nil
+            state.cooldownDirectActionBarEvidence = true
+        end
+    elseif actionLongOwnCooldown == true
+        and options.directActionSlot == true
+        and options.actionBarStateTrusted == true then
+        -- Compatibility path for clients that omit public action booleans while
+        -- exposing a normal long CD on the exact direct button.
+        if applyDirectActionbarNumericCooldown(state, actionCooldown, spellID) ~= true then
+            state.cooldownKnown = true
+            state.cooldownActive = true
+            state.cooldownOnGCD = false
+            state.cooldownGcdAlias = false
+            state.cooldownGcdAliasReason = nil
+            state.cooldownPublicActive = true
+            state.cooldownPublicActiveKnown = true
+            state.cooldownPublicOnGCD = false
+            state.cooldownPublicOnGCDKnown = true
+            state.cooldownSource = "actionbar_duration"
+            state.cooldownIdentityKey = "spell:" .. tostring(spellID)
+            state.cooldownUnknownReason = nil
+            state.cooldownDirectActionBarEvidence = true
+        end
+    end
+
     local charges = spellCharges(spellID)
     local trackedCharges
     if TE.CooldownTracker and type(TE.CooldownTracker.GetCharges) == "function" then
@@ -435,6 +637,91 @@ function IconState:CollectCooldownOnly(spellID, options)
             state.cooldownUnknownReason = charges.cooldownUnknownReason
         end
     end
+    return state
+end
+
+-- Narrow inventory cooldown sampler for AutoBurst ordered-sequence.  It reads only
+-- the explicitly selected equipped trinket slot and current ItemID cooldown;
+-- it never queries usability, target/range, auras or HUD visual state.
+function IconState:CollectInventoryCooldownOnly(slot, expectedItemID, options)
+    options = type(options) == "table" and options or {}
+    slot = numeric(slot)
+    expectedItemID = numeric(expectedItemID)
+    local state = {
+        schema = 1,
+        kind = "inventory",
+        inventorySlot = slot,
+        expectedItemID = expectedItemID,
+        known = slot == 13 or slot == 14,
+        cooldownKnown = false,
+        cooldownActive = nil,
+        cooldownOnGCD = nil,
+        cooldownPublicActive = nil,
+        cooldownPublicActiveKnown = false,
+        cooldownPublicOnGCD = nil,
+        cooldownPublicOnGCDKnown = false,
+        cooldownUnknownReason = nil,
+        cooldownSource = nil,
+        cooldownIdentityKey = nil,
+        cooldownConfirmationPending = false,
+        cooldownGcdAlias = false,
+        cooldownGcdAliasReason = nil,
+        cooldownLiveRead = true,
+        cooldownRequestedActionSlot = numeric(options.actionSlot or options.slot),
+        cooldownActionBarStateTrusted = options.actionBarStateTrusted == true,
+        charges = nil,
+        maxCharges = nil,
+        chargeCooldownKnown = false,
+        gcdKnown = false,
+        gcdActive = nil,
+        gcdActiveKnown = false,
+        gcdUnknownReason = nil,
+    }
+    if state.known ~= true then
+        state.cooldownUnknownReason = "inventory_slot_invalid"
+        return state
+    end
+    if not (TE.CooldownResolver and type(TE.CooldownResolver.GetInventoryLive) == "function") then
+        state.cooldownUnknownReason = "inventory_cooldown_resolver_unavailable"
+        return state
+    end
+    local ok, snapshot = pcall(TE.CooldownResolver.GetInventoryLive, TE.CooldownResolver, slot, expectedItemID)
+    if not ok or type(snapshot) ~= "table" then
+        state.cooldownUnknownReason = "inventory_cooldown_read_failed"
+        return state
+    end
+    local currentItemID = numeric(snapshot.itemID)
+    state.itemID = currentItemID
+    if expectedItemID and currentItemID and expectedItemID ~= currentItemID then
+        state.cooldownUnknownReason = "inventory_equipment_changed"
+        state.inventoryEquipmentChanged = true
+        return state
+    end
+    if expectedItemID and not currentItemID then
+        state.cooldownUnknownReason = "inventory_item_missing"
+        state.inventoryEquipmentChanged = true
+        return state
+    end
+    state.cooldownRemaining = numeric(snapshot.remaining)
+    state.cooldownDuration = numeric(snapshot.duration)
+    state.cooldownStart = numeric(snapshot.start)
+    state.cooldownKnown = snapshot.known == true
+    state.cooldownPublicActive = snapshot.active
+    state.cooldownPublicActiveKnown = snapshot.active ~= nil
+    state.cooldownPublicOnGCD = snapshot.onGCD
+    state.cooldownPublicOnGCDKnown = snapshot.onGCD ~= nil
+    state.cooldownOnGCD = snapshot.onGCD
+    state.cooldownActive = snapshot.active == true and snapshot.onGCD ~= true
+    state.cooldownUnknownReason = snapshot.reason
+    state.cooldownSource = snapshot.source
+    state.cooldownIdentityKey = "inventory:" .. tostring(slot) .. ":item:" .. tostring(currentItemID or expectedItemID or 0)
+
+    local gcd = type(options.gcdSnapshot) == "table" and options.gcdSnapshot or collectGcdSnapshot()
+    state.gcdKnown = gcd.known == true
+    state.gcdActive = gcd.active == true
+    state.gcdActiveKnown = gcd.activeKnown == true
+    state.gcdUnknownReason = gcd.reason
+    normalizeCooldownAgainstGcd(state, gcd)
     return state
 end
 
@@ -473,6 +760,7 @@ function IconState:Collect(spellID, options)
         -- fallback because live API numerics are delayed/protected. Native
         -- DurationObjects still take rendering precedence in the HUD.
         cooldownFallback = false,
+        cooldownFallbackOrigin = nil,
         -- True while the local tracker is reconciling a just-cast spell with
         -- post-event C_Spell snapshots. This is display-only and never affects
         -- a recommendation, binding, TEAP payload, or TEK input.
@@ -562,6 +850,7 @@ function IconState:Collect(spellID, options)
         state.cooldownSource = trackedCooldown.source or "local_tracker_cached"
         state.cooldownIdentityKey = trackedCooldown.identityKey or state.cooldownIdentityKey
         state.cooldownFallback = trackedCooldown.fallback == true
+        state.cooldownFallbackOrigin = trackedCooldown.fallbackOrigin
         state.cooldownUnknownReason = nil
     elseif state.cooldownKnown == false and state.cooldownConfirmationPending == true then
         state.cooldownUnknownReason = state.cooldownUnknownReason or "技能冷却正在与动作条确认"
@@ -576,6 +865,76 @@ function IconState:Collect(spellID, options)
     state.gcdKnown = gcdKnown == true
     state.gcdUnknownReason = gcdReason
     state.gcdActive = gcdActive == true
+    normalizeCooldownAgainstGcd(state, gcd)
+
+    -- The HUD must not force native numbers merely because a directly bound
+    -- skill has an adjusted/override CD. Reconcile its exact current button
+    -- first: if readable, the sanitized action-bar timer becomes the custom HUD
+    -- label source; if opaque, the existing DurationObject swipe remains safe.
+    local displayActionCooldown = actionBarPublicCooldown(
+        options.actionSlot or options.slot,
+        options.directActionSlot == true or options.actionBarStateTrusted == true
+    )
+    local displayActionActive = type(displayActionCooldown) == "table" and displayActionCooldown.active or nil
+    local displayActionOnGCD = type(displayActionCooldown) == "table" and displayActionCooldown.onGCD or nil
+    local displayActionReady = type(displayActionCooldown) == "table" and displayActionCooldown.numericReady == true
+    local displayActionLongOwn = type(displayActionCooldown) == "table" and displayActionCooldown.longOwnCooldown == true
+    local displayActionTrusted = options.directActionSlot == true and options.actionBarStateTrusted == true
+    -- Store only an already-sanitized exact action-bar numeric sample. If the
+    -- client makes the next sample opaque, CooldownTracker can keep the HUD CD
+    -- text continuous without inventing static/base cooldown values.
+    if displayActionTrusted and type(displayActionCooldown) == "table"
+        and displayActionCooldown.numericOwnCooldown == true
+        and TE.CooldownTracker and type(TE.CooldownTracker.ObserveCooldown) == "function" then
+        pcall(TE.CooldownTracker.ObserveCooldown, TE.CooldownTracker, spellID, trackerMeta, {
+            start = displayActionCooldown.numericStart,
+            duration = displayActionCooldown.numericDuration,
+            remaining = displayActionCooldown.numericRemaining,
+            source = "actionbar_numeric_observed",
+        })
+    end
+    -- A generic action-bar `isOnGCD=true` observation must never erase a
+    -- confirmed own cooldown captured earlier in this same collection. This is
+    -- especially visible immediately after casting: the shared GCD arrives
+    -- first on some clients while the spell/action slot is already cooling down.
+    -- Prefer an exact direct-button long-CD numeric snapshot; otherwise retain
+    -- a known non-GCD own cooldown and classify only the residual pure GCD.
+    local knownOwnCooldown = state.cooldownKnown == true
+        and state.cooldownActive == true
+        and state.cooldownOnGCD ~= true
+        and state.cooldownGcdAlias ~= true
+        and numeric(state.cooldownRemaining) ~= nil
+        and numeric(state.cooldownRemaining) > 0
+    if displayActionTrusted and ((displayActionActive == true and displayActionOnGCD == false) or displayActionLongOwn == true) then
+        if applyDirectActionbarNumericCooldown(state, displayActionCooldown, spellID) ~= true then
+            state.cooldownKnown = true
+            state.cooldownActive = true
+            state.cooldownOnGCD = false
+            state.cooldownGcdAlias = false
+            state.cooldownGcdAliasReason = nil
+            state.cooldownSource = displayActionLongOwn and "actionbar_duration" or "actionbar_api"
+            state.cooldownIdentityKey = "spell:" .. tostring(spellID)
+            state.cooldownUnknownReason = nil
+        end
+    elseif displayActionTrusted and displayActionOnGCD == true and knownOwnCooldown ~= true then
+        state.cooldownOnGCD = true
+        state.cooldownActive = false
+        state.cooldownGcdAlias = true
+        state.cooldownGcdAliasReason = "actionbar_public_on_gcd"
+    elseif displayActionTrusted and (displayActionActive == false or displayActionReady == true)
+        and displayActionActive ~= true and displayActionOnGCD ~= true then
+        state.cooldownRemaining = 0
+        state.cooldownDuration = 0
+        state.cooldownStart = 0
+        state.cooldownKnown = true
+        state.cooldownActive = false
+        state.cooldownOnGCD = false
+        state.cooldownGcdAlias = false
+        state.cooldownGcdAliasReason = nil
+        state.cooldownSource = "actionbar_api_ready"
+        state.cooldownIdentityKey = "spell:" .. tostring(spellID)
+        state.cooldownUnknownReason = nil
+    end
 
     -- Charges use live API values first. When charge numerics become protected
     -- in combat, the same tracker maintains the pre-cached max/current/recharge
@@ -657,9 +1016,16 @@ function IconState:Decorate(item, options)
     item.cooldownSource = state.cooldownSource
     item.cooldownIdentityKey = state.cooldownIdentityKey
     item.cooldownFallback = state.cooldownFallback == true
+    item.cooldownFallbackOrigin = state.cooldownFallbackOrigin
     item.cooldownConfirmationPending = state.cooldownConfirmationPending == true
+    item.cooldownActionBarNumericOwnEvidence = state.cooldownActionBarNumericOwnEvidence == true
     item.cooldownActive = state.cooldownActive
     item.cooldownOnGCD = state.cooldownOnGCD
+    -- Preserve the collector's explicit GCD-alias classification for the
+    -- field-proven 1.0.31 renderer. This is display-only: it prevents a
+    -- primary/window card from treating a 61304 alias as its own cooldown.
+    item.cooldownGcdAlias = state.cooldownGcdAlias == true
+    item.cooldownGcdAliasReason = state.cooldownGcdAliasReason
     item.gcdRemaining = state.gcdRemaining
     item.gcdDuration = state.gcdDuration
     item.gcdStart = state.gcdStart

@@ -1,96 +1,37 @@
-# Tactic Echo Handoff
+# Tactic Echo Handoff — 1.0.44 P5
 
-Current source release: `1.0.08`
+## 当前状态
 
-## Current State
+- P4.3 已实机验证 reaction：已有打断键位可经 BindingToken → TEAP reaction → TEK → 游戏内动作完成一次打断。
+- P4.4 保持严格的可打断资格：直连 API、单位施法事件或真实原生盾组件连续视觉证据；`showShield`/`barType`/scalar-only true 不可授权输入。
+- P4.5 保留严格 `@mouseover → @focus → target` 同技能整合宏守卫；焦点/当前目标候选若会被更高宏分支抢占，仍零按键并记录 `macro_priority_preempted_by_<source>`。
+- P5 以 numeric `actionInfoID` 锚定当前动作条宏身份：首读无正文时仅重读同一 index，绝不按宏名回收账号/角色宏正文；中文“打断”等同名宏不会再影响反制射击宏识别。P4.6 `/cast` 令牌→SpellID 关联仍保留。
+- P4.6 不改 TEK；已具备 P4.3 reaction 去重的 TEK.exe 可继续使用。
 
-The repository is on the `1.0.08` development baseline. Its historical code ancestry is `0.9.51`; the current source release is `1.0.08`. The dispatch architecture is TEAP v3 dynamic action-bar binding:
+## 已覆盖宏形态
 
-```text
-official primary recommendation
--> visible Blizzard default action-bar binding
--> BindingToken
--> TEAP v3 visual frame
--> TEK safety gates
--> SendInput
+```lua
+#showtooltip
+/stopcasting
+/cast [@focus,nodead] 反制射击
+/cleartarget
+/targetenemy
+/cast 反制射击
+/targetlasttarget
 ```
 
-当前版本新增了 AutoBurst Phase 1；复杂宏策略仍保持保守，不在本阶段扩展。
+P2 应将该宏标记为 `macro_target_switch_fallback_auto` / `macro_managed_target`，为 `focus` 与 `target` 两条路由登记同一个已有真实键位。目标处理仍全部由玩家宏完成；TE 不执行任何 `/target*` 命令。
 
-## Recent Functional State
+## 下一次实机验证
 
-- TEAP v3 still uses a 20-field frame with `T / E / 3 / State`, CRC16 and commit byte.
-- AddOn resolves recommendations through `ActionBarBindingResolver.lua` against visible Blizzard default action buttons.
-- TEK decodes v3 BindingToken directly; v2/profile/hidden-button dispatch is not the default path.
-- TEK auto-location searches bounded top-left WoW client regions for the v3 header and requires complete-frame proof before dispatch.
-- Non-dispatch states retain their meaning: `waiting`, `paused`, `manual_hold`, `channeling`, `empowering`.
-- `ProtocolMonitor` target-cast values are secret-safe; protected interruptibility falls back to unknown instead of raising a taint/protected-value error.
+1. 将上述反制射击宏放在当前可见 Blizzard 默认动作条并绑定受支持键位。
+2. `/reload` 后打开自动打断设置，确认“反制射击”显示为已识别焦点/当前目标宏，而不是“未找到”。
+3. 若仍未识别，执行 `/tecache refresh`、`/temapping p5_macro_identity`，保存退出后提供 `TacticEcho.lua`；映射导出应包含 `macroIdentitySource`、`macroActionInfoMacroIndex`、`macroActionInfoReadAttempts`、`macroResolvedSpellTokenCount` 与失败原因，不含宏正文。
+4. P4.4 的可打断证据与 P4.5 的整合宏场景继续按既有文档验证。
 
-## AutoBurst Phase 1
+## 不在本版范围
 
-- 代码入口：`Tactics/AutoBurst.lua`；默认 `autoBurstEnabled=false`。
-- 仅一条 Profile 声明的窗口 + 注入规则，支持 pre/post、simple/focused。
-- 只读取 CD、充能和 `GCDGate` 标签；不使用 Buff、资源、目标或范围。
-- TEAP flags bit 5 标记 `dispatchOrigin=burst`；TEK 对同一 burst sequence 去重。
-- AutoBurst 内部 hold 使用 `armed + observationOnly`，不再错误转写成全局 `paused`；这避免 GCD/确认等待将计划自锁。
-- 真正输入仍需 Windows 实机验收；AddOn 没有 SendInput 回执。
-
-## Boundaries
-
-- No hidden action buttons.
-- No AddOn binding writes.
-- No macro editing.
-- No macro branch execution or target-condition inference.
-- No tactical/HUD path may create BindingToken, change the official recommendation or request TEK input.
-- Vehicle, possession, override and pet-battle action bars fail closed; ExtraActionBar is observation-only.
-
-## Known Gaps
-
-- Complex conditional macros, including common healing mouseover/target/fallback macros, are not associated by text fallback. They only work when Blizzard APIs expose the current macro spell association.
-- Custom action-bar addons are not dispatch sources.
-- Live Windows validation is still required for tray, hook, foreground, multi-monitor/DPI and actual SendInput behavior.
-- Remote GitHub configuration must be confirmed before push.
-
-## Validation Commands
-
-```powershell
-python scripts/verify-baseline-contract.py --repo-root .
-python -m pytest -q tek/tests tests/unit
-python -m unittest discover -s tek/tests -q
-python -m unittest discover -s tests/unit -q
-python -m compileall -q tek/src tek/app tek/runtime
-```
-
-If available:
-
-```powershell
-luac -p <each addon lua file>
-```
-
-or:
-
-```powershell
-texluac -p <each addon lua file>
-```
-
-## Live Test Notes To Preserve
-
-- User has previously validated Retribution Paladin key dispatch after TE/TEK updates.
-- Holy Paladin dynamic v3 binding required later code updates and should be rechecked after AddOn sync.
-- Macro behavior is intentionally deferred; do not "fix" it unless the user reopens that scope.
-
-## 1.0.07 Field Fixes
-
-- `active=true` without reliable own-CD/GCD provenance is `UNKNOWN`, never a skip-eligible cooldown. Front injection holds/revalidates for a bounded interval.
-- Every created Phase 1 plan retains its window departure lock when it aborts or times out; ordinary official dispatch cannot bypass an unconfirmed front injection.
-- A Burst candidate remains visible with one stable TEAP sequence until success, explicit invalidation or deadline. TEK attempts that sequence at most once.
-- `UNIT_SPELLCAST_SUCCEEDED` can confirm only the current dispatched step; it is not a timing/trigger input.
-- Observation-only Burst frames retain `BindingToken=0` for TEK safety but carry a separate official display binding for HUD/diagnostics.
-
-## 1.0.08 Field Fixes
-
-- AutoBurst trigger ownership now uses `armedEpoch` and window generation counters, not only `previousOfficial != window`.
-- `paused -> armed` can claim an already visible, not-yet-consumed `343527` window and start the expected `31884 -> 343527` plan.
-- Completion, skip, timeout and abort all consume the current window generation and keep a departure lock until official recommendation leaves.
-- `/temapping` exports generation, plan, step, candidate, confirmation, abort and official/dispatch binding fields for post-fight diagnosis.
-- Tactical HUD observation frames display the official binding while preserving dispatch `BindingToken=0`.
+- 自动单体控制与群控；
+- 自动选目标、移动鼠标、点击姓名板；
+- 宏改写、宏创建、写入绑定；
+- TEAP/TEK 输入路径、AutoBurst 策略与 HUD 冷却展示变更。

@@ -29,7 +29,7 @@ class AuditHardeningContractTests(unittest.TestCase):
         for text in (monitor, icon, advisors):
             self.assertNotIn("RegisterEventSafe", text)
         self.assertIn("polling-only", monitor)
-        self.assertIn("pcall(UnitCastingInfo", monitor)
+        self.assertIn("packReturns(UnitCastingInfo", monitor)
         self.assertIn("GetCastDisplayInfo", icon)
         self.assertNotIn("UnitCastingInfo", icon)
         self.assertNotIn("UnitChannelInfo", icon)
@@ -49,14 +49,18 @@ class AuditHardeningContractTests(unittest.TestCase):
         for marker in ("normalizedOrder", "VALID[bucket]", "for _, bucket in ipairs(DEFAULT)"):
             self.assertIn(marker, queue)
 
-    def test_macro_text_fallback_is_direct_only_and_second_binding_is_considered(self) -> None:
+    def test_macro_text_fallback_supports_broad_readonly_association_and_second_binding(self) -> None:
         resolver = (ADDON / "Actions" / "ActionBarBindingResolver.lua").read_text(encoding="utf-8")
         semantics = (ADDON / "Actions" / "MacroSemantics.lua").read_text(encoding="utf-8")
-        self.assertIn("Only one unconditioned /cast line", resolver)
-        self.assertIn('argument:find(";", 1, true)', resolver)
+        auto_burst = (ADDON / "Tactics" / "AutoBurst.lua").read_text(encoding="utf-8")
+        self.assertIn("Broad association deliberately accepts", resolver)
+        self.assertIn('MatchSpell(semantics, spellID, spellName, "broad")', resolver)
         self.assertIn("primaryBinding, secondaryBinding", resolver)
-        self.assertIn("directSlotEligible", semantics)
-        self.assertIn("hasMultipleActionLines", semantics)
+        self.assertIn("splitBranches", semantics)
+        self.assertIn("macro_body_broad_castsequence", semantics)
+        self.assertIn("never creates a new dispatch path", semantics)
+        self.assertIn("macroAutoBurstEligible", auto_burst)
+        self.assertNotIn("macro_not_single_use", auto_burst)
 
     def test_icon_target_state_is_role_scoped(self) -> None:
         icon = (ADDON / "Tactics" / "IconState.lua").read_text(encoding="utf-8")

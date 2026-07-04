@@ -175,6 +175,8 @@ local function applyItemCooldown(item, snapshot)
     item.cooldownIdentityKey = snapshot.identity
     item.cooldownActive = snapshot.active == true
     item.cooldownOnGCD = snapshot.onGCD
+    item.cooldownGcdAlias = snapshot.gcdAlias == true
+    item.cooldownGcdAliasReason = snapshot.gcdAliasReason
     -- P5.1 diagnostics: an equipped trinket may use its ItemID API only when
     -- the slot API temporarily reports an empty ready sample after activation.
     -- These fields are display-only and make that resolution visible in HUD
@@ -216,8 +218,14 @@ local function collectItemState(item)
     -- use C_Item.GetItemCooldown/GetItemCooldown by ItemID.  The action bar is
     -- now only a display of a real hotkey / icon / optional usability hint.
     applyItemCooldown(item, itemCooldownSnapshot(item))
-    local cooling = item.cooldownActive == true
+    -- A shared GCD may be reported by an equipped-slot or ItemID API without
+    -- an explicit `isOnGCD` flag. CooldownResolver normalizes that into the
+    -- source-specific alias below; it must never turn a ready trinket/potion
+    -- card into a fake 1–1.5 second own cooldown.
+    local cooling = (item.cooldownOnGCD ~= true and item.cooldownGcdAlias ~= true) and (
+        item.cooldownActive == true
         or (item.cooldownKnown == true and (number(item.cooldownRemaining) or 0) > 0)
+    )
     if cooling then
         item.usableState = "cooldown"
         item.unusableReason = "物品冷却中"

@@ -30,6 +30,9 @@ local state = {
     healthState = "unavailable",
     playerHealthPercent = nil,
     playerRecentDamage = false,
+    -- P3 feeds this only from ReactionObservation through the existing monitor
+    -- cadence. It remains read-only advisory data and never enters TEAP flags.
+    reaction = nil,
     sampledAt = 0,
     initialized = false,
     snapshot = nil,
@@ -99,6 +102,20 @@ local function plainText(value)
     return ok and type(result) == "string" and result or nil
 end
 
+-- Presence and name materialization are deliberately separate. A live cast
+-- can be observable even when Retail will not let the spell name leave a
+-- protected/secret boundary.  P3.3 therefore uses the complete API return
+-- arity, never the secret name value, to prove that a cast record exists.
+local function packReturns(...)
+    return select("#", ...), ...
+end
+
+local function castRecordPresent(apiOk, arity, requiredArity)
+    if apiOk ~= true then return false end
+    local count = plainNumber(arity)
+    return type(count) == "number" and count >= (requiredArity or 1)
+end
+
 local function isDangerousCastSafe(spellID)
     if not spellID or not TE.AbilityProfiles or type(TE.AbilityProfiles.IsDangerousCast) ~= "function" then
         return false
@@ -120,20 +137,24 @@ end
 local function readTargetCast()
     local castName, spellID, notInterruptible, kind
     if type(UnitCastingInfo) == "function" then
-        local ok, name, _, _, _, _, _, _, noInterrupt, sid = pcall(UnitCastingInfo, "target")
-        local safeName = ok and plainText(name) or nil
-        if safeName then
-            castName, spellID, notInterruptible, kind = safeName, sid, noInterrupt, "cast"
+        local ok, arity, name, _, _, _, _, _, _, noInterrupt, sid = pcall(function()
+            return packReturns(UnitCastingInfo("target"))
+        end)
+        if castRecordPresent(ok, arity, 9) then
+            -- Name remains optional display metadata only; it can be nil when
+            -- the API record is readable but the text itself is opaque.
+            castName, spellID, notInterruptible, kind = plainText(name), sid, noInterrupt, "cast"
         end
     end
-    if not castName and type(UnitChannelInfo) == "function" then
-        local ok, name, _, _, _, _, _, noInterrupt, sid = pcall(UnitChannelInfo, "target")
-        local safeName = ok and plainText(name) or nil
-        if safeName then
-            castName, spellID, notInterruptible, kind = safeName, sid, noInterrupt, "channel"
+    if not kind and type(UnitChannelInfo) == "function" then
+        local ok, arity, name, _, _, _, _, _, noInterrupt, sid = pcall(function()
+            return packReturns(UnitChannelInfo("target"))
+        end)
+        if castRecordPresent(ok, arity, 8) then
+            castName, spellID, notInterruptible, kind = plainText(name), sid, noInterrupt, "channel"
         end
     end
-    if not castName then
+    if not kind then
         clearTargetCast()
         return
     end
@@ -155,6 +176,55 @@ local function readTargetCast()
     state.targetInterruptible = safeNotInterruptible == false
 end
 
+local function readReactionObservation()
+    local observer = TE.ReactionObservation
+    if not (observer and type(observer.Refresh) == "function") then
+        state.reaction = {
+            schema = 1,
+            readOnly = true,
+            dispatchAllowed = false,
+            sources = {},
+            aoe = { active = false, qualifyingCount = 0, threshold = 4, reason = "reaction_observer_unavailable" },
+            source = "unavailable",
+        }
+        return
+    end
+    local ok, snapshot = pcall(observer.Refresh, observer)
+    if ok and type(snapshot) == "table" then
+        state.reaction = snapshot
+    else
+        state.reaction = {
+            schema = 1,
+            readOnly = true,
+            dispatchAllowed = false,
+            sources = {},
+            aoe = { active = false, qualifyingCount = 0, threshold = 4, reason = "reaction_observer_failed" },
+            source = "safe_mode",
+        }
+    end
+end
+
+-- The monitor remains secondary to ReactionObservation for P3 candidate
+-- selection.  This reconciliation simply keeps old target-cast diagnostics and
+-- legacy target prompt presentation honest when the direct UnitCastingInfo path
+-- is opaque but the native Blizzard castbar has a visible resolved state.
+local function reconcileTargetFromReactionObservation()
+    local reaction = type(state.reaction) == "table" and state.reaction or {}
+    local sources = type(reaction.sources) == "table" and reaction.sources or {}
+    local target = type(sources.target) == "table" and sources.target or {}
+    local cast = type(target.cast) == "table" and target.cast or {}
+    if state.targetCasting == true or target.hostile ~= true or target.alive ~= true or cast.active ~= true then
+        return
+    end
+    state.targetCasting = true
+    state.targetCastKind = cast.kind
+    state.targetCastSpellID = plainNumber(cast.spellID)
+    state.targetCastName = nil
+    state.targetCastDangerous = isDangerousCastSafe(state.targetCastSpellID)
+    state.targetInterruptibleKnown = cast.interruptibleKnown == true
+    state.targetInterruptible = cast.interruptibleKnown == true and cast.interruptible == true
+end
+
 local function rebuildSnapshot()
     -- Consumers treat this as read-only. Reusing one table per poll prevents
     -- four tactical subsystems from allocating and refreshing the same data.
@@ -174,6 +244,12 @@ local function rebuildSnapshot()
         healthState = state.healthState,
         playerHealthPercent = state.playerHealthPercent,
         playerRecentDamage = state.playerRecentDamage == true,
+        -- Full P3 reaction data remains advisory-only. It contains unit/cast
+        -- eligibility observations, never a binding token or dispatch request.
+        reaction = type(state.reaction) == "table" and state.reaction or {
+            schema = 1, readOnly = true, dispatchAllowed = false, sources = {},
+            aoe = { active = false, qualifyingCount = 0, threshold = 4, reason = "not_sampled" },
+        },
         observedAt = state.sampledAt,
         source = "polling_safe_cached",
     }
@@ -181,6 +257,8 @@ end
 
 local function refresh()
     readTargetCast()
+    readReactionObservation()
+    reconcileTargetFromReactionObservation()
     local health = readHealthCompatibility()
     state.playerHealthObserved = health.available == true
     state.playerHealthCritical = health.available == true and health.low == true

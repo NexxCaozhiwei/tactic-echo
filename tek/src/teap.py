@@ -44,6 +44,7 @@ class TEAPFrame:
     monitor_flags: int = 0
     dispatch_origin: str = "official"
     burst_dispatch: bool = False
+    reaction_dispatch: bool = False
 
 
 def decode_fields(fields: list[int] | tuple[int, ...]) -> TEAPFrame:
@@ -75,6 +76,13 @@ def _decode_v3(raw: tuple[int, ...]) -> TEAPFrame:
         raise TEAPError(f"unknown_state:{raw[3]}")
 
     flags = raw[16]
+    burst_dispatch = bool(flags & 0x20)
+    reaction_dispatch = bool(flags & 0x40)
+    if burst_dispatch and reaction_dispatch:
+        raise TEAPError("dispatch_origin_conflict")
+    # Compatibility invariant: legacy burst frames remain semantically
+    # equivalent to `dispatch_origin="burst"`; Reaction uses a distinct bit.
+    dispatch_origin = "reaction" if reaction_dispatch else ("burst" if burst_dispatch else "official")
     return TEAPFrame(
         protocol_version=PROTOCOL_VERSION,
         state=state,
@@ -91,8 +99,9 @@ def _decode_v3(raw: tuple[int, ...]) -> TEAPFrame:
         target_interruptible=bool(flags & 0x08),
         player_health_critical=bool(flags & 0x10),
         monitor_flags=flags & 0x1C,
-        dispatch_origin="burst" if (flags & 0x20) else "official",
-        burst_dispatch=bool(flags & 0x20),
+        dispatch_origin=dispatch_origin,
+        burst_dispatch=burst_dispatch,
+        reaction_dispatch=reaction_dispatch,
         checksum=observed_crc,
         commit=raw[19],
         raw_fields=raw,
@@ -116,6 +125,8 @@ def encode_fields_v3(
     player_health_critical: bool = False,
     dispatch_origin: str = "official",
 ) -> tuple[int, ...]:
+    if dispatch_origin not in {"official", "burst", "reaction"}:
+        raise TEAPError(f"invalid_dispatch_origin:{dispatch_origin}")
     flags = (
         (1 if in_combat else 0)
         | (2 if observation_only else 0)
@@ -123,6 +134,7 @@ def encode_fields_v3(
         | (8 if target_interruptible else 0)
         | (16 if player_health_critical else 0)
         | (32 if dispatch_origin == "burst" else 0)
+        | (64 if dispatch_origin == "reaction" else 0)
     )
     fields = [
         84,

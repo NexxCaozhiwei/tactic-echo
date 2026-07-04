@@ -100,6 +100,7 @@ local function snapshotFrom(message, encoded)
         officialSpellIcon = officialSpellIcon,
         dispatchSpellID = dispatchSpellID,
         dispatchOrigin = message.dispatchOrigin or "official",
+        burstPlan = type(message.burstPlan) == "table" and message.burstPlan or nil,
         observationOnly = message.observationOnly == true,
         observationReason = message.observationReason,
         officialSource = "C_AssistedCombat",

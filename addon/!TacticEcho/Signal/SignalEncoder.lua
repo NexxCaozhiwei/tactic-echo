@@ -43,9 +43,30 @@ local function burstPlanMetadata(value)
         direction = value.direction == "post" and "post" or (value.direction == "pre" and "pre" or nil),
         mode = value.mode == "focused" and "focused" or (value.mode == "simple" and "simple" or nil),
         stepRole = value.stepRole == "window" and "window" or (value.stepRole == "injection" and "injection" or nil),
+        actionKind = value.dispatchActionKind == "inventory" and "inventory" or (value.dispatchActionKind == "spell" and "spell" or nil),
+        inventorySlot = tonumber(value.dispatchInventorySlot) or nil,
+        itemID = tonumber(value.dispatchItemID) or nil,
         dispatchAttempt = tonumber(value.dispatchAttempt) or nil,
         reason = type(value.reason) == "string" and value.reason or nil,
         kind = value.kind == "candidate" and "candidate" or (value.kind == "hold" and "hold" or nil),
+        preCombatBridge = value.preCombatBridge == true,
+    }
+end
+
+-- P4 reaction audit metadata mirrors the existing Burst sanitizer. The live
+-- binding object stays inside SignalFrame only; diagnostics retain scalar route
+-- facts and never include macro text or a new input channel.
+local function reactionPlanMetadata(value)
+    if type(value) ~= "table" then return nil end
+    return {
+        kind = value.kind == "candidate" and "candidate" or (value.kind == "hold" and "hold" or nil),
+        reactionKind = value.reactionKind == "interrupt" and "interrupt" or nil,
+        source = value.source == "focus" and "focus" or (value.source == "mouseover" and "mouseover" or (value.source == "target" and "target" or nil)),
+        spellID = tonumber(value.dispatchSpellID) or nil,
+        routeMode = type(value.routeMode) == "string" and value.routeMode or nil,
+        macroManagedTarget = value.macroManagedTarget == true,
+        macroPriorityChain = value.macroPriorityChain == true,
+        reason = type(value.reason) == "string" and value.reason or nil,
     }
 end
 
@@ -89,11 +110,13 @@ function SignalEncoder:Encode(message)
         monitorFlags = select(1, TE.ProtocolMonitor:GetFlags(message.monitor)) or 0
     end
     flags = flags + monitorFlags
-    -- v3 reserved bit 5 is now an auditable dispatch-origin marker.  It does
-    -- not create a second transport: TEK still validates the same BindingToken
-    -- and all existing protocol gates before any input is attempted.
-    local dispatchOrigin = message.dispatchOrigin == "burst" and "burst" or "official"
+    -- v3 reserved bits 5/6 are auditable dispatch-origin markers. They do not
+    -- create extra transports: TEK still validates the same BindingToken and
+    -- all existing protocol gates before any input is attempted.
+    local dispatchOrigin = message.dispatchOrigin
+    if dispatchOrigin ~= "burst" and dispatchOrigin ~= "reaction" then dispatchOrigin = "official" end
     if dispatchOrigin == "burst" then flags = flags + 32 end
+    if dispatchOrigin == "reaction" then flags = flags + 64 end
 
     local fields = {
         84,
@@ -153,7 +176,11 @@ function SignalEncoder:Encode(message)
         dispatchOrigin = dispatchOrigin,
         officialSpellID = message.officialSpellID,
         dispatchSpellID = message.dispatchSpellID,
+        dispatchActionKind = message.dispatchActionKind,
+        dispatchInventorySlot = message.dispatchInventorySlot,
+        dispatchItemID = message.dispatchItemID,
         burstPlan = burstPlanMetadata(message.burstPlan),
+        reaction = reactionPlanMetadata(message.reactionPlan),
         frameFreshnessCounter = freshness,
         fields = fields,
         state = message.state,
@@ -162,6 +189,7 @@ function SignalEncoder:Encode(message)
         actionId = message.actionId,
         spellID = message.spellID,
         inCombat = message.inCombat,
+        preCombatBurstBridge = message.preCombatBurstBridge == true,
         observationOnly = message.observationOnly,
         checksum = crc,
     }

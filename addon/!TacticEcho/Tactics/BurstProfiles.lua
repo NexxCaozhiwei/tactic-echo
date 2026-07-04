@@ -1,7 +1,9 @@
 -- Explicit specialization-scoped burst registry.
 --
 -- Source policy:
--- * Initial trigger / injection seeds are normalized from reference spell data.
+-- * Initial trigger / injection seeds are explicit, versioned default mappings.
+-- * The 1.0.23 mappings listed below are aligned to the user-provided
+--   “部分窗口注入技能配置表”; unlisted specializations retain their prior defaults.
 -- * Every playable specialization has an explicit profile key, including profiles
 --   whose reference seed is intentionally empty.
 -- * A profile can only produce display-only HUD candidates.  It never creates a
@@ -75,27 +77,29 @@ local SPEC_META = {
     WARRIOR_3 = { classFile = "WARRIOR", specIndex = 3, specID = 73, label = "防护战士" },
 }
 
--- Normalized from reference trigger default data.
+-- Default official-window seeds.
+-- 1.0.23 aligns the listed specializations with the user-provided
+-- “部分窗口注入技能配置表”: window spell = official trigger.
 local REFERENCE_TRIGGER_SEEDS = {
     DEATHKNIGHT_1 = { 49028 },
     DEATHKNIGHT_2 = { 51271, 152279 },
     DEATHKNIGHT_3 = { 63560, 42650 },
     DEMONHUNTER_1 = { 191427 },
     DEMONHUNTER_2 = { 187827 },
-    DRUID_1 = { 194223, 102560 },
-    DRUID_2 = { 106951, 102543 },
+    DRUID_1 = { 202770 },
+    DRUID_2 = { 391528 },
     DRUID_3 = { 50334, 102558 },
     EVOKER_1 = { 375087 },
     EVOKER_3 = { 403631 },
     HUNTER_1 = { 19574, 359844 },
-    HUNTER_2 = { 288613 },
+    HUNTER_2 = { 260243 },
     HUNTER_3 = { 360952 },
-    MAGE_1 = { 365350 },
-    MAGE_2 = { 190319 },
-    MAGE_3 = { 12472 },
+    MAGE_1 = { 321507 },
+    MAGE_2 = { 153561 },
+    MAGE_3 = { 84714 },
     MONK_3 = { 137639 },
     PALADIN_2 = { 31884 },
-    PALADIN_3 = { 31884, 231895 },
+    PALADIN_3 = { 343527 },
     PRIEST_3 = { 228260, 391109 },
     ROGUE_1 = { 360194 },
     ROGUE_2 = { 13750 },
@@ -110,7 +114,9 @@ local REFERENCE_TRIGGER_SEEDS = {
     WARRIOR_3 = { 107574 },
 }
 
--- Normalized from reference injection default data.
+-- Default pre/post injection seeds.
+-- 1.0.23 aligns the listed specializations with the user-provided
+-- “部分窗口注入技能配置表”: injection spell = sequence insert action.
 -- Important correction: The reference seed placed Eye of Tyr (387174) under the wrong specialization
 -- index. TE normalizes it under PALADIN_2 (Protection) before it reaches the
 -- explicit specialization registry.
@@ -120,21 +126,21 @@ local REFERENCE_INJECTION_SEEDS = {
     DEATHKNIGHT_3 = { 42650 },
     DEMONHUNTER_1 = { 370965 },
     DEMONHUNTER_2 = { 187827 },
-    DRUID_1 = { 391528 },
-    DRUID_2 = { 391528, 274837 },
+    DRUID_1 = { 102560 },
+    DRUID_2 = { 106951 },
     DRUID_3 = { 50334, 102558, 391528 },
     EVOKER_1 = { 357210 },
     EVOKER_3 = { 403631 },
     HUNTER_1 = { 359844, 321530 },
-    HUNTER_2 = { 260243 },
+    HUNTER_2 = { 288613 },
     HUNTER_3 = { 203415 },
-    MAGE_1 = { 321507 },
-    MAGE_2 = { 153561 },
-    MAGE_3 = { 84714 },
+    MAGE_1 = { 365350 },
+    MAGE_2 = { 190319 },
+    MAGE_3 = { 55342 },
     MONK_1 = { 325153 },
     MONK_3 = { 123904 },
     PALADIN_2 = { 387174 },
-    PALADIN_3 = { 255937 },
+    PALADIN_3 = { 31884 },
     PRIEST_3 = { 263165 },
     ROGUE_1 = { 360194 },
     ROGUE_2 = { 51690 },
@@ -275,6 +281,209 @@ local function copyEntryList(entries)
     return out
 end
 
+
+-- AutoBurst execution uses a specialization-local sequence of logical steps.
+-- The sequence stores stable action identities (spell IDs / inventory slots),
+-- never transient action-bar bindings or item IDs. This prevents a lower
+-- injection-list reorder or a specialization switch from silently retargeting
+-- an existing sequence row to a different skill.
+local AUTO_BURST_SEQUENCE_SCHEMA = 1
+local AUTO_BURST_MAX_INJECTIONS = 3
+
+local function autoBurstSpellKey(spellID)
+    spellID = tonumber(spellID)
+    return spellID and spellID > 0 and ("injection:" .. tostring(math.floor(spellID))) or nil
+end
+
+local function autoBurstSequenceStore(profileKey, create)
+    local user = userProfile(profileKey, create)
+    if not user then return nil end
+    if create then
+        user.autoBurstSequence = type(user.autoBurstSequence) == "table" and user.autoBurstSequence or {}
+    end
+    return type(user.autoBurstSequence) == "table" and user.autoBurstSequence or nil
+end
+
+local function autoBurstCurrentInjectionEntries(profile)
+    local out = {}
+    for _, entry in ipairs(profile and profile.injectionEntries or {}) do
+        local spellID = tonumber(entry and entry.spellID)
+        if entry and entry.enabled ~= false and spellID and spellID > 0
+            and not contains(profile and profile.blacklistSpellIDs, spellID) then
+            out[#out + 1] = {
+                key = autoBurstSpellKey(spellID),
+                role = "injection_" .. tostring(#out + 1),
+                category = "injection",
+                kind = "spell",
+                spellID = math.floor(spellID),
+                slotIndex = #out + 1,
+                enabled = true,
+                fixed = false,
+            }
+            if #out >= AUTO_BURST_MAX_INJECTIONS then break end
+        end
+    end
+    return out
+end
+
+local function appendUnique(out, seen, key)
+    if type(key) == "string" and key ~= "" and not seen[key] then
+        seen[key] = true
+        out[#out + 1] = key
+    end
+end
+
+local function autoBurstDefaultOrder(injections)
+    local order, seen = {}, {}
+    -- Preserve 1.0.25's verified default: first injection precedes the window.
+    if injections[1] then appendUnique(order, seen, injections[1].key) end
+    appendUnique(order, seen, "window")
+    if injections[2] then appendUnique(order, seen, injections[2].key) end
+    if injections[3] then appendUnique(order, seen, injections[3].key) end
+    appendUnique(order, seen, "trinket:13")
+    appendUnique(order, seen, "trinket:14")
+    return order
+end
+
+local function buildAutoBurstSequence(profile, profileKey)
+    local injections = autoBurstCurrentInjectionEntries(profile)
+    local byKey = {
+        window = {
+            key = "window",
+            role = "window",
+            category = "window",
+            kind = "spell",
+            spellID = tonumber(profile and profile.openerSpellIDs and profile.openerSpellIDs[1]),
+            enabled = true,
+            fixed = true,
+        },
+        ["trinket:13"] = {
+            key = "trinket:13", role = "trinket_13", category = "trinket", kind = "inventory",
+            inventorySlot = 13, enabled = false, fixed = false, offGCDExplicit = false,
+        },
+        ["trinket:14"] = {
+            key = "trinket:14", role = "trinket_14", category = "trinket", kind = "inventory",
+            inventorySlot = 14, enabled = false, fixed = false, offGCDExplicit = false,
+        },
+    }
+    for _, entry in ipairs(injections) do byKey[entry.key] = entry end
+
+    local store = autoBurstSequenceStore(profileKey, false) or {}
+    local requestedOrder = type(store.order) == "table" and store.order or {}
+    local defaultOrder = autoBurstDefaultOrder(injections)
+    local order, seen = {}, {}
+    for _, key in ipairs(requestedOrder) do
+        if byKey[key] then appendUnique(order, seen, key) end
+    end
+    for _, key in ipairs(defaultOrder) do
+        if byKey[key] then appendUnique(order, seen, key) end
+    end
+
+    local enabledMap = type(store.enabled) == "table" and store.enabled or {}
+    local offGCDMap = type(store.offGCDExplicit) == "table" and store.offGCDExplicit or {}
+    local entries = {}
+    for _, key in ipairs(order) do
+        local source = byKey[key]
+        local entry = {}
+        for field, value in pairs(source) do entry[field] = value end
+        if key == "window" then
+            entry.enabled = true
+        elseif type(enabledMap[key]) == "boolean" then
+            entry.enabled = enabledMap[key] == true
+        elseif entry.category == "injection" then
+            -- Preserve the old single-injection behavior unless the user
+            -- deliberately enables additional injection rows.
+            entry.enabled = entry.slotIndex == 1
+        else
+            -- Trinkets remain disabled until explicitly enabled by the user.
+            entry.enabled = false
+        end
+        if entry.category == "trinket" then
+            entry.offGCDExplicit = offGCDMap[key] == true
+        end
+        entries[#entries + 1] = entry
+    end
+
+    local signature = {}
+    for _, entry in ipairs(entries) do
+        signature[#signature + 1] = entry.key .. ":" .. (entry.enabled and "1" or "0")
+            .. ":" .. (entry.offGCDExplicit == true and "g" or "n")
+    end
+    return {
+        schema = AUTO_BURST_SEQUENCE_SCHEMA,
+        profileKey = profileKey,
+        windowSpellID = byKey.window.spellID,
+        entries = entries,
+        injectionCount = #injections,
+        signature = table.concat(signature, ","),
+    }
+end
+
+function BurstProfiles:GetAutoBurstSequence(context)
+    local profile, profileKey, reason = self:Get(context)
+    if not profile then return nil, profileKey, reason end
+    if profile.noSeedNotice then return nil, profileKey, profile.noSeedNotice end
+    local sequence = buildAutoBurstSequence(profile, profileKey)
+    if not sequence.windowSpellID or sequence.windowSpellID <= 0 then
+        return nil, profileKey, "burst_sequence_window_missing"
+    end
+    return sequence, profileKey, reason, profile
+end
+
+function BurstProfiles:MoveAutoBurstStep(context, stepKey, delta)
+    local sequence, profileKey, reason = self:GetAutoBurstSequence(context)
+    if not sequence or not profileKey then return false, reason or "missing_profile" end
+    stepKey, delta = tostring(stepKey or ""), tonumber(delta)
+    if (delta ~= -1 and delta ~= 1) or stepKey == "" then return false, "invalid_move" end
+    local index
+    for i, entry in ipairs(sequence.entries or {}) do
+        if entry.key == stepKey then index = i; break end
+    end
+    if not index then return false, "step_not_in_current_spec_sequence" end
+    local target = index + delta
+    if target < 1 or target > #(sequence.entries or {}) then return false, "already_at_boundary" end
+    local order = {}
+    for i, entry in ipairs(sequence.entries or {}) do order[i] = entry.key end
+    order[index], order[target] = order[target], order[index]
+    local store = autoBurstSequenceStore(profileKey, true)
+    store.schema = AUTO_BURST_SEQUENCE_SCHEMA
+    store.order = order
+    return true
+end
+
+function BurstProfiles:SetAutoBurstStepEnabled(context, stepKey, enabled)
+    local sequence, profileKey, reason = self:GetAutoBurstSequence(context)
+    if not sequence or not profileKey then return false, reason or "missing_profile" end
+    stepKey = tostring(stepKey or "")
+    local target
+    for _, entry in ipairs(sequence.entries or {}) do
+        if entry.key == stepKey then target = entry; break end
+    end
+    if not target then return false, "step_not_in_current_spec_sequence" end
+    if target.fixed == true or target.category == "window" then return false, "window_step_cannot_be_disabled" end
+    local store = autoBurstSequenceStore(profileKey, true)
+    store.schema = AUTO_BURST_SEQUENCE_SCHEMA
+    store.enabled = type(store.enabled) == "table" and store.enabled or {}
+    store.enabled[stepKey] = enabled == true
+    return true
+end
+
+function BurstProfiles:SetAutoBurstTrinketOffGCD(context, stepKey, enabled)
+    local sequence, profileKey, reason = self:GetAutoBurstSequence(context)
+    if not sequence or not profileKey then return false, reason or "missing_profile" end
+    stepKey = tostring(stepKey or "")
+    local target
+    for _, entry in ipairs(sequence.entries or {}) do
+        if entry.key == stepKey then target = entry; break end
+    end
+    if not target or target.category ~= "trinket" then return false, "trinket_step_required" end
+    local store = autoBurstSequenceStore(profileKey, true)
+    store.schema = AUTO_BURST_SEQUENCE_SCHEMA
+    store.offGCDExplicit = type(store.offGCDExplicit) == "table" and store.offGCDExplicit or {}
+    store.offGCDExplicit[stepKey] = enabled == true
+    return true
+end
+
 local function createProfile(profileKey, meta)
     local triggerDefaults = copyList(REFERENCE_TRIGGER_SEEDS[profileKey])
     local injectionDefaults = copyList(REFERENCE_INJECTION_SEEDS[profileKey])
@@ -287,7 +496,7 @@ local function createProfile(profileKey, meta)
     end
     local enabled = not user or user.enabled == nil or user.enabled == true
     local profile = {
-        schema = 3,
+        schema = 4,
         classFile = meta.classFile,
         specIndex = meta.specIndex,
         specID = meta.specID,
@@ -481,6 +690,7 @@ function BurstProfiles:RestoreDefaults(context)
     local user = userProfile(profileKey, true)
     user.triggerOrder, user.triggerDisabled, user.customTriggerSpellIDs = nil, nil, nil
     user.injectionOrder, user.injectionDisabled, user.customInjectionSpellIDs = nil, nil, nil
+    user.autoBurstSequence = nil
     return true
 end
 

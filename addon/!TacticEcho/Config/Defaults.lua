@@ -7,8 +7,8 @@ local TE = _G.TacticEcho
 TE.Config = TE.Config or {}
 
 local Defaults = {
-    schema = 6,
-    hudSchema = 8,
+    schema = 8,
+    hudSchema = 10,
     settings = {
         sessionPolicy = "pause_out_of_combat",
         protocolMode = "v3_dynamic",
@@ -54,7 +54,7 @@ local Defaults = {
     text = {
         keyLabel = { enabled = true, fontPreset = "normal", fontSize = 12, scale = 1.00, point = "TOPRIGHT", offsetX = -3, offsetY = -3 },
         chargeLabel = { enabled = true, fontPreset = "normal", fontSize = 12, scale = 1.00, point = "BOTTOMRIGHT", offsetX = -3, offsetY = 3 },
-        cooldownText = { enabled = true, mode = "auto", fontPreset = "highlight", fontSize = 14, scale = 1.00, point = "CENTER", offsetX = 0, offsetY = 0 },
+        cooldownText = { enabled = true, mode = "custom", fontPreset = "highlight", fontSize = 14, scale = 1.00, point = "CENTER", offsetX = 0, offsetY = 0 },
         -- P5: state is no longer multiplexed into the CD text. “施法 / 暂停 /
         -- 引导 / 蓄力 / 阻止 / 未绑定” has its own style and anchor.
         stateText = { enabled = true, fontPreset = "normal", fontSize = 11, scale = 1.00, point = "BOTTOMLEFT", offsetX = 3, offsetY = 3 },
@@ -76,6 +76,24 @@ local Defaults = {
         queuePriorityPreset = "output_first",
         interruptEnabled = true,
         controlEnabled = true,
+        -- P1 persists reaction configuration only. No automatic interrupt or
+        -- control dispatch is attached until the later reaction milestones.
+        -- Keeping these values under one dedicated branch avoids changing the
+        -- existing display-only interrupt/control settings or Burst state.
+        autoReaction = {
+            schema = 1,
+            interrupt = {
+                enabled = false,
+                targetOrder = { "target", "focus", "mouseover" },
+                targetEnabled = { target = true, focus = false, mouseover = false },
+            },
+            control = {
+                enabled = false,
+                aoeEnabled = false,
+                targetOrder = { "target", "focus", "mouseover" },
+                targetEnabled = { target = true, focus = false, mouseover = false },
+            },
+        },
         mobilityEnabled = true,
         defensiveEnabled = true,
         defensiveOutOfCombatStandby = true,
@@ -86,16 +104,12 @@ local Defaults = {
         -- independent automatic-run gate; this setting only enables burst
         -- takeover when a configured window recommendation is observed.
         autoBurstEnabled = false,
-        autoBurstDirection = "pre",
-        autoBurstMode = "simple",
+        -- Sequence order and optional-step enablement are specialization-local
+        -- and live in tactics.burstProfiles[specKey].autoBurstSequence.
+        -- The old legacy manual-rule hand-entered SpellID test rule is intentionally
+        -- retired: runtime plans always resolve through the real profile lists.
+        autoBurstMode = "simple", -- simple | focused
         autoBurstDebug = true,
-        -- Phase-1 test rule.  Both values must be set together to override the
-        -- current-profile fallback.  This makes the official recommendation
-        -- anchor explicit instead of silently assuming the first HUD burst card
-        -- is ever recommended by Blizzard's official rotation.
-        autoBurstWindowSpellID = 0,
-        autoBurstInjectionSpellID = 0,
-        autoBurstUseProfileFallback = true,
         burstShowCandidates = true,
         burstHighlightPrimary = true,
         burstShowClassCooldowns = true,

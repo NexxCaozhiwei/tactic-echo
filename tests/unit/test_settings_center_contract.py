@@ -41,7 +41,7 @@ class SettingsCenterContractTests(unittest.TestCase):
             self.assertNotIn(forbidden, advisors)
         self.assertNotIn("UnitHealth(", monitor)
         self.assertNotIn("UnitHealthMax(", monitor)
-        self.assertNotIn("UnitCastingInfo(", monitor)
+        self.assertIn("packReturns(UnitCastingInfo(\"target\"))", monitor)
         self.assertNotIn("remainingMs = math", signal)
         self.assertNotIn("endTimeMS) -", signal)
 
@@ -60,6 +60,39 @@ class SettingsCenterContractTests(unittest.TestCase):
         self.assertNotIn("OpenSettingsPanel", text)
         self.assertNotIn("Settings.OpenToCategory", text)
 
+    def test_hud_right_click_routes_and_burst_subpages_are_present(self) -> None:
+        panel = (ADDON / "UI" / "ControlPanel.lua").read_text(encoding="utf-8")
+        board = (ADDON / "UI" / "TacticalBoard.lua").read_text(encoding="utf-8")
+        button = (ADDON / "UI" / "TacticalIconButton.lua").read_text(encoding="utf-8")
+        for token in (
+            "function ControlPanel:SetBurstSubpage(subpage)",
+            '"爆发设置"',
+            '"样式设置"',
+            "burstSubpages = {",
+            "button.selected = key == activePage",
+            "setButtonVisual(button, button.selected)",
+            'createSection(pane, "/te 命令面板", y)',
+            '"启动运行", "armed"',
+            '"打开设置", "ui"',
+        ):
+            self.assertIn(token, panel)
+        self.assertIn('if button == "RightButton"', button)
+        self.assertIn('TE.ControlPanel:Show(self.settingsPage or "general")', button)
+        for token in (
+            'nodes.primary.settingsPage = "main"',
+            'nodes.tactical.burst) do card.settingsPage = "burst"',
+            'nodes.tactical.interrupt.settingsPage = "interrupt"',
+            'nodes.tactical.control.settingsPage = "interrupt"',
+            'nodes.defense) do card.settingsPage = "defense"',
+            'Show("general")',
+        ):
+            self.assertIn(token, board)
+
+    def test_icon_effect_master_toggle_has_vertical_gap_before_effect_matrix(self) -> None:
+        panel = (ADDON / "UI" / "ControlPanel.lua").read_text(encoding="utf-8")
+        editor = panel.split("local function buildIconStyleEditor", 1)[1].split("local function buildGeneral", 1)[0]
+        self.assertIn('createCheckbox(pane, "启用动态光效"', editor)
+        self.assertIn("y = y - 34", editor)
 
 if __name__ == "__main__":
     unittest.main()

@@ -20,8 +20,12 @@ class IconStateContractTests(unittest.TestCase):
 
     def test_icon_component_renders_all_icon_state_markers(self):
         text = (ADDON / "UI" / "TacticalIconButton.lua").read_text(encoding="utf-8")
-        for marker in ("frame:SetCooldown", "card.gcdCooldown", "chargeText", "card.chargeEdge", 'item.usableState == "resource"', 'item.usableState == "range"', 'item.usableState == "target"', "引导", "unknown", "触发效果：已高亮"):
+        for marker in ("frame:SetCooldown", "card.gcdCooldown", "chargeText", "card.chargeEdge", "引导", "unknown", "触发效果：已高亮"):
             self.assertIn(marker, text)
+        # Resource/range/target remain HUD states, but no longer have a second
+        # icon-component greyscale path that duplicates the cooldown swipe.
+        self.assertIn("card.icon:SetDesaturated(visual.desaturate == true)", text)
+        self.assertIn("Only explicit hard states chosen by TacticalHudStyles", text)
         self.assertNotIn("card.proc = card:CreateTexture", text)
         effects = (ADDON / "UI" / "TacticalIconEffects.lua").read_text(encoding="utf-8")
         self.assertIn("TacticalIconEffects.lua", text)

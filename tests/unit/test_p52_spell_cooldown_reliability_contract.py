@@ -46,10 +46,12 @@ class P52SpellCooldownReliabilityContractTests(unittest.TestCase):
         ):
             self.assertIn(marker, self.tracker)
 
-    def test_low_confidence_cast_event_reuses_existing_slot_alias(self) -> None:
+    def test_low_confidence_cast_event_reuses_existing_slot_alias_and_preserves_precache(self) -> None:
         for marker in (
             "local function existingAliasKey(ids)",
-            "if not key then key = existingAliasKey(ids) end",
+            "local key = directKey or aliasKey or",
+            "local function migrateEntryToKey(entry, newKey, slot)",
+            "without dropping the out-of-combat cached duration",
             "A low-confidence spell-only event must never overwrite",
             'if mapped == nil or entry.key:match("^slot:") then',
         ):
@@ -66,7 +68,7 @@ class P52SpellCooldownReliabilityContractTests(unittest.TestCase):
         ):
             self.assertIn(marker, self.resolver)
 
-    def test_hud_uses_tracker_only_after_resolver_and_keeps_native_priority(self) -> None:
+    def test_hud_uses_tracker_only_after_resolver_and_the_field_proven_live_renderer(self) -> None:
         for marker in (
             "CooldownTracker.IsConfirmationPending",
             "CooldownTracker.GetCooldown",
@@ -78,7 +80,11 @@ class P52SpellCooldownReliabilityContractTests(unittest.TestCase):
             self.assertIn(marker, self.icon_state)
         self.assertIn('"cooldownConfirmationPending"', self.model)
         self.assertIn('"cooldownFallback"', self.model)
-        self.assertIn("A direct action-bar DurationObject is exact and always wins", self.icon)
+        self.assertNotIn("function IconState:BuildCooldownPresentation", self.icon_state)
+        self.assertNotIn("sanitizeCooldownPresentation", self.model)
+        self.assertIn("local function showDurationObjectCooldown", self.icon)
+        self.assertIn("C_Spell.GetSpellCooldownDuration", self.icon)
+        self.assertIn("C_ActionBar.GetActionCooldownDuration", self.icon)
 
 
 if __name__ == "__main__":

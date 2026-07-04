@@ -66,7 +66,10 @@ local function normalizeTextStyle(style, defaults)
     style.offsetX = number(style.offsetX, defaults.offsetX or 0, -30, 30)
     style.offsetY = number(style.offsetY, defaults.offsetY or 0, -30, 30)
     if defaults.mode ~= nil or style.mode ~= nil then
-        style.mode = isEnum(style.mode, { auto = true, custom = true, duration = true }, defaults.mode or "auto")
+        -- 1.0.38 removes the native DurationObject-digit mode. Cooldown text is
+        -- always drawn by the configurable HUD badge so every card uses the
+        -- same plain-seconds format and font/anchor controls.
+        style.mode = "custom"
     end
     style.color = color(style.color)
     return style
@@ -131,6 +134,64 @@ local function normalizeQueueOrder(value)
     return #out > 0 and out or nil
 end
 
+-- Automatic reaction settings are configuration-only in 1.0.39 P1.
+-- Normalize them centrally so the settings UI, future macro resolver, and
+-- future runtime reaction layer all share one stable target-source contract.
+local REACTION_TARGET_SOURCES = { target = true, focus = true, mouseover = true }
+local REACTION_TARGET_ORDER = { "target", "focus", "mouseover" }
+
+local function normalizeReactionTargetOrder(value, fallback)
+    local source = type(value) == "table" and value or fallback
+    local out, seen = {}, {}
+    for _, key in ipairs(source or {}) do
+        if REACTION_TARGET_SOURCES[key] and not seen[key] then
+            out[#out + 1] = key
+            seen[key] = true
+        end
+    end
+    for _, key in ipairs(REACTION_TARGET_ORDER) do
+        if not seen[key] then
+            out[#out + 1] = key
+            seen[key] = true
+        end
+    end
+    return out
+end
+
+local function normalizeReactionTargetEnabled(value, fallback)
+    value = type(value) == "table" and value or {}
+    fallback = type(fallback) == "table" and fallback or {}
+    local out = {}
+    for _, key in ipairs(REACTION_TARGET_ORDER) do
+        out[key] = boolean(value[key], fallback[key] == true)
+    end
+    return out
+end
+
+local function normalizeAutoReaction(tactics, defaults)
+    local defaultReaction = type(defaults.autoReaction) == "table" and defaults.autoReaction or {}
+    local reaction = type(tactics.autoReaction) == "table" and tactics.autoReaction or {}
+    reaction.schema = 1
+
+    local defaultInterrupt = type(defaultReaction.interrupt) == "table" and defaultReaction.interrupt or {}
+    local interrupt = type(reaction.interrupt) == "table" and reaction.interrupt or {}
+    interrupt.enabled = boolean(interrupt.enabled, defaultInterrupt.enabled == true)
+    interrupt.targetOrder = normalizeReactionTargetOrder(interrupt.targetOrder, defaultInterrupt.targetOrder)
+    interrupt.targetEnabled = normalizeReactionTargetEnabled(interrupt.targetEnabled, defaultInterrupt.targetEnabled)
+    reaction.interrupt = interrupt
+
+    local defaultControl = type(defaultReaction.control) == "table" and defaultReaction.control or {}
+    local control = type(reaction.control) == "table" and reaction.control or {}
+    control.enabled = boolean(control.enabled, defaultControl.enabled == true)
+    control.aoeEnabled = boolean(control.aoeEnabled, defaultControl.aoeEnabled == true)
+    control.targetOrder = normalizeReactionTargetOrder(control.targetOrder, defaultControl.targetOrder)
+    control.targetEnabled = normalizeReactionTargetEnabled(control.targetEnabled, defaultControl.targetEnabled)
+    reaction.control = control
+
+    tactics.autoReaction = reaction
+    return reaction
+end
+
 local function normalizeHud(tactics)
     local defaults = Defaults.hud or {}
     tactics.hud = type(tactics.hud) == "table" and tactics.hud or {}
@@ -160,6 +221,21 @@ local function normalizeHud(tactics)
             end
         end
         if hud.outOfCombatMode == "dim" then hud.outOfCombatMode = "show" end
+    end
+
+    -- 1.0.38 unifies every visible cooldown number under the HUD label. Native
+    -- DurationObject digits use Blizzard's own MM:SS formatter and bypass the
+    -- per-module text controls, so even an explicit legacy `duration` setting
+    -- is migrated to the single configurable plain-seconds renderer.
+    if priorSchema < 10 and type(hud.modules) == "table" then
+        for _, key in ipairs({ "main", "burst", "interrupt", "defense" }) do
+            local module = hud.modules[key]
+            if type(module) == "table" then
+                local cooldownText = type(module.cooldownText) == "table" and module.cooldownText or {}
+                cooldownText.mode = "custom"
+                module.cooldownText = cooldownText
+            end
+        end
     end
 
     -- 0.8.4 enabled the target/nameplate interrupt cue by default. It mirrored
@@ -224,6 +300,10 @@ local function normalizeTactics(tactics, priorHudSchema)
     tactics.queueOrder = normalizeQueueOrder(tactics.queueOrder)
     tactics.interruptEnabled = boolean(tactics.interruptEnabled, defaults.interruptEnabled)
     tactics.controlEnabled = boolean(tactics.controlEnabled, defaults.controlEnabled)
+    -- Existing display-only interrupt/control booleans are intentionally
+    -- preserved. The new autoReaction branch is opt-in and carries no runtime
+    -- input behavior in this P1 release.
+    normalizeAutoReaction(tactics, defaults)
     tactics.mobilityEnabled = boolean(tactics.mobilityEnabled, defaults.mobilityEnabled)
     tactics.defensiveEnabled = boolean(tactics.defensiveEnabled, defaults.defensiveEnabled)
     tactics.defensiveOutOfCombatStandby = boolean(tactics.defensiveOutOfCombatStandby, defaults.defensiveOutOfCombatStandby)
@@ -231,12 +311,19 @@ local function normalizeTactics(tactics, priorHudSchema)
     tactics.burstPolicy = isEnum(tactics.burstPolicy, { immediate = true, align = true, hold = true }, defaults.burstPolicy)
     tactics.burstDisplayMode = isEnum(tactics.burstDisplayMode, { always = true, window = true, highlight = true, compact = true }, defaults.burstDisplayMode)
     tactics.autoBurstEnabled = boolean(tactics.autoBurstEnabled, defaults.autoBurstEnabled)
-    tactics.autoBurstDirection = isEnum(tactics.autoBurstDirection, { pre = true, post = true }, defaults.autoBurstDirection)
     tactics.autoBurstMode = isEnum(tactics.autoBurstMode, { simple = true, focused = true }, defaults.autoBurstMode)
     tactics.autoBurstDebug = boolean(tactics.autoBurstDebug, defaults.autoBurstDebug)
-    tactics.autoBurstWindowSpellID = number(tactics.autoBurstWindowSpellID, defaults.autoBurstWindowSpellID, 0, 99999999, true)
-    tactics.autoBurstInjectionSpellID = number(tactics.autoBurstInjectionSpellID, defaults.autoBurstInjectionSpellID, 0, 99999999, true)
-    tactics.autoBurstUseProfileFallback = boolean(tactics.autoBurstUseProfileFallback, defaults.autoBurstUseProfileFallback)
+    -- 1.0.26 retires the global legacy manual-rule manual rule.  Settings are now
+    -- stored by specialization as stable sequence step identities; deleting
+    -- these old values prevents a stale hand-entered SpellID from silently
+    -- overriding the real profile after upgrade.
+    tactics.autoBurstDirection = nil
+    tactics.autoBurstWindowSpellID = nil
+    tactics.autoBurstInjectionSpellID = nil
+    tactics.autoBurstInjectionKind = nil
+    tactics.autoBurstInjectionTrinketSlot = nil
+    tactics.autoBurstTrinketOffGCDExplicit = nil
+    tactics.autoBurstUseProfileFallback = nil
     tactics.burstShowCandidates = boolean(tactics.burstShowCandidates, defaults.burstShowCandidates)
     tactics.burstHighlightPrimary = boolean(tactics.burstHighlightPrimary, defaults.burstHighlightPrimary)
     tactics.burstShowClassCooldowns = boolean(tactics.burstShowClassCooldowns, defaults.burstShowClassCooldowns)

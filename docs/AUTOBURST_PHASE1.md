@@ -1,98 +1,111 @@
-# 自动爆发 Phase 1：双技能注入模型
+# 自动爆发：可排序多步骤序列
 
-版本：`1.0.07`  
-状态：代码已接入；等待 WoW + Windows 实机验收。
+版本：`1.0.26`  
+状态：已接入；需继续 WoW + Windows 实机覆盖各职业专精、真实动作条和 TEK 门禁。
 
-## 范围
+## 目标
 
-一次仅运行一条规则：
-
-```text
-windowSpell + injectionSpell + direction(pre/post) + mode(simple/focused)
-```
-
-`AutoBurst` 优先读取用户显式填写的两个 SpellID：
+AutoBurst 只会把当前计划的**下一步**作为 Burst 候选，经既有 BindingToken → TEAP v3 → TEK 全部门禁派发。它不会修改官方推荐、宏、动作条绑定或 TEK 的全局输入频率。
 
 ```text
-官方窗口 SpellID：必须是 Blizzard 官方推荐实际会出现的锚点
-注入 SpellID：Tactic Echo 需要在锚点前或后插入的技能
+官方窗口出现
+→ 当前专精 sequence 预检
+→ 过滤不可用可选步骤
+→ 有序 Burst plan
+→ 每步实时复核与确认
+→ 窗口离开观察锁
 ```
 
-两个 SpellID 必须同时填写。两项都为 `0` 时，才兼容性回退到当前专精 Burst Profile 的第一个非黑名单窗口技能与第一个注入技能；该回退不保证首项会被 Blizzard 官方推荐。它不会从天赋、装备、Buff、描述或冷却时间推断技能。
+## 当前专精的顺序模型
 
-使用 `/teab status` 可直接查看当前加载构建、解析到的规则和最近未触发原因；`/teab set <窗口SpellID> <注入SpellID>` 可不打开设置面板直接写入测试规则。
-
-## 战斗边沿说明（1.0.06 延续）
-
-官方窗口边沿按**本次战斗周期**计算。插件在 `PLAYER_REGEN_DISABLED` 进入战斗时清除上一场战斗和脱战期间遗留的窗口离开锁与最后官方推荐。
-
-这意味着：即使处决宣判在进入战斗的第一帧已是官方推荐，前置测试规则 `复仇之怒（31884） → 处决宣判（343527）` 仍可建立计划。该重置不等同于无条件派发；自动运行、自动爆发、规则、动作条绑定、冷却/GCD、TEAP 与 TEK 门禁仍必须全部通过。
-
-## 状态机
+每个专精独立保存以下逻辑步骤：
 
 ```text
-IDLE
-→ PLAN_CREATED
-→ STEP_PENDING
-→ DISPATCH_OFFERED
-→ WAIT_CONFIRM
-→ STEP_CONFIRMED
-→ 下一步 / DONE
-
-软暂停：SOFT_PAUSED → 全量重新校验 → 原步骤
-中止：PLAN_ABORTED → 若窗口未派发则归还官方推荐；若窗口已派发则只观察至官方推荐离开窗口
+窗口技能（固定、不可停用）
+注入技能 1（来自下方注入技能列表）
+注入技能 2（来自下方注入技能列表）
+注入技能 3（来自下方注入技能列表）
+饰品 13
+饰品 14
 ```
 
-一个候选从首次发布起保持相同 action sequence，直到成功确认、明确失效或有界确认超时，解决 AddOn 刷新和 TEK 屏幕采样相位不一致的问题。TEK 对相同 burst sequence 拒绝第二次物理输入。
+- 注入最多 3 个，引用该专精下方“注入技能”列表中已启用的前 3 个 SpellID。
+- 上方顺序只控制启用/停用/位置；要改 SpellID，必须在下方注入技能列表改。
+- 持久化按 `injection:<SpellID>`、`trinket:13`、`trinket:14` 保存，切换专精不会把旧第 N 槽错误映射到新技能。
+- 饰品计划创建时锁定实际 ItemID；未装备、绑定无效、装备变化均不入队或会在运行期失效。
 
-GCD/确认/重校验等待不是用户暂停。此时 AddOn 输出 `state=armed + observationOnly=true + dispatchOrigin=burst` 的非派发帧，TEK 只观察，不会校验空 Token 或发送输入；下一步进入 `QUEUE_WINDOW` 后才产生带有效 BindingToken 的 Burst 候选。
+示例：
 
-`TacticEchoDB.autoBurst.events` 会记录计划创建、拒绝、候选、确认、暂停和中止。`/temapping` 生成的安全映射快照还会附带 AutoBurst 摘要；配置了 `TacticEcho.lua` SavedVariables 路径的 TEK 诊断包会在 `SUMMARY.md` 显示这份摘要。
+```text
+饰品13 → 饰品14 → 注入技能1 → 窗口
+饰品13 → 窗口 → 注入技能1
+窗口 → 注入技能1 → 饰品14
+```
 
-## 成功确认
+## 组装模式与 CD / GCD
 
-当前阶段仅认可：
+### 简易
 
-1. 技能自身非 GCD 冷却开始；
-2. 可用充能减少。
+窗口出现时，逐项读取真实绑定和冷却：
 
-没有可验证确认信号的技能或宏不应配置为 Phase 1 规则。Buff、普通 GCD 遮罩与图标灰度不作为确认来源。
+- 处于自身 CD、冷却 UNKNOWN、无绑定、未装备、装备身份异常：排除该可选步骤。
+- `READY_NOW`、`QUEUE_WINDOW`、`GCD_LOCKED`：保留为可用步骤。
+- 所有可选步骤均被排除：不创建计划，官方窗口走普通官方流程。
+- 保留下来的步骤严格保持你设置的相对顺序。
+
+### 集中
+
+任一已启用可选步骤不可用，即本轮不创建计划。官方窗口不被 Burst 接管。
+
+### 重要边界
+
+- 公共 GCD 不是技能/饰品自身 CD；不能导致预检排除、跳过或确认。
+- 图标灰色、Buff、失败事件、资源、目标、距离、普通动作条阴影都不是自身 CD 证据。
+- 计划创建后，当前可选步骤如果变为自身 CD 或 UNKNOWN：简易跳过该步骤继续；集中在窗口未派发前释放官方窗口，在窗口已派发后保持离开锁。
+
+## Handoff 与起手
+
+若实际筛选后第一步在窗口之前：
+
+```text
+窗口
+→ 4 个 observation-only transport handoff hold
+→ 第一个前置步骤
+→ 后续顺序步骤
+```
+
+- `paused → armed` 的事件刷新不消耗 handoff 帧；只有正常 transport tick 计数。
+- 已 arm 的前置顺序可在受控条件下跨越脱战→进战；普通脱战官方推荐仍不可派发。
+- 若窗口排在第一位，不会创建起手 bridge，也不会扩大普通脱战派发权限。
+
+## 饰品 GCD 选项
+
+饰品 13/14 默认遵循普通 GCDGate。只有用户已实测确认该饰品不触发公共 GCD 时，才可在爆发页勾选“已确认脱 GCD”。系统不会根据物品类型、说明、图标或宏猜测脱 GCD。
+
+## 诊断
+
+`/teab status` 用于查看当前专精的解析顺序和自动爆发状态；`/temapping autoburst_105` 会导出关键摘要。
+
+重点字段：
+
+```text
+sequence_preflight_selected / sequence_preflight_no_eligible
+selectedOrder / excludedOrder
+sequenceLength / sequenceKeys
+handoffBarrierRequiredFrames / Remaining / Published
+currentStep / currentRole
+preCombatBridge
+```
 
 ## 实机测试矩阵
 
-每个组合至少记录：规则 ID、窗口/注入 SpellID、官方推荐进入时刻、候选帧 sequence、TEK trace 的 `dispatch_origin`、输入是否发送、CD/充能确认来源、确认耗时、是否进入 `QUEUE_WINDOW`、计划结果。
-
-1. 前置简易：注入可用。
-2. 前置简易：注入 CD，验证跳过后窗口照常释放。
-3. 前置集中：注入 CD，验证不接管。
-4. 后置简易：窗口成功后注入可用。
-5. 后置简易：窗口成功后注入 CD，验证结束而非重试。
-6. 后置集中：注入 CD，验证不接管。
-7. 窗口确认超时，验证最多重试一次。
-8. 注入确认超时，验证不重试；简易/集中按规则分别结束或中止。
-9. GCD 中进入 `QUEUE_WINDOW`，验证下一步只发送一次且无持续刷键。
-10. 手动输入、聊天框、切目标、死亡、载具、引导/蓄力、失焦后，验证 TEK 不会继续输入；恢复后必须重新校验。
-11. 脱战后，验证计划立刻清空并要求新的官方推荐边沿。
-12. TEK 采样异常或前台/Hook 门禁失败，验证 TEK fail-closed；AddOn 计划不得无限悬挂。
-
-## 已知结构限制
-
-TEAP 是 AddOn → TEK 的单向可视协议。TEK 无法向 AddOn 回传“SendInput 已执行”的即时确认；AddOn 通过技能自身 CD/充能变化，或当前 `WAIT_CONFIRM` 步骤的 `UNIT_SPELLCAST_SUCCEEDED` 事件确认结果。该限制也是持续候选保持与 TEK 去重同时存在的原因。
-
-## 共享 GCD、窗口锁与 HUD 展示（1.0.06 延续）
-
-- 技能短冷却与全局 GCD 快照严格对齐时，归类为 `GCD_LOCKED / QUEUE_WINDOW`，不是自身 `COOLDOWN`；前置注入会等待而非跳过。
-- Burst hold 的真实 Token 仍为 0，但 HUD 使用独立的官方展示绑定，因此窗口锁观察不会显示“未绑定”。
-- 已派发窗口技能时，官方推荐仍显示旧窗口会触发观察锁，直到推荐离开；这是防重复按键，不是暂停。
-
-
-## 1.0.07 严格未知状态合同
-
-前置简易模式中，`UNKNOWN` 不等于注入技能 CD。以下情况均进入有限重采样而不是跳过 `4`：
-
-- 冷却/充能数值受保护；
-- API 仅报告 `active=true`，却不能证明它是技能自身 CD 而非共享 GCD；
-- GCD 快照不可解释；
-- 动作条或冷却来源暂时未刷新。
-
-重采样超时后计划中止，但窗口仍为 Burst 所有，直到官方推荐离开 `1`。因此前置测试中不允许出现“没有 Burst `4`，却由 official 链路发送 `1`”。
+1. 单注入前置、窗口、后置各一次。
+2. 3 注入 + 双饰品混合顺序，确认每步严格按 UI 顺序。
+3. 简易模式：一个注入自身 CD，确认仅排除该步骤且窗口/其它步骤仍按顺序。
+4. 简易模式：全部可选步骤 CD，确认不建计划且不尝试任何注入。
+5. 集中模式：任一启用步骤 CD，确认不建计划。
+6. 共享 GCD，确认步骤仍可进入候选而不是被当 CD 排除。
+7. 计划运行中技能转 CD / UNKNOWN，分别验证简易跳过与集中释放/锁定行为。
+8. 饰品 13/14：未装备、无绑定、换装、实际自身 CD、已确认脱 GCD。
+9. 前置首轮：paused→armed、4 帧 hold、脱战 bridge→进战后保留计划。
+10. 专精切换后检查顺序、启用状态和注入 SpellID 无错位。

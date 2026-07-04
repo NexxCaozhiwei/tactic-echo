@@ -49,17 +49,24 @@ class SpecDefenseRegistryCooldownContractTests(unittest.TestCase):
         ):
             self.assertIn(marker, self.profiles)
 
-    def test_protected_cooldowns_use_duration_objects_in_native_ui_layer(self) -> None:
+    def test_protected_cooldowns_use_the_field_proven_live_native_ui_layer(self) -> None:
+        state = (ADDON / "Tactics" / "IconState.lua").read_text(encoding="utf-8")
         for marker in (
             "local function showDurationObjectCooldown",
-            "C_Spell.GetSpellCooldownDuration",
             "frame:SetCooldownFromDurationObject(duration, true)",
-            "ignoreGCD == true",
+            "local function publicCooldownActivity",
             "card.cooldownRenderMode",
-            "技能 DurationObject 原生 CD",
         ):
             self.assertIn(marker, self.icon)
-        self.assertNotIn("frame:SetCooldown(info.startTime, info.duration", self.icon)
+        for marker in (
+            "C_Spell.GetSpellCooldown",
+            "actionBarPublicCooldown",
+            "cooldownGcdAlias",
+        ):
+            self.assertIn(marker, state)
+        self.assertIn("C_Spell", self.icon)
+        self.assertIn("C_ActionBar", self.icon)
+        self.assertNotIn("HudCooldownDurationObjects", state)
         self.assertNotIn("cooldownVisualStart", self.icon)
         self.assertNotIn("cooldownVisualDuration", self.icon)
 

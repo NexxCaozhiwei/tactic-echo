@@ -1,122 +1,48 @@
-# Tactic Echo
+# Tactic Echo 战术回响
 
-更新时间：2026-07-02  
-当前版本：`1.0.08`
+当前版本：`1.0.44 P5`  
+更新时间：2026-07-04  
 
-Tactic Echo 由《魔兽世界》AddOn 与 Windows 端 TEK 组成。AddOn 读取官方辅助战斗推荐，解析当前可见 Blizzard 默认动作条上的现实按键；TEK 只在前台、协议、Hook、手动接管、限频等门禁均通过时，才执行一次 Windows 输入。
+Tactic Echo 是一套以游戏内 AddOn 观察与既有动作条键位映射为前提、通过 TEAP 与 TEK 受控交付的战术提示与自动爆发/自动打断项目。
 
-`1.0.08` 修复前置简易自动爆发在多轮循环中偶发未建立计划的问题：触发从单纯图标边沿升级为 armed/window generation，`paused -> armed` 后首个健康帧若已显示未消费窗口，也会建立 `4 -> 1` 计划；已消费窗口必须等官方推荐离开后才可重触发。Burst 观察帧继续保持 `BindingToken=0`，但 HUD 会显示只读官方绑定，避免等待期间误报 `1` 未绑定。最小双技能自动爆发仍默认关闭，且需要 WoW + Windows 实机验收。
+## 当前自动打断状态
 
-## 主派发架构
-
-```text
-官方推荐（只读）
-→ Blizzard 默认动作条现有绑定
-→ BindingToken
-→ TEAP v3 可视信号帧
-→ TEK 安全门禁
-→ 单次 SendInput
-```
-
-AddOn 不创建隐藏动作按钮，不写绑定，不编辑宏，也不直接执行 Windows 输入。
-
-## 自动爆发 Phase 1
-
-自动爆发不是第二条输入通道。它仅在满足条件时，把“当前计划的下一步”作为独立候选，仍走同一条 BindingToken → TEAP → TEK 链路。
+P4.3 已实机确认 reaction 动作链可用；P4.4 在保留稳定候选交付的前提下，恢复严格钢条判定：
 
 ```text
-OfficialRecommendation（保持不变）
-→ AutoBurst DispatchCandidate
-→ 已扫描确认的动作条 BindingToken
-→ TEAP v3（dispatchOrigin=burst）
-→ TEK 全部门禁
-→ 单次输入
-→ 技能自身 CD / 充能确认
+敌方真实读条
+→ 直连 API / 单位施法事件 / 真实盾组件连续视觉证据
+→ P2 既有安全 BindingToken 路由
+→ TEAP v3 reaction (0x40)
+→ TEK 现有前台、Hook、人工接管、新鲜度、限频门禁
+→ 一次已有键位输入
 ```
 
-### 启用条件
+P4.4 不允许以下信息单独驱动自动输入：`showShield`、`barType`、native scalar-only true、短暂读条桥接或未知值。
 
-- 运行状态为“运行中”；
-- 控制面板“启用自动爆发”已开启；
-- 玩家在战斗中；
-- 当前专精存在人工声明的窗口技能与注入技能；
-- 官方推荐进入新的窗口 generation，或 `paused -> armed` 后首个健康帧已显示未消费窗口技能；
-- 两个技能均在当前可见默认动作条上有可用 BindingToken。
+P4.5 额外支持一种严格的既有整合宏：`@mouseover → @focus → target`。它只会在 AddOn 确认该宏此刻会命中**同一个读条来源**时进入 reaction；若更高优先级宏分支仍有活敌目标，则保持零按键并输出 `macro_priority_preempted_by_*`。宏自身不能判断“是否正在施法”，因此这不是“焦点未读条就自动回退当前目标”的宏语言能力。
 
-同一窗口 generation 完成、中止或超时后只会观察，直到官方推荐离开窗口并再次进入。临时开启自动爆发时，不会插入已经消费或已锁定的旧窗口。
+P5 将宏身份锚定为当前动作条 `GetActionInfo` 返回的数值 macro index。即使宏名为中文“打断”且账号/角色宏存在同名项，也不会按名字借用另一枚宏正文；首读正文为空时只重读同一 index。P4.6 的 `/cast` 令牌→SpellID 只读关联继续保留。
 
-### 当前四种组合
+## 运行边界
 
-| 方向 / 模式 | 行为 |
-|---|---|
-| 前置简易 | 注入 → 窗口；只有窗口边沿明确为注入自身 CD 才跳过；未知状态限时重采样并锁住窗口 |
-| 前置集中 | 注入 → 窗口；任一步不就绪则不启动 |
-| 后置简易 | 窗口 → 注入；窗口确认后，注入不可用则完成 |
-| 后置集中 | 窗口 → 注入；任一步不就绪则不启动或中止 |
+- AddOn 不创建隐藏按钮，不写入/修改按键，不编辑宏，不直接输入。
+- P4 仅自动打断；控制与群控仍仅提示。
+- 仅使用玩家当前可见 Blizzard 默认动作条与已有宏中可确认的安全 BindingToken。
+- Burst plan / pre-window capture 活跃时，自动打断仅高亮，保持 Burst 优先级。
 
-当前版本不包含饰品、药水、多条规则竞争、第二注入技能或组合宏。
+## 安装
 
-### 调度与确认规则
+1. 将补丁包内文件直接覆盖项目根目录；
+2. 将 `addon/!TacticEcho` 覆盖至 WoW 实际加载目录；
+3. 本版不修改 TEK 输入逻辑。已运行 P4.3 TEK.exe 时只需重启 TEK；未构建过 P4.3 TEK 时，按既有流程运行根目录 `TEKEXEBUILD.CMD`；
+4. 启动游戏后执行 `/reload`，在打断设置中确认版本和诊断。
 
-- 每次只允许一个 BindingToken，禁止同帧连按和持续刷键。
-- 两个技能均可占 GCD。`GCDGate` 使用客户端 `SpellQueueWindow` 将状态归一化为 `READY_NOW / QUEUE_WINDOW / GCD_LOCKED`；允许在合法预输入窗口提交一次下一步。
-- 为避免 TEK 采样错过候选，AddOn 会持续发布同一候选帧，直至成功确认、明确失效或超时；TEK 按稳定 burst action sequence 去重，同一逻辑步骤最多尝试一次真实输入。
-- 在 `GCD_LOCKED`、`WAIT_CONFIRM`、软暂停重校验或“等待窗口推荐离开”期间，AddOn 发送的是 `armed + observationOnly` 的 Burst hold 帧。该帧不含 BindingToken，TEK 只观察不输入；它不是用户“暂停中”，不会导致状态机自锁。
-- 发送候选不等于释放成功。Phase 1 使用该技能自身的**非 GCD 冷却开始**、**充能减少**，或仅匹配当前等待步骤的 `UNIT_SPELLCAST_SUCCEEDED` 回执确认成功；不使用 Buff、泛 GCD 遮罩或普通图标灰度。
-- 窗口技能确认超时最多受控重试一次；注入技能不重试。
+## 文档
 
-### 数据边界
-
-自动爆发策略只读取：官方推荐、动作条绑定、技能 CD、充能和归一化 GCD 阶段。它不使用 Buff、Debuff、资源、目标血量、敌人数、团队状态、首领机制、距离或范围作为自动派发依据。
-
-## 宏边界
-
-Phase 1 只允许有明确预期技能的单一用途宏；现有文本关联回退仅支持无条件单行 `/cast <spell>`。组合宏、`/castsequence`、条件分支、目标修饰、`/use` 及不可通过 CD/充能确认的宏不进入当前自动爆发测试范围。
-
-## 关键路径
-
-- 自动爆发状态机：`addon/!TacticEcho/Tactics/AutoBurst.lua`
-- GCD 归一化门：`addon/!TacticEcho/Tactics/GCDGate.lua`
-- 冷却/充能专用采样：`addon/!TacticEcho/Tactics/IconState.lua`
-- TEAP 编码：`addon/!TacticEcho/Signal/SignalEncoder.lua`
-- 信号派发候选接入：`addon/!TacticEcho/Signal/SignalFrame.lua`
-- TEK 协议解码：`tek/src/teap.py`
-- TEK 安全门禁与 burst 去重：`tek/src/safety_gate.py`
-- TEK 真实派发：`tek/src/engine.py`
-- 详细开发合同：`AGENTS.md`
-- Phase 1 设计与实机测试矩阵：`docs/AUTOBURST_PHASE1.md`
-
-## 验证
-
-```powershell
-python scripts/verify-baseline-contract.py --repo-root .
-python -m pytest -q tek/tests tests/unit
-python -m unittest discover -s tek/tests -q
-python -m unittest discover -s tests/unit -q
-python -m compileall -q tek/src tek/app tek/runtime
-```
-
-## 实机验收说明
-
-本包的离线测试只能证明代码路径与协议合同。仍需在真实 WoW/Windows 环境检查：TEAP 采样相位、窗口技能/注入技能 CD 确认、GCD 预输入、Hook、前台识别、手动接管、SendInput、不同急速与窗口模式。
-
-## 自动爆发 1.0.08 实机安装与诊断
-
-自动爆发 Phase 1 的测试规则现支持显式填写“官方窗口 SpellID + 注入 SpellID”。官方窗口技能必须是 Blizzard 官方推荐实际会出现的锚点；请不要默认把 HUD 爆发列表的首项当作该锚点。
-
-实机安装与诊断步骤见：[docs/AUTOBURST_DIAGNOSTIC_AND_INSTALL.md](docs/AUTOBURST_DIAGNOSTIC_AND_INSTALL.md)。其中包括正确的 `!TacticEcho` 覆盖目录、`/teab status` 版本验证，以及 `TacticEcho.lua` SavedVariables 的诊断包配置。
-
-
-### 1.0.07 修复摘要
-
-- **未知不跳过**：`复仇之怒（31884）` 的冷却读数无法安全解释、或 API 仅报告 `active=true` 但无法证明它是自身 CD 而非公共 GCD 时，AutoBurst 进入有界重采样；不再把它当作“注入 CD”而直接派发 `处决宣判（343527）`。
-- **严格前置所有权**：官方推荐进入窗口后，前置计划一经创建即持有窗口。`4` 未确认成功、候选超时或未知重采样超时，`1` 均不得回落到普通官方链；只能等待官方推荐离开窗口后再次进入。
-- **候选持续与回执**：同一 Burst 候选保持同一 TEAP sequence 直到结果明确；TEK 去重避免重复物理输入。`UNIT_SPELLCAST_SUCCEEDED` 只可确认已经处于 `WAIT_CONFIRM` 的同一技能，不参与触发时机判断。
-- **诊断**：`/temapping` 新增初始窗口状态、候选帧计数、最后候选与最近施法成功摘要，用于直接区分“计划未建立”“候选未进入 TEAP”“TEK 未派发”和“等待确认”。
-
-## 自动爆发 1.0.08 实机复测重点
-
-- 规则：窗口 `343527`（键 `1`），注入 `31884`（键 `4`），`pre simple`。
-- 观察 `/temapping` 中 `armedEpoch`、`windowGeneration`、`consumedWindowGeneration`、`departureLockGeneration`、`lastCandidate`、`lastConfirmationSource`、`lastAbortReason`。
-- 暂停后再启动，如果官方推荐首帧已经是 `1` 且当前 generation 未消费，应先派发 Burst `4`。
-- 完成或中止后，官方仍显示 `1` 时应为 observation-only，不得重发 `1`；HUD 应显示官方键位 `1`，TEAP token 仍为 `0`。
+- `BASELINE_1.0.44.md`：P5 宏身份锚定与同名宏防错配合同；
+- `docs/P5_MACRO_IDENTITY_TEST.md`：中文同名宏/反制射击实机验收步骤；
+- `docs/P4.6_COUNTER_SHOT_MACRO_RECOVERY_TEST.md`：P4.6 历史宏恢复验收步骤；
+- `docs/P4.5_PRIORITY_INTERRUPT_MACRO_TEST.md`：整合宏实机验收步骤；
+- `docs/P4.4_NATIVE_SHIELD_REVALIDATION_TEST.md`：钢条判定实机验收步骤；
+- `HANDOFF.md`：当前工作状态与下一步测试。

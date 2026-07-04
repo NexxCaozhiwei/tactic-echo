@@ -153,6 +153,7 @@ local function remember(encoded, reason)
         officialSpellID = encoded.officialSpellID,
         dispatchSpellID = encoded.dispatchSpellID,
         burstPlan = encoded.burstPlan,
+        reaction = encoded.reaction,
         observedAt = date("%Y-%m-%d %H:%M:%S"),
         elapsed = GetTime and GetTime() or 0,
         reason = reason,
@@ -277,6 +278,13 @@ function SignalFrame:SetState(nextState)
     createFrame():Show()
     if state ~= previousState and STATE_SOUND_FILES[state] and type(PlaySoundFile) == "function" then
         pcall(PlaySoundFile, STATE_SOUND_FILES[state], "SFX")
+    end
+    -- Existing user-facing Run controls call SetState("armed").  After a
+    -- world transition that explicit action reauthorizes only AutoBurst's
+    -- narrow pre-combat opener bridge; normal out-of-combat recommendations
+    -- remain paused by the unchanged session policy.
+    if state == "armed" and TE.AutoBurst and type(TE.AutoBurst.AuthorizePreCombatBridge) == "function" then
+        TE.AutoBurst:AuthorizePreCombatBridge("signal_state_armed")
     end
     self:Refresh("state")
 end
@@ -765,6 +773,13 @@ function SignalFrame:GetCastLockInfo()
 end
 
 function SignalFrame:BuildMessage(reason)
+    -- All dispatchable candidates use one scheduler contract: each fresh
+    -- `armed` TEAP frame can reach TEK, where the shared global rate limiter
+    -- decides the physical input frequency. AutoBurst only changes the selected
+    -- action and waits for exact confirmation before advancing its plan; it does
+    -- not receive a separate one-shot or retry-limited delivery path. Ordinary
+    -- casts retain the same armed cadence, while channel/empower are explicit
+    -- non-dispatch states for both official and Burst candidates.
     -- The official recommendation is preserved as immutable source metadata.
     -- AutoBurst may provide a separate DispatchCandidate, but it never mutates
     -- this result or creates a parallel binding/token path.
@@ -806,6 +821,10 @@ function SignalFrame:BuildMessage(reason)
             intentState = state,
             effectiveState = outputState,
             runtimeReason = runtimeReason or inputFocusReason or sessionPolicyReason,
+            -- AutoBurst handoff holds advance only on the normal 50 ms transport
+            -- scheduler. Event/state refreshes still paint a hold, but cannot
+            -- compress a multi-frame TEK freshness fence into a few milliseconds.
+            transportHandoffTick = reason == "tick",
             primary = official,
         })
         if ok and type(decision) == "table" then
@@ -817,14 +836,28 @@ function SignalFrame:BuildMessage(reason)
             -- observation frame. A plan-less fault still leaves the normal
             -- official path unchanged.
             TE.AutoBurst:ReportFault("evaluate_error:" .. tostring(decision))
+            -- Snapshot ownership before Abort clears transient capture state.
+            -- A front-window capture is semantically equivalent to a live plan
+            -- for fallback safety: its official token must not leak after a
+            -- failed evaluator tick.
+            local heldBeforeAbort = false
+            if type(TE.AutoBurst.GetSnapshot) == "function" then
+                local snapshotOk, snapshot = pcall(TE.AutoBurst.GetSnapshot, TE.AutoBurst)
+                heldBeforeAbort = snapshotOk and type(snapshot) == "table"
+                    and (snapshot.active == true
+                        or snapshot.requireWindowDeparture == true
+                        or snapshot.preWindowCaptureActive == true)
+            end
             if type(TE.AutoBurst.Abort) == "function" then
                 pcall(TE.AutoBurst.Abort, TE.AutoBurst, "evaluator_fault", false)
             end
-            local holdsWindow = false
+            local holdsWindow = heldBeforeAbort
             if type(TE.AutoBurst.GetSnapshot) == "function" then
                 local snapshotOk, snapshot = pcall(TE.AutoBurst.GetSnapshot, TE.AutoBurst)
-                holdsWindow = snapshotOk and type(snapshot) == "table"
-                    and (snapshot.active == true or snapshot.requireWindowDeparture == true)
+                holdsWindow = holdsWindow or (snapshotOk and type(snapshot) == "table"
+                    and (snapshot.active == true
+                        or snapshot.requireWindowDeparture == true
+                        or snapshot.preWindowCaptureActive == true))
             end
             if holdsWindow then
                 autoDecision = {
@@ -837,6 +870,47 @@ function SignalFrame:BuildMessage(reason)
         end
     end
 
+    -- P4 automatic interrupts are a separate ordinary scheduler decision.
+    -- AutoReaction never sends input itself: it only selects an already
+    -- validated P2 binding route. SignalFrame keeps AutoBurst ownership first;
+    -- the user-selected policy is that a live Burst plan/pre-window capture
+    -- suppresses automatic interrupt attempts and leaves P3 highlighting only.
+    local autoBurstSnapshot
+    if TE.AutoBurst and type(TE.AutoBurst.GetSnapshot) == "function" then
+        local snapshotOK, snapshot = pcall(TE.AutoBurst.GetSnapshot, TE.AutoBurst)
+        if snapshotOK and type(snapshot) == "table" then autoBurstSnapshot = snapshot end
+    end
+    local reactionDecision
+    if TE.AutoReaction and type(TE.AutoReaction.Evaluate) == "function" then
+        local reactionOK, decision = pcall(TE.AutoReaction.Evaluate, TE.AutoReaction, {
+            inCombat = inCombat,
+            intentState = state,
+            effectiveState = outputState,
+            runtimeReason = runtimeReason or inputFocusReason or sessionPolicyReason,
+            monitor = monitor,
+            autoBurstSnapshot = autoBurstSnapshot,
+            autoBurstDecision = autoDecision,
+        })
+        if reactionOK and type(decision) == "table" then
+            reactionDecision = decision
+        end
+    end
+
+    -- The default session policy still suppresses ordinary out-of-combat
+    -- recommendations.  A decision carrying this marker is the one narrow
+    -- exception: it is an already-qualified AutoBurst front-injection bridge.
+    -- Keep TEAP armed so TEK can apply its normal gates to that candidate/hold;
+    -- retain inCombat=false in the protocol and never elevate manual/cast/text
+    -- pauses into a bridge.
+    local preCombatBurstBridgeFrame = autoDecision and autoDecision.preCombatBridge == true
+        and not inCombat
+        and (outputState == "armed"
+            or (outputState == "paused" and sessionPolicyReason == "out_of_combat_policy_pause"))
+    if preCombatBurstBridgeFrame then
+        outputState = "armed"
+        runtimeReason = "precombat_burst_bridge"
+    end
+
     local explicitObservationOnly = reason == "observe_once"
     -- AutoBurst uses a hold only to suppress the ordinary recommendation while
     -- its own bounded plan waits for GCD/confirmation/revalidation.  It is not
@@ -845,10 +919,15 @@ function SignalFrame:BuildMessage(reason)
     -- next BuildMessage call, permanently self-latching the plan.
     local burstHoldObservation = autoDecision and autoDecision.kind == "hold"
         and autoDecision.observationOnly == true
-    local observationOnly = explicitObservationOnly or burstHoldObservation
+    local reactionHoldObservation = reactionDecision and reactionDecision.kind == "hold"
+        and reactionDecision.observationOnly == true
+    local observationOnly = explicitObservationOnly or burstHoldObservation or reactionHoldObservation
 
     local dispatchOrigin = "official"
     local dispatchSpellID = officialSpellID
+    local dispatchActionKind = "spell"
+    local dispatchInventorySlot = nil
+    local dispatchItemID = nil
     local bindingInfo, bindingReason
     -- A live burst hold intentionally has no dispatch token.  Preserve a
     -- separate read-only official binding for HUD/diagnostics so the official
@@ -858,6 +937,9 @@ function SignalFrame:BuildMessage(reason)
     if autoDecision and autoDecision.kind == "candidate" then
         dispatchOrigin = "burst"
         dispatchSpellID = tonumber(autoDecision.dispatchSpellID)
+        dispatchActionKind = autoDecision.dispatchActionKind == "inventory" and "inventory" or "spell"
+        dispatchInventorySlot = tonumber(autoDecision.dispatchInventorySlot)
+        dispatchItemID = tonumber(autoDecision.dispatchItemID)
         bindingInfo = autoDecision.bindingInfo
         runtimeReason = runtimeReason or "burst_dispatch_candidate"
     elseif autoDecision and autoDecision.kind == "hold" then
@@ -867,16 +949,33 @@ function SignalFrame:BuildMessage(reason)
         -- into a paused/manual state.
         dispatchOrigin = "burst"
         dispatchSpellID = nil
+        dispatchActionKind = "hold"
         runtimeReason = autoDecision.reason or runtimeReason or "burst_hold"
+    elseif reactionDecision and reactionDecision.kind == "candidate" then
+        dispatchOrigin = "reaction"
+        dispatchSpellID = tonumber(reactionDecision.dispatchSpellID)
+        dispatchActionKind = "spell"
+        bindingInfo = reactionDecision.bindingInfo
+        runtimeReason = reactionDecision.reason or runtimeReason or "reaction_interrupt_candidate"
+    elseif reactionDecision and reactionDecision.kind == "hold" then
+        -- Compatibility path for an older AddOn candidate that already changed
+        -- into an observation hold. P4.4 keeps a stable candidate alive
+        -- until cast exit and lets TEK dedupe that stable sequence after output.
+        dispatchOrigin = "reaction"
+        dispatchSpellID = nil
+        dispatchActionKind = "hold"
+        runtimeReason = reactionDecision.reason or runtimeReason or "reaction_interrupt_hold"
     end
 
     if dispatchSpellID and not bindingInfo then
         bindingInfo, bindingReason = TE.ActionBarBindingResolver:ResolveSpell(dispatchSpellID)
     end
     if officialSpellID then
-        if dispatchSpellID == officialSpellID and bindingInfo then
+        if dispatchOrigin == "official" and bindingInfo then
             officialBindingInfo, officialBindingReason = bindingInfo, bindingReason
-        elseif burstHoldObservation then
+        else
+            -- A Burst/Reaction candidate or observation hold must not replace
+            -- the normal recommendation's read-only HUD binding metadata.
             officialBindingInfo, officialBindingReason = TE.ActionBarBindingResolver:ResolveSpell(officialSpellID)
         end
     end
@@ -895,22 +994,50 @@ function SignalFrame:BuildMessage(reason)
     if explicitObservationOnly then outputState = "paused" end
 
     runtimeReason = runtimeReason or inputFocusReason or sessionPolicyReason or bindingReason
-    -- Persisted Burst attempts must keep one TEAP sequence even if the immutable
-    -- official recommendation changes while the current Burst step awaits proof.
-    -- A retry/next step changes dispatchAttempt and therefore receives a new key.
+    -- `sequence` identifies a fresh dispatch opportunity, not a logical Burst
+    -- step.  A waiting AutoBurst plan can legitimately need several physical
+    -- attempts while its exact confirmation remains pending (for example an
+    -- inventory action presented during a GCD).  Older TEK builds deduped Burst
+    -- candidates by sequence even though their freshness changed, so retaining a
+    -- stable sequence silently converted a configured 5 Hz/20 Hz delivery policy
+    -- into one physical press.  Give every dispatchable armed frame a fresh
+    -- sequence for both official and Burst candidates; the current TEK global
+    -- rate limiter remains the only physical-input frequency governor.
     local signatureOfficialSpellID = officialSpellID
-    if autoDecision and autoDecision.kind == "candidate" and dispatchOrigin == "burst" then
+    if (autoDecision and autoDecision.kind == "candidate" and dispatchOrigin == "burst")
+        or (reactionDecision and reactionDecision.kind == "candidate" and dispatchOrigin == "reaction") then
         signatureOfficialSpellID = 0
     end
     local signature = table.concat({
-        tostring(outputState), tostring(dispatchOrigin), tostring(actionCode), tostring(signatureOfficialSpellID), tostring(dispatchSpellID),
-        tostring(bindingInfo and bindingInfo.bindingToken or 0), tostring(inCombat),
+        tostring(outputState), tostring(dispatchOrigin), tostring(dispatchActionKind), tostring(actionCode), tostring(signatureOfficialSpellID), tostring(dispatchSpellID),
+        tostring(dispatchInventorySlot or 0), tostring(dispatchItemID or 0), tostring(bindingInfo and bindingInfo.bindingToken or 0), tostring(inCombat),
         tostring(inputFocusActive), tostring(sessionPolicy), tostring(runtimeReason),
         tostring(castLock.active == true), tostring(castLock.kind or "none"), tostring(castLock.spellID or 0),
         tostring(autoDecision and autoDecision.planId or 0), tostring(autoDecision and autoDecision.stepRole or "none"),
         tostring(autoDecision and autoDecision.dispatchAttempt or 0), tostring(observationOnly),
+        tostring(reactionDecision and reactionDecision.reactionKind or "none"), tostring(reactionDecision and reactionDecision.source or "none"),
+        tostring(reactionDecision and reactionDecision.castKey or "none"), tostring(reactionDecision and reactionDecision.routeMode or "none"),
     }, ":")
-    if signature ~= lastSignature then
+    -- P4.4 reaction candidates intentionally retain one stable sequence while
+    -- the observed cast remains active. TEK records a successful reaction
+    -- sequence and suppresses only its duplicate frames; this keeps the request
+    -- visible long enough for cross-process sampling without producing repeated
+    -- physical-output calls. Official and Burst candidates retain their fresh-frame
+    -- delivery policy.
+    local stableReactionCandidate = reactionDecision and reactionDecision.kind == "candidate"
+        and dispatchOrigin == "reaction"
+        and reactionDecision.deliveryStable == true
+    local freshDispatchableFrame = outputState == "armed"
+        and observationOnly ~= true
+        and (actionCode ~= 0 or dispatchOrigin == "reaction")
+        and bindingInfo ~= nil
+        and bindingInfo.status == "Ready"
+        and (tonumber(bindingInfo.bindingToken) or 0) ~= 0
+        and stableReactionCandidate ~= true
+    if freshDispatchableFrame then
+        sequence = sequence + 1
+        lastSignature = signature
+    elseif signature ~= lastSignature then
         sequence = sequence + 1
         lastSignature = signature
     elseif reason == "manual" then
@@ -932,9 +1059,15 @@ function SignalFrame:BuildMessage(reason)
         spellID = dispatchSpellID,
         officialSpellID = officialSpellID,
         dispatchSpellID = dispatchSpellID,
+        dispatchActionKind = dispatchActionKind,
+        dispatchInventorySlot = dispatchInventorySlot,
+        dispatchItemID = dispatchItemID,
         dispatchOrigin = dispatchOrigin,
         burstPlan = autoDecision,
+        reactionPlan = reactionDecision,
+        reactionDeliveryStable = stableReactionCandidate == true,
         inCombat = inCombat,
+        preCombatBurstBridge = preCombatBurstBridgeFrame,
         observationOnly = observationOnly,
         unresolvedReason = runtimeReason or bindingReason,
         bindingReason = runtimeReason or bindingReason,
@@ -945,7 +1078,8 @@ function SignalFrame:BuildMessage(reason)
         bindingInfo = bindingInfo,
         officialBindingInfo = officialBindingInfo,
         officialBindingReason = officialBindingReason,
-        observationReason = burstHoldObservation and autoDecision and autoDecision.reason or nil,
+        observationReason = burstHoldObservation and autoDecision and autoDecision.reason
+            or (reactionHoldObservation and reactionDecision and reactionDecision.reason or nil),
         inputFocusActive = inputFocusActive,
         inputFocusReason = inputFocusReason,
         manualHoldActive = outputState == "manual_hold",

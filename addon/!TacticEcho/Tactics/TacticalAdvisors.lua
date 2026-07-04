@@ -163,6 +163,409 @@ local function buildInterrupt(classFile, settings, monitor)
     }
 end
 
+
+-- P3 reaction planner. This is still a display-only projection: it joins the
+-- existing action-bar/macro mapping snapshot with ProtocolMonitor's shared
+-- target/focus/mouseover/nameplate observations. It must not construct a
+-- BindingToken, touch TEAP, call TEK, or alter AutoBurst / official rotation.
+local REACTION_SOURCE_ORDER = { "target", "focus", "mouseover" }
+local REACTION_SOURCE_LABELS = {
+    target = "当前目标",
+    focus = "焦点目标",
+    mouseover = "鼠标指向目标",
+}
+
+local function reactionBranch(settings, name)
+    local auto = type(settings) == "table" and settings.autoReaction or nil
+    local branch = type(auto) == "table" and auto[name] or nil
+    branch = type(branch) == "table" and branch or {}
+    local enabled = type(branch.targetEnabled) == "table" and branch.targetEnabled or {}
+    local requested = type(branch.targetOrder) == "table" and branch.targetOrder or REACTION_SOURCE_ORDER
+    local order, seen = {}, {}
+    for _, source in ipairs(requested) do
+        if REACTION_SOURCE_LABELS[source] and seen[source] ~= true then
+            order[#order + 1] = source
+            seen[source] = true
+        end
+    end
+    for _, source in ipairs(REACTION_SOURCE_ORDER) do
+        if seen[source] ~= true then
+            order[#order + 1] = source
+            seen[source] = true
+        end
+    end
+    return branch, enabled, order
+end
+
+local function reactionBindingSnapshot()
+    local bindings = TE.ReactionBindings
+    if not (bindings and type(bindings.GetSnapshot) == "function") then return nil end
+    local ok, snapshot = pcall(bindings.GetSnapshot, bindings)
+    return ok and type(snapshot) == "table" and snapshot or nil
+end
+
+local function reactionRoute(snapshot, group, role, routeName, requireSafeRoute)
+    snapshot = type(snapshot) == "table" and snapshot or {}
+    for _, entry in ipairs(snapshot[group] or {}) do
+        if role == nil or entry.role == role then
+            local route = type(entry.routes) == "table" and entry.routes[routeName] or nil
+            if type(route) == "table" and route.bindingReady == true and type(route.binding) == "string" and route.binding ~= "" then
+                if requireSafeRoute ~= true or route.safeForFutureAuto == true then
+                    return entry, route
+                end
+            end
+        end
+    end
+    return nil, nil
+end
+
+local function reactionItem(entry, route, candidate, reactionKind)
+    entry = type(entry) == "table" and entry or {}
+    route = type(route) == "table" and route or {}
+    candidate = type(candidate) == "table" and candidate or {}
+    local aoe = reactionKind == "aoe_control"
+    return {
+        spellID = tonumber(entry.spellID),
+        spellName = entry.spellName,
+        spellIcon = entry.spellIcon,
+        binding = route.binding,
+        -- Advisory HUD cards stay incapable of dispatch, even when the
+        -- underlying P2 mapping parsed a real action-bar binding.
+        bindingToken = 0,
+        actionSlot = route.actionSlot,
+        slot = route.actionSlot,
+        directActionSlot = route.directActionSlot == true,
+        actionBarStateTrusted = route.actionBarStateTrusted == true,
+        unbound = false,
+        advisoryOnly = true,
+        displayOnly = true,
+        usableState = "unknown",
+        category = aoe and "aoe_control" or (reactionKind == "interrupt" and "interrupt" or "control"),
+        source = "reaction_p3_observer",
+        procHighlight = true,
+        reactionHighlight = true,
+        reactionKind = reactionKind,
+        reactionSource = candidate.source,
+        reactionSourceLabel = REACTION_SOURCE_LABELS[candidate.source] or (aoe and "可见姓名板" or "目标"),
+        reactionObservedTarget = aoe ~= true,
+        reactionAoe = aoe,
+        reactionRouteSafe = route.safeForFutureAuto == true,
+        reactionRouteMode = route.autoRouteMode or route.routeKind,
+        reactionRouteAvailable = true,
+        reactionMappingRequired = true,
+        reactionQualifyingCount = aoe and tonumber(candidate.qualifyingCount) or nil,
+        reactionAoeThreshold = aoe and tonumber(candidate.threshold) or nil,
+    }
+end
+
+-- P3 is a visual observation stage, not an automatic-dispatch stage. A missing
+-- P2 route must not suppress a proven cast highlight; otherwise cast sampling
+-- and macro/action-bar mapping cannot be tested independently. This fallback
+-- shows the class profile icon as an unbound/read-only prompt. It intentionally
+-- carries bindingToken=0 and P4 must not treat it as an executable route.
+local function reactionFallbackItem(classFile, reactionKind, candidate)
+    local spellIDs = {}
+    if reactionKind == "interrupt" then
+        if TE.AbilityProfiles and type(TE.AbilityProfiles.GetInterrupts) == "function" then
+            spellIDs = TE.AbilityProfiles:GetInterrupts(classFile) or {}
+        end
+    elseif reactionKind == "single_control" then
+        if TE.AbilityProfiles and type(TE.AbilityProfiles.GetReactionControls) == "function" then
+            for _, control in ipairs(TE.AbilityProfiles:GetReactionControls(classFile) or {}) do
+                if type(control) == "table" and control.role == "single" and tonumber(control.spellID) then
+                    spellIDs[#spellIDs + 1] = tonumber(control.spellID)
+                end
+            end
+        end
+    end
+    local item = firstBound(spellIDs)
+    if not item then return nil end
+    candidate = type(candidate) == "table" and candidate or {}
+    item.bindingToken = 0
+    item.advisoryOnly = true
+    item.displayOnly = true
+    item.procHighlight = true
+    item.reactionHighlight = true
+    item.reactionKind = reactionKind
+    item.reactionSource = candidate.source
+    item.reactionSourceLabel = REACTION_SOURCE_LABELS[candidate.source] or "目标"
+    item.reactionObservedTarget = true
+    item.reactionAoe = false
+    item.reactionRouteSafe = false
+    item.reactionRouteMode = "unmapped_display_fallback"
+    item.reactionRouteAvailable = false
+    item.reactionMappingRequired = true
+    item.category = reactionKind == "interrupt" and "interrupt" or "control"
+    item.source = "reaction_p3_profile_fallback"
+    item.unusableReason = item.binding and "未解析到 P2 目标路由；当前仅提示" or "动作条/宏尚未识别；当前仅提示"
+    return item
+end
+
+local function unitReactionCandidate(observation, settings, classFile, configName, bindingSnapshot, reactionKind)
+    observation = type(observation) == "table" and observation or {}
+    local _, sourceEnabled, sourceOrder = reactionBranch(settings, configName)
+    for _, source in ipairs(sourceOrder) do
+        if sourceEnabled[source] == true then
+            local unit = type(observation.sources) == "table" and observation.sources[source] or nil
+            local cast = type(unit) == "table" and unit.cast or nil
+            local observed = type(unit) == "table" and unit.hostile == true and unit.alive == true
+                and type(cast) == "table" and cast.active == true
+            if observed then
+                if reactionKind == "interrupt" and cast.interruptibleKnown == true and cast.interruptible == true then
+                    local entry, route = reactionRoute(bindingSnapshot, "interrupt", "interrupt", source, false)
+                    local item = entry and route and reactionItem(entry, route, { source = source }, "interrupt")
+                        or reactionFallbackItem(classFile, "interrupt", { source = source })
+                    if item then
+                        return {
+                            kind = "interrupt", source = source, castKind = cast.kind,
+                            castSpellID = cast.spellID, item = item,
+                            routeAvailable = entry ~= nil and route ~= nil,
+                            verification = "confirmed",
+                        }
+                    end
+                elseif reactionKind == "interrupt" and cast.interruptibleKnown ~= true then
+                    -- P3 diagnostic pre-alert: Retail may keep the ordinary
+                    -- notInterruptible bit secret while a cast is undeniably
+                    -- present. Keep the HUD useful for validation, but label
+                    -- this strictly read-only and explicitly ineligible for
+                    -- P4/P5 auto dispatch. Confirmed steel bars remain
+                    -- suppressed whenever any native source resolves them.
+                    local entry, route = reactionRoute(bindingSnapshot, "interrupt", "interrupt", source, false)
+                    local item = entry and route and reactionItem(entry, route, { source = source }, "interrupt")
+                        or reactionFallbackItem(classFile, "interrupt", { source = source })
+                    if item then
+                        item.reactionVerification = "unverified"
+                        item.reactionAutoEligible = false
+                        item.reactionProbeOnly = true
+                        item.unusableReason = "读条已观察到，但客户端未暴露钢条状态；P3 仅提示，不能自动打断"
+                        return {
+                            kind = "interrupt_unverified", source = source, castKind = cast.kind,
+                            castSpellID = cast.spellID, item = item,
+                            routeAvailable = entry ~= nil and route ~= nil,
+                            verification = "unverified",
+                        }
+                    end
+                elseif reactionKind == "single_control" and cast.interruptibleKnown == true
+                    and cast.interruptible == false and unit.controlEligible == true then
+                    local entry, route = reactionRoute(bindingSnapshot, "control", "single", source, false)
+                    local item = entry and route and reactionItem(entry, route, { source = source }, "single_control")
+                        or reactionFallbackItem(classFile, "single_control", { source = source })
+                    if item then
+                        return {
+                            kind = "single_control", source = source, castKind = cast.kind,
+                            castSpellID = cast.spellID, item = item,
+                            routeAvailable = entry ~= nil and route ~= nil,
+                            verification = "confirmed",
+                        }
+                    end
+                end
+            end
+        end
+    end
+    return nil
+end
+
+-- P3.2 repair path: ProtocolMonitor already samples the current target through
+-- the same polling cadence.  Keep ReactionObservation as the canonical source,
+-- but reconcile a target-cast record when the observer had an API-materialising
+-- failure. This is still display-only and never promotes unknown target facts.
+local function withTargetMonitorFallback(observation, monitor)
+    observation = type(observation) == "table" and observation or {}
+    monitor = type(monitor) == "table" and monitor or {}
+    local sources = type(observation.sources) == "table" and observation.sources or {}
+    local target = type(sources.target) == "table" and sources.target or nil
+    if not target or target.hostile ~= true or target.alive ~= true or monitor.targetCasting ~= true then
+        return observation
+    end
+    local currentCast = type(target.cast) == "table" and target.cast or {}
+    local needsCast = currentCast.active ~= true
+    local needsInterruptState = currentCast.interruptibleKnown ~= true and monitor.targetInterruptibleKnown == true
+    if needsCast ~= true and needsInterruptState ~= true then return observation end
+
+    local copiedSources, copiedTarget, copiedCast = {}, {}, {}
+    for key, value in pairs(sources) do copiedSources[key] = value end
+    for key, value in pairs(target) do copiedTarget[key] = value end
+    for key, value in pairs(currentCast) do copiedCast[key] = value end
+    if needsCast == true then
+        copiedCast.active = true
+        copiedCast.kind = monitor.targetCastKind or copiedCast.kind
+        copiedCast.spellID = monitor.targetCastSpellID or copiedCast.spellID
+        copiedCast.evidence = "protocol_monitor_target_fallback"
+    end
+    if needsInterruptState == true then
+        copiedCast.interruptibleKnown = true
+        copiedCast.interruptible = monitor.targetInterruptible == true
+        copiedCast.evidence = copiedCast.evidence or "protocol_monitor_interruptibility_fallback"
+    end
+    copiedTarget.cast = copiedCast
+    copiedSources.target = copiedTarget
+
+    local copied = {}
+    for key, value in pairs(observation) do copied[key] = value end
+    copied.sources = copiedSources
+    copied.reconciledTargetCast = true
+    return copied
+end
+
+local function reactionObservationDiagnostics(observation, monitor, bindingsAvailable)
+    observation = type(observation) == "table" and observation or {}
+    monitor = type(monitor) == "table" and monitor or {}
+    local sources = type(observation.sources) == "table" and observation.sources or {}
+    local target = type(sources.target) == "table" and sources.target or {}
+    local cast = type(target.cast) == "table" and target.cast or {}
+    local interruptState = cast.interruptibleKnown == true
+        and (cast.interruptible == true and "interruptible" or "not_interruptible")
+        or "unknown"
+    return {
+        observerAvailable = type(observation) == "table",
+        bindingsAvailable = bindingsAvailable == true,
+        targetExists = target.exists == true,
+        targetHostile = target.hostile == true,
+        targetAlive = target.alive == true,
+        targetCastActive = cast.active == true,
+        targetCastKind = cast.kind,
+        targetCastEvidence = cast.evidence,
+        targetCastArity = tonumber(cast.apiReturnArity),
+        targetNativeCastbar = cast.nativeCastbar == true,
+        targetNativeCastbarSource = cast.nativeBarSource,
+        targetNativeInterruptibilityEvidence = cast.interruptibilityEvidence,
+        targetNativeSteelConfirmed = cast.nativeSteelConfirmed == true,
+        targetNativeShieldKnown = cast.nativeShieldKnown == true,
+        targetNativeShieldVisible = cast.nativeShieldVisible == true,
+        targetNativeShieldSource = cast.nativeShieldSource,
+        targetCastContinuity = cast.continuity,
+        targetInterruptState = interruptState,
+        monitorTargetCasting = monitor.targetCasting == true,
+        reconciledTargetCast = observation.reconciledTargetCast == true,
+    }
+end
+
+local function aoeReactionCandidate(observation, bindingSnapshot)
+    observation = type(observation) == "table" and observation or {}
+    local aoe = type(observation.aoe) == "table" and observation.aoe or {}
+    if aoe.active ~= true then return nil end
+    -- User-confirmed ground-control contract: an area-control candidate exists
+    -- only when the existing visible macro has an explicit @cursor route.
+    local entry, route = reactionRoute(bindingSnapshot, "control", "aoe", "cursor", true)
+    if not entry or not route then return nil end
+    return {
+        kind = "aoe_control",
+        source = "nameplate",
+        qualifyingCount = tonumber(aoe.qualifyingCount) or 0,
+        threshold = tonumber(aoe.threshold) or 4,
+        item = reactionItem(entry, route, {
+            source = "nameplate", qualifyingCount = tonumber(aoe.qualifyingCount) or 0, threshold = tonumber(aoe.threshold) or 4,
+        }, "aoe_control"),
+    }
+end
+
+local function buildReactionReadOnly(settings, monitor)
+    local observation = type(monitor) == "table" and monitor.reaction or nil
+    local out = {
+        schema = 1,
+        active = false,
+        state = "monitoring",
+        readOnly = true,
+        dispatchAllowed = false,
+        source = "p3_reaction_observer",
+        interrupt = nil,
+        aoe = nil,
+        control = nil,
+        selected = nil,
+        auto = nil,
+    }
+    if type(observation) ~= "table" then
+        out.state = "observation_unavailable"
+        out.diagnostics = reactionObservationDiagnostics({}, monitor, false)
+        return out
+    end
+
+    local mappings = reactionBindingSnapshot()
+    local bindingsAvailable = mappings ~= nil
+    -- P3 highlight validation must not disappear merely because the P2 cache
+    -- is temporarily unavailable during login/actionbar reconstruction. Empty
+    -- mapping data still permits the immutable profile fallback card; P4/P5
+    -- must require a real route again before any dispatch is considered.
+    mappings = mappings or { interrupt = {}, control = {}, source = "p3_empty_mapping_fallback" }
+    observation = withTargetMonitorFallback(observation, monitor)
+    out.diagnostics = reactionObservationDiagnostics(observation, monitor, bindingsAvailable)
+
+    local context = TE.Context and TE.Context:GetPlayer() or {}
+    local classFile = context and context.class or nil
+    if settings.interruptEnabled ~= false then
+        out.interrupt = unitReactionCandidate(observation, settings, classFile, "interrupt", mappings, "interrupt")
+    end
+    if settings.controlEnabled ~= false then
+        out.aoe = aoeReactionCandidate(observation, mappings)
+        out.control = unitReactionCandidate(observation, settings, classFile, "control", mappings, "single_control")
+    end
+
+    -- P3 exposes exactly one highest-priority highlight. A lower-priority card
+    -- may still remain visible through the legacy advisory path, but only this
+    -- selected item receives the reaction glow / proc marker.
+    out.selected = out.interrupt or out.aoe or out.control
+    out.active = out.selected ~= nil
+    if out.selected then
+        out.state = out.selected.kind
+        local mappingSuffix = out.selected.routeAvailable == false and "（未识别动作条/宏，仅提示）" or ""
+        out.notice = (out.selected.kind == "interrupt" and ("可打断读条：" .. tostring(REACTION_SOURCE_LABELS[out.selected.source] or "目标") .. mappingSuffix))
+            or (out.selected.kind == "interrupt_unverified" and ("读条状态未验证：" .. tostring(REACTION_SOURCE_LABELS[out.selected.source] or "目标") .. "（P3 仅提示，不能自动打断）"))
+            or out.selected.kind == "aoe_control" and ("群控候选：可见有效钢条 " .. tostring(out.selected.qualifyingCount or 0) .. " 个")
+            or ("单体控制候选：" .. tostring(REACTION_SOURCE_LABELS[out.selected.source] or "目标") .. mappingSuffix)
+    elseif (type(observation.aoe) == "table" and observation.aoe.active == true) then
+        out.state = "aoe_route_unavailable"
+        out.notice = "范围钢条达到阈值，但未找到已识别的 @cursor 群控宏"
+    else
+        out.notice = "等待可打断读条、可控制钢条或范围钢条"
+    end
+    -- P4 runtime status is scalar-only diagnostic metadata. It does not alter
+    -- the P3 selected card, visibility, cooldown display, or HUD routing.
+    if TE.AutoReaction and type(TE.AutoReaction.GetSnapshot) == "function" then
+        local ok, snapshot = pcall(TE.AutoReaction.GetSnapshot, TE.AutoReaction)
+        if ok and type(snapshot) == "table" then out.auto = snapshot end
+    end
+    return out
+end
+
+local function applyReactionReadOnly(reaction, interrupt, advisory)
+    reaction = type(reaction) == "table" and reaction or {}
+    advisory = type(advisory) == "table" and advisory or {}
+    local selected = reaction.selected
+    if not selected then return interrupt, advisory end
+
+    -- Existing current-target interrupt cards carry the native interrupt glow
+    -- by default. Suppress it when P3 selects a higher-priority control card so
+    -- there is never more than one reaction highlight.
+    if selected.kind ~= "interrupt" and type(interrupt) == "table" and type(interrupt.suggestion) == "table" then
+        interrupt.suggestion.reactionHighlight = false
+    end
+
+    if selected.kind == "interrupt" or selected.kind == "interrupt_unverified" then
+        interrupt = {
+            active = true,
+            state = selected.kind == "interrupt" and "reaction_interruptible" or "reaction_interruptibility_unverified",
+            cast = { active = true, channel = selected.castKind == "channel" },
+            interruptible = true,
+            dangerous = false,
+            suggestion = selected.item,
+            source = "reaction_p3_observer",
+            notice = reaction.notice,
+            reaction = reaction,
+        }
+    elseif selected.kind == "single_control" or selected.kind == "aoe_control" then
+        advisory.control = {
+            active = true,
+            state = selected.kind,
+            items = { selected.item },
+            advisoryOnly = true,
+            source = "reaction_p3_observer",
+            notice = reaction.notice,
+            reaction = reaction,
+        }
+    end
+    return interrupt, advisory
+end
+
 -- The HUD must remain useful before combat even when the TEAP signal frame is
 -- intentionally paused or has never been armed.  This observer is read-only:
 -- it queries the official recommendation and the current visible action-bar
@@ -316,6 +719,12 @@ local function decorateItem(item, role, iconContext)
             equivalentSpellIDs = item.equivalentSpellIDs,
         }
         for key, value in pairs(ROLE_OPTIONS[role] or {}) do options[key] = value end
+        -- P3 has already verified the actual focus/mouseover/nameplate source
+        -- in ReactionObservation. IconState's generic target-only probe must
+        -- not overwrite that result with a missing/current-target warning.
+        if item.reactionObservedTarget == true or item.reactionAoe == true then
+            options.requiresHostileTarget = false
+        end
         if iconContext and type(iconContext.gcdSnapshot) == "table" then
             options.gcdSnapshot = iconContext.gcdSnapshot
         end
@@ -335,6 +744,30 @@ end
 local function decorateCollection(items, role, iconContext)
     for _, item in ipairs(items or {}) do decorateItem(item, role, iconContext) end
     return items
+end
+
+-- “校验” is a Burst plan-state label, not a generic CooldownTracker label.
+-- Project it only onto the current declared injection/window spell while that
+-- plan is actively awaiting spellcast/CD proof (or confirming a strict front
+-- own-CD skip). This is read-only HUD data and never changes a candidate,
+-- binding token, TEAP message or input decision.
+local function applyAutoBurstVerification(primaryDisplay, advisory)
+    if not (TE.AutoBurst and type(TE.AutoBurst.GetSnapshot) == "function") then return end
+    local ok, plan = pcall(TE.AutoBurst.GetSnapshot, TE.AutoBurst)
+    if not ok or type(plan) ~= "table" or plan.active ~= true then return end
+    local pending = plan.waitingForConfirmation == true
+        or plan.preInjectionSkipStatus == "confirming_own_cooldown"
+    local spellID = tonumber(plan.currentSpellID)
+    if pending ~= true or not spellID or spellID <= 0 then return end
+
+    local function mark(item)
+        if type(item) ~= "table" or tonumber(item.spellID) ~= spellID then return end
+        item.burstVerificationPending = true
+        item.burstVerificationRole = plan.currentRole
+    end
+
+    mark(primaryDisplay)
+    for _, item in ipairs((advisory and advisory.burst and advisory.burst.items) or {}) do mark(item) end
 end
 
 local function publish(snapshot)
@@ -394,17 +827,33 @@ function TacticalAdvisors:Refresh(force)
         primaryDisplay.burstState = advisory.burst.state
         primaryDisplay.burstReason = advisory.burst.notice
     end
-    decorateItem(primaryDisplay, "primary", runtime.iconContext)
-    decorateCollection((advisory.candidates or {}).items, "candidate", runtime.iconContext)
-    decorateCollection((advisory.burst or {}).items, "burst", runtime.iconContext)
-    decorateCollection((advisory.control or {}).items, "control", runtime.iconContext)
-    decorateCollection((advisory.mobility or {}).items, "mobility", runtime.iconContext)
 
     local interrupt
     do
         local ok, result = pcall(buildInterrupt, context.class, settings, runtime.monitor)
         interrupt = ok and result or { active = false, state = "safe_mode", blockedReason = "打断建议安全模式", error = tostring(result) }
     end
+
+    -- P3 consumes the shared monitor sample only after the legacy advisory
+    -- builders have completed. It projects read-only target/focus/mouseover and
+    -- visible-nameplate evidence into the same HUD lanes without touching any
+    -- recommendation, AutoBurst, TEAP, TEK or input state.
+    local reaction
+    do
+        local ok, result = pcall(buildReactionReadOnly, settings, runtime.monitor)
+        reaction = ok and type(result) == "table" and result or {
+            schema = 1, active = false, state = "safe_mode", readOnly = true,
+            dispatchAllowed = false, source = "reaction_p3_safe_mode", error = tostring(result),
+        }
+    end
+    interrupt, advisory = applyReactionReadOnly(reaction, interrupt, advisory)
+
+    decorateItem(primaryDisplay, "primary", runtime.iconContext)
+    decorateCollection((advisory.candidates or {}).items, "candidate", runtime.iconContext)
+    decorateCollection((advisory.burst or {}).items, "burst", runtime.iconContext)
+    applyAutoBurstVerification(primaryDisplay, advisory)
+    decorateCollection((advisory.control or {}).items, "control", runtime.iconContext)
+    decorateCollection((advisory.mobility or {}).items, "mobility", runtime.iconContext)
     if interrupt and interrupt.suggestion then decorateItem(interrupt.suggestion, "interrupt", runtime.iconContext) end
     local defensives = advisory.defense or { active = false, items = {}, state = "unavailable" }
     decorateCollection(defensives.items, "defense", runtime.iconContext)
@@ -416,6 +865,7 @@ function TacticalAdvisors:Refresh(force)
         interrupt = interrupt,
         defensives = defensives,
         advisory = advisory,
+        reaction = reaction,
         context = context,
         settings = settings,
         observedAt = now,

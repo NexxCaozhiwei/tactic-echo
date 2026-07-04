@@ -30,11 +30,15 @@ class SafetyContext:
     current_session_epoch: int | None = None
     last_action_sequence: int | None = None
     last_frame_freshness_counter: int | None = None
-    # AutoBurst re-offers one logical candidate for a short sampler-observation
-    # window. Remember the native attempt so fresh duplicate frames cannot
-    # produce a second physical keypress.
+    # Diagnostic-only record of the most recently attempted Burst candidate.
+    # It does not create a Burst-only dedupe gate: fresh armed Burst frames use
+    # the same configured global rate limiter as ordinary recommendations.
     last_burst_dispatch_sequence: int | None = None
     last_burst_dispatch_freshness: int | None = None
+    # P4.3 holds the same reaction candidate visible across multiple sampled
+    # frames. Once that stable sequence has produced a successful SendInput,
+    # later frames with the same sequence are observation-equivalent.
+    last_reaction_dispatch_sequence: int | None = None
     state: str = "Waiting"
     dispatch_budget: int | None = None
     foreground_before_read: ForegroundSnapshot | None = None
@@ -53,7 +57,50 @@ class SafetyGate:
         self.catalog = catalog
         self.profile = profile
 
+    @staticmethod
+    def _observe_non_dispatch_freshness(frame, context: SafetyContext) -> None:
+        """Advance the freshness baseline on authenticated no-input frames.
+
+        A paused/manual/channel/observation frame is not merely a status label:
+        it is a cross-process handoff barrier. Without recording its freshness,
+        a delayed armed frame painted before the barrier can be accepted after a
+        paused -> armed transition and dispatch an obsolete official binding.
+        Do not regress on equal/old counters; the normal armed path remains the
+        only place that reports freshness errors to the caller.
+        """
+        if context.current_session_epoch is None:
+            # Preserve an explicitly supplied bootstrap state for deterministic
+            # tests/dry runs. This is the same first-session behavior the armed
+            # path historically used before non-dispatch frames became freshness
+            # barriers.
+            context.current_session_epoch = frame.session_epoch
+            context.last_action_sequence = None
+            context.last_frame_freshness_counter = None
+            context.last_burst_dispatch_sequence = None
+            context.last_burst_dispatch_freshness = None
+            context.last_reaction_dispatch_sequence = None
+        elif context.current_session_epoch != frame.session_epoch:
+            context.current_session_epoch = frame.session_epoch
+            context.last_action_sequence = None
+            context.last_frame_freshness_counter = None
+            context.last_burst_dispatch_sequence = None
+            context.last_burst_dispatch_freshness = None
+            context.last_reaction_dispatch_sequence = None
+            context.bootstrapped = False
+
+        previous = context.last_frame_freshness_counter
+        if previous is None:
+            context.last_frame_freshness_counter = frame.frame_freshness_counter
+            return
+        delta = sequence_delta(frame.frame_freshness_counter, previous)
+        if 0 < delta <= 32768:
+            context.last_frame_freshness_counter = frame.frame_freshness_counter
+
     def evaluate(self, frame, context: SafetyContext, *, send_input: bool = False) -> tuple[bool, str]:
+        # The stable reaction identity is scoped to one uninterrupted reaction
+        # transport run. Any ordinary/Burst frame proves that cast handoff ended.
+        if getattr(frame, "dispatch_origin", "official") != "reaction":
+            context.last_reaction_dispatch_sequence = None
         if context.state == "ErrorLocked":
             return False, "error_locked"
         if not context.tek_armed:
@@ -69,6 +116,7 @@ class SafetyGate:
             context.state = "Blocked"
             return False, f"invalid_expected_protocol_version:{context.expected_protocol_version}"
         if frame.observation_only:
+            self._observe_non_dispatch_freshness(frame, context)
             context.state = "Waiting"
             return False, "observation_frame"
 
@@ -80,16 +128,19 @@ class SafetyGate:
         # CLI start-toggle observation still records the disarmed transition,
         # but preserves the actual plugin state for UI and diagnostics.
         if frame.state in NON_DISPATCH_PAUSE_STATES:
+            self._observe_non_dispatch_freshness(frame, context)
             if send_input and context.require_start_toggle and not context.start_toggle_released:
                 context.start_toggle_seen_disarmed = True
             context.state = "Paused"
             return False, f"frame_state_{frame.state}"
         if frame.state in NON_DISPATCH_WAITING_STATES:
+            self._observe_non_dispatch_freshness(frame, context)
             if send_input and context.require_start_toggle and not context.start_toggle_released:
                 context.start_toggle_seen_disarmed = True
             context.state = "Waiting"
             return False, f"frame_state_{frame.state}"
         if frame.state != "armed":
+            self._observe_non_dispatch_freshness(frame, context)
             context.state = self._non_dispatch_context_state(frame.state)
             return False, f"frame_state_{frame.state}"
 
@@ -131,12 +182,14 @@ class SafetyGate:
             context.last_frame_freshness_counter = None
             context.last_burst_dispatch_sequence = None
             context.last_burst_dispatch_freshness = None
+            context.last_reaction_dispatch_sequence = None
         elif context.current_session_epoch != frame.session_epoch:
             context.current_session_epoch = frame.session_epoch
             context.last_action_sequence = None
             context.last_frame_freshness_counter = None
             context.last_burst_dispatch_sequence = None
             context.last_burst_dispatch_freshness = None
+            context.last_reaction_dispatch_sequence = None
             context.bootstrapped = False
 
         # Preserve the dry-run/bootstrap diagnostic path. The real UI-linked
@@ -162,19 +215,23 @@ class SafetyGate:
                 return False, "old_frame_freshness"
         context.last_frame_freshness_counter = frame.frame_freshness_counter
 
+        if (
+            getattr(frame, "dispatch_origin", "official") == "reaction"
+            and context.last_reaction_dispatch_sequence == frame.sequence
+        ):
+            context.state = "Waiting"
+            return False, "reaction_candidate_already_dispatched"
+
         if context.last_action_sequence is not None:
             delta = sequence_delta(frame.sequence, context.last_action_sequence)
             if delta > 32768:
                 context.state = "Blocked"
                 return False, "old_action_sequence"
 
-        # A Burst candidate remains visible until the AddOn sees success,
-        # explicit invalidation or its bounded deadline. It keeps one stable
-        # sequence for that entire logical attempt. Once TEK has attempted it,
-        # never send it again; a controlled retry/next step gets a new sequence.
-        if frame.dispatch_origin == "burst" and context.last_burst_dispatch_sequence == frame.sequence:
-            context.state = "Armed"
-            return False, "burst_sequence_already_dispatched"
+        # Burst and official candidates intentionally share the same delivery
+        # policy. AddOn emits a fresh transport sequence for every dispatchable
+        # armed frame, while exact AddOn evidence still controls only whether a
+        # Burst plan advances to its next logical step.
 
         if send_input and context.dispatch_budget is not None and context.dispatch_budget <= 0:
             context.state = "Blocked"
@@ -194,13 +251,15 @@ class SafetyGate:
     def mark_dispatched(self, frame, context: SafetyContext, *, sent: bool, attempted: bool = False) -> None:
         context.last_sequence = frame.sequence
         context.last_action_sequence = frame.sequence
-        # "attempted" is intentionally broader than native sent=True. A
-        # Windows dispatcher can report a non-sent/ambiguous result after a
-        # native attempt; repeating the same burst offer would be less safe than
-        # waiting for the normal confirmation timeout and one controlled retry.
+        # "attempted" is intentionally broader than native sent=True. Keep a
+        # diagnostic record for Burst candidates, but do not suppress future
+        # fresh frames: the shared dispatch-rate limiter governs repetition for
+        # both Burst and ordinary official candidates.
         if attempted and getattr(frame, "dispatch_origin", "official") == "burst":
             context.last_burst_dispatch_sequence = frame.sequence
             context.last_burst_dispatch_freshness = frame.frame_freshness_counter
+        if sent and getattr(frame, "dispatch_origin", "official") == "reaction":
+            context.last_reaction_dispatch_sequence = frame.sequence
         if sent:
             if context.dispatch_budget is not None:
                 context.dispatch_budget -= 1

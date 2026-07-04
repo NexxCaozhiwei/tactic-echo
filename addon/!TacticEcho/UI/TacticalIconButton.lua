@@ -349,13 +349,18 @@ local function showCooldown(frame, start, duration, enabled)
 end
 
 -- Current protected-cooldown clients do not permit tainted addon code to call
--- Cooldown:SetCooldown() with secret start/duration values.  The safe display
--- path is a DurationObject passed directly to Blizzard's native cooldown frame.
+-- Cooldown:SetCooldown() with secret start/duration values. The safe swipe path
+-- is a DurationObject passed directly to Blizzard's native cooldown frame.
+-- Native CountdownNumbers are never a HUD text authority: all visible digits
+-- are produced by the configurable HUD badge from safe scalar snapshots only.
 -- This code is presentation-only: it never materializes, compares, stores or
 -- forwards the raw duration into tactical state, recommendations, TEAP or TEK.
-local function setNativeCountdownNumbers(frame, shown)
+local function setNativeCountdownNumbers(frame, _)
     if frame and frame.SetHideCountdownNumbers then
-        pcall(frame.SetHideCountdownNumbers, frame, shown ~= true)
+        -- Keep this defensive even if an older caller passes `true`: clients can
+        -- restore native digits after SetCooldownFromDurationObject(), and that
+        -- would reintroduce Blizzard's MM:SS formatter over the HUD label.
+        pcall(frame.SetHideCountdownNumbers, frame, true)
     end
 end
 
@@ -364,6 +369,65 @@ local function hideCooldown(frame)
     setNativeCountdownNumbers(frame, false)
     frame:Hide()
 end
+
+-- Equipped trinkets have a source-specific cooldown identity. Item-backed
+-- cards can inherit the shared spell GCD from their visible action-bar button,
+-- so it must not be treated as an item cooldown presentation.
+local function isEquippedTrinketCard(item)
+    item = type(item) == "table" and item or {}
+    local slot = safeNumber(item.inventorySlot)
+    return slot == 13 or slot == 14
+end
+
+-- Item-backed HUD cards (equipped trinkets, potions and other item followers)
+-- must never borrow a native action-bar DurationObject for their primary CD.
+-- Retail can expose the shared GCD DurationObject through that route even
+-- after the read-only item snapshot says the item itself is ready. The shared
+-- resolver is therefore the only source for an item card's own-CD decision;
+-- safe numeric snapshots render true own cooldowns, while ambiguous/shared GCD
+-- samples render nothing rather than a false item timer.
+local function isItemBackedCard(item)
+    item = type(item) == "table" and item or {}
+    -- A transitional HUD snapshot can temporarily lose its ItemID while still
+    -- retaining the stable equipment slot/category. Treat that card as item
+    -- backed as well; otherwise the generic 61304 GCD layer can leak through
+    -- during exactly the refresh interval in which a trinket's ItemID is being
+    -- rebound after login, equipment change or action-bar remap.
+    if safeNumber(item.itemID) ~= nil then return true end
+    if isEquippedTrinketCard(item) then return true end
+    local category = safeText(item.category, ""):lower()
+    return category == "trinket" or category == "potion" or category == "item" or category == "consumable"
+end
+
+-- The HUD has a deliberate display exception for the main recommendation and
+-- the explicit Burst-window card: a shared player GCD is useful to the input
+-- gate, but it is not actionable information on either of these two cards.
+-- Keep own cooldowns visible; hide only a pure 61304/shared-GCD presentation.
+-- This function is presentation-only and must never affect AutoBurst, bindings,
+-- TEAP or TEK dispatch.
+local function suppressSharedGcdPresentation(item)
+    item = type(item) == "table" and item or {}
+    return item.kind == "primary" or item.burstRole == "window" or item.burstWindow == true
+end
+
+local function sharedGcdOnlyForPresentation(item, spellKnown, spellStart, spellDuration, gcdKnown, gcdStart, gcdDuration)
+    if suppressSharedGcdPresentation(item) ~= true then return false end
+    item = type(item) == "table" and item or {}
+    if item.cooldownOnGCD == true or item.cooldownGcdAlias == true then return true end
+    -- A confirmed own cooldown always wins over a simultaneous GCD. Do not hide
+    -- a real spell timer merely because its cast also triggered the shared GCD.
+    if item.cooldownActive == true and item.cooldownOnGCD ~= true then return false end
+    if spellKnown == true and gcdKnown == true
+        and sameCooldown(spellStart, spellDuration, gcdStart, gcdDuration) then
+        return true
+    end
+    return item.gcdActive == true
+end
+
+-- Direct action-bar DurationObjects remain the authoritative swipe source, but
+-- the HUD-owned CD label must remain configurable across burst, interrupt,
+-- control and defense cards. IconState projects a safe exact numeric snapshot
+-- for confirmed own cooldowns, so custom digits can match the real button.
 
 local function publicCooldownActivity(item)
     item = type(item) == "table" and item or {}
@@ -410,9 +474,15 @@ local function publicCooldownActivity(item)
     return active, onGCD
 end
 
-local function showDurationObjectCooldown(frame, item, enabled, ignoreGCD, showNumbers)
+local function showDurationObjectCooldown(frame, item, enabled, ignoreGCD, suppressSharedGcd)
     item = type(item) == "table" and item or {}
     local spellID = safeNumber(item.spellID)
+    -- The visible default-button override can differ from the declared/base
+    -- SpellID. When a spell-specific DurationObject is needed, prefer the exact
+    -- currently mapped SpellID so a base/override mismatch cannot silently
+    -- replace an own cooldown with an unrelated generic action-bar timer.
+    local mappedSpellID = safeNumber(item.matchedSpellID)
+    local durationSpellID = mappedSpellID or spellID
     local itemID = safeNumber(item.itemID)
     local actionSlot = safeNumber(item.actionSlot or item.slot)
     if enabled ~= true or not frame or (spellID == nil and itemID == nil and actionSlot == nil) then
@@ -424,7 +494,56 @@ local function showDurationObjectCooldown(frame, item, enabled, ignoreGCD, showN
         return false, "duration_api_unavailable", false
     end
 
-    local active = publicCooldownActivity(item)
+    local active, onGCD = publicCooldownActivity(item)
+    local inventoryCard = isEquippedTrinketCard(item)
+    local itemBackedCard = isItemBackedCard(item)
+    -- A generic action-bar DurationObject is not a spell identity. Use it only
+    -- when IconState has already captured a safe numeric own-CD sample from the
+    -- same trusted direct default-action-bar button. Public `isActive=true /
+    -- isOnGCD=false` alone is intentionally insufficient: during reload and
+    -- protected-value settling the client can expose that boolean pair while
+    -- the generic object is still the 61304/shared-GCD timer. Opaque own-CD
+    -- states therefore probe the spell-specific ignore-GCD object below.
+    local genericActionbarNumericCertified = item.cooldownActionBarNumericOwnEvidence == true
+    -- Spell-specific DurationObjects may still be used for a semantic own-CD
+    -- state whose timing values are opaque. This preserves the client-owned
+    -- swipe without ever borrowing a generic action-bar GCD object.
+    local semanticOwnCooldown = item.cooldownActive == true
+        and item.cooldownOnGCD ~= true
+        and item.cooldownGcdAlias ~= true
+    if suppressSharedGcd == true and (onGCD == true or item.cooldownGcdAlias == true) then
+        hideCooldown(frame)
+        return false, "shared_gcd_suppressed", false
+    end
+    -- The equipped-slot resolver is the own-cooldown authority for a trinket.
+    -- Only that source may keep an equipped trinket countdown visible while
+    -- the action-bar button also reports a shared GCD.  Without a confirmed
+    -- non-GCD slot/item cooldown, an action-bar isOnGCD result is presentation
+    -- noise and must never draw a pseudo-trinket timer.
+    local confirmedInventoryOwnCooldown = inventoryCard
+        and item.cooldownKnown == true
+        and item.cooldownActive == true
+        and item.cooldownOnGCD ~= true
+        and item.cooldownGcdAlias ~= true
+    -- Fail closed for an equipped trinket: no public own-CD certificate means
+    -- no primary DurationObject at all. This intentionally does not depend on
+    -- the action-bar `isOnGCD` flag, because several clients omit that flag
+    -- while still returning the 61304 DurationObject and its numeric timer.
+    -- Item-backed cards are rendered only from the shared
+    -- normalized item snapshot so a generic action-bar GCD can never leak
+    -- onto a trinket/potion/consumable HUD card.
+    if ignoreGCD == true and itemBackedCard then
+        -- Do not attach any native item/action-bar DurationObject. On affected
+        -- clients that object can be 61304 even when its public provenance is
+        -- omitted, so a second renderer-level filter is not sufficiently
+        -- reliable. `updateCooldown` below still paints a verified numeric own
+        -- item cooldown from the sanitized resolver snapshot.
+        hideCooldown(frame)
+        if confirmedInventoryOwnCooldown ~= true and inventoryCard then
+            return false, "inventory_own_cooldown_unconfirmed", false
+        end
+        return false, "item_native_duration_disabled", false
+    end
     -- The state collector can safely classify a follower as cooling down even
     -- when the protected API does not expose a public isActive boolean for that
     -- exact SpellID. Keep probing the native DurationObject in that case;
@@ -438,57 +557,62 @@ local function showDurationObjectCooldown(frame, item, enabled, ignoreGCD, showN
 
     local ok, rendered, renderMode, nativeNumbersVisible = pcall(function()
         local duration, durationSource
-        -- Items may be unbound. Ask the shared resolver for a client-native
-        -- item DurationObject first; it remains inside this renderer and never
-        -- crosses into the sanitized HUD model. Action-bar DurationObjects stay
-        -- as the portable fallback for bound items and transformed spells.
-        if (itemID or actionSlot) and TE.CooldownResolver and type(TE.CooldownResolver.GetDurationObject) == "function" then
+        -- A generic action-bar DurationObject is not a spell identity. It is
+        -- therefore considered only after the direct visible button explicitly
+        -- certifies an own non-GCD cooldown. This applies to all spell cards,
+        -- not only main/window cards: otherwise an interrupt/control macro or a
+        -- just-reloaded binding can briefly borrow the shared 61304 object.
+        local allowGenericActionbarDuration = genericActionbarNumericCertified == true
+        if allowGenericActionbarDuration and (itemID or actionSlot)
+            and TE.CooldownResolver and type(TE.CooldownResolver.GetDurationObject) == "function" then
             local resolverOK, resolved, resolvedSource = pcall(TE.CooldownResolver.GetDurationObject, TE.CooldownResolver, item)
             if resolverOK then
                 duration, durationSource = resolved, resolvedSource
             end
         end
-        local canUseActionSlot = actionSlot and (item.itemID or item.directActionSlot == true or item.actionBarStateTrusted == true)
-        if duration == nil and canUseActionSlot and C_ActionBar and type(C_ActionBar.GetActionCooldownDuration) == "function" then
+        local canUseActionSlot = actionSlot and genericActionbarNumericCertified == true
+        if duration == nil and canUseActionSlot
+            and C_ActionBar and type(C_ActionBar.GetActionCooldownDuration) == "function" then
             duration = C_ActionBar.GetActionCooldownDuration(actionSlot)
             durationSource = duration ~= nil and "actionbar_duration" or nil
         end
-        if duration == nil and spellID and C_Spell and type(C_Spell.GetSpellCooldownDuration) == "function" then
+        if duration == nil and durationSpellID and C_Spell and type(C_Spell.GetSpellCooldownDuration) == "function" then
             if ignoreGCD == true then
-                -- Retain a no-argument fallback for clients that do not expose
-                -- the optional ignore-GCD parameter yet.
-                local ignoredOK, ignoredDuration = pcall(C_Spell.GetSpellCooldownDuration, spellID, true)
-                if ignoredOK then duration = ignoredDuration else duration = C_Spell.GetSpellCooldownDuration(spellID) end
+                -- The spell-specific ignore-GCD object is the only fallback for
+                -- an opaque semantic own cooldown. For main/window cards do not
+                -- fall back to the generic overload: it can reintroduce 61304.
+                local ignoredOK, ignoredDuration = pcall(C_Spell.GetSpellCooldownDuration, durationSpellID, true)
+                if ignoredOK then
+                    duration = ignoredDuration
+                elseif suppressSharedGcd ~= true and semanticOwnCooldown == true then
+                    duration = C_Spell.GetSpellCooldownDuration(durationSpellID)
+                end
             else
-                duration = C_Spell.GetSpellCooldownDuration(spellID)
+                duration = C_Spell.GetSpellCooldownDuration(durationSpellID)
             end
             durationSource = duration ~= nil and "spell_duration" or durationSource
         end
         if duration == nil then return false, "duration_render_failed", false end
 
-        -- Keep all authoritative DurationObject countdown digits inside the
-        -- native cooldown frame.  The source still follows a strict priority:
-        -- direct action-bar slot first, then the spell/item DurationObject.
-        -- No protected duration crosses the HUD model and the custom badge is
-        -- suppressed whenever native digits are visible.
-        local useNativeNumbers = showNumbers == true
-        setNativeCountdownNumbers(frame, useNativeNumbers)
+        -- DurationObject owns swipe progression only. Never expose its native
+        -- CountdownNumbers, including during a protected/opaque numeric gap:
+        -- Blizzard formats long cooldowns as MM:SS, while the HUD's single badge
+        -- must remain the sole, uniform integer-seconds display.
+        setNativeCountdownNumbers(frame, false)
         frame:SetCooldownFromDurationObject(duration, true)
-        -- Some client builds restore native countdown digits when the duration
-        -- object is attached; force the selected policy again after assignment.
-        setNativeCountdownNumbers(frame, useNativeNumbers)
+        -- Several client builds restore native digits after attaching the object.
+        -- Reassert the strict HUD policy after every assignment.
+        setNativeCountdownNumbers(frame, false)
         frame:Show()
-        local renderMode = "duration_object"
-        if useNativeNumbers then
-            if durationSource == "actionbar_duration" then
-                renderMode = "duration_object_actionbar"
-            elseif durationSource == "item_duration" then
-                renderMode = "duration_object_item"
-            else
-                renderMode = "duration_object_spell"
-            end
+        local renderMode
+        if durationSource == "actionbar_duration" then
+            renderMode = "duration_object_actionbar"
+        elseif durationSource == "item_duration" then
+            renderMode = "duration_object_item"
+        else
+            renderMode = "duration_object_spell"
         end
-        return true, renderMode, useNativeNumbers
+        return true, renderMode, false
     end)
     if not ok or rendered ~= true then
         hideCooldown(frame)
@@ -497,18 +621,21 @@ local function showDurationObjectCooldown(frame, item, enabled, ignoreGCD, showN
     return true, renderMode or "duration_object", nativeNumbersVisible == true
 end
 
-local function cooldownTextMode(style)
-    style = type(style) == "table" and style or {}
-    return ({ auto = true, custom = true, duration = true })[style.mode] and style.mode or "auto"
+local function cooldownTextMode(_)
+    -- Retained as a compatibility shim for existing SavedVariables/UI callers.
+    -- From 1.0.38 forward, every HUD card uses the configurable badge; no mode
+    -- can re-enable native DurationObject digits.
+    return "custom"
 end
 
 local function cooldownPresentationSignature(item, spellStyle, gcdStyle, cooldownTextStyle)
     item = item or {}
     return table.concat({
-        styleMarker(item.spellID), styleMarker(item.itemID), styleMarker(item.inventorySlot), styleMarker(item.actionSlot or item.slot), styleMarker(item.directActionSlot), styleMarker(item.actionBarStateTrusted),
+        styleMarker(item.spellID), styleMarker(item.matchedSpellID), styleMarker(item.itemID), styleMarker(item.inventorySlot), styleMarker(item.actionSlot or item.slot), styleMarker(item.directActionSlot), styleMarker(item.actionBarStateTrusted), styleMarker(item.cooldownActionBarNumericOwnEvidence),
         styleMarker(item.usableState), styleMarker(item.iconState and item.iconState.availability),
         styleMarker(item.cooldownKnown), styleMarker(item.cooldownStart),
-        styleMarker(item.cooldownDuration), styleMarker(item.cooldownActive), styleMarker(item.cooldownOnGCD), styleMarker(item.cooldownFallback), styleMarker(item.cooldownSource), styleMarker(item.cooldownIdentityKey),
+        styleMarker(item.cooldownDuration), styleMarker(item.cooldownActive), styleMarker(item.cooldownOnGCD), styleMarker(item.cooldownGcdAlias), styleMarker(item.cooldownFallback), styleMarker(item.cooldownFallbackOrigin), styleMarker(item.cooldownSource), styleMarker(item.cooldownIdentityKey),
+        styleMarker(item.kind), styleMarker(item.burstRole), styleMarker(item.burstWindow),
         styleMarker(item.gcdKnown), styleMarker(item.gcdStart), styleMarker(item.gcdDuration),
         styleMarker(item.gcdActive), styleMarker(item.chargeCooldownKnown), styleMarker(item.chargeCooldownStart), styleMarker(item.chargeCooldownDuration), styleMarker(item.chargeCooldownRemaining),
         styleMarker(item.charges), styleMarker(item.maxCharges),
@@ -531,9 +658,15 @@ local function updateCooldown(card, item, spellStyle, gcdStyle)
     local spellKnown, spellStart, spellDuration = cooldownData(item, "cooldown")
     local gcdKnown, gcdStart, gcdDuration = cooldownData(item, "gcd")
     local actionSlot = safeNumber(item and (item.actionSlot or item.slot))
-    local preferNativeActionbar = actionSlot ~= nil and item and item.directActionSlot == true
-    local textMode = cooldownTextMode(card.resolvedCooldownStyle)
-    local nativeNumbersRequested = textMode ~= "custom"
+    local itemBackedCard = isItemBackedCard(item)
+    local preferNativeActionbar = actionSlot ~= nil and item and item.directActionSlot == true and itemBackedCard ~= true
+    local suppressSharedGcd = suppressSharedGcdPresentation(item)
+    local sharedGcdOnly = sharedGcdOnlyForPresentation(item, spellKnown, spellStart, spellDuration, gcdKnown, gcdStart, gcdDuration)
+    cooldownTextMode(card.resolvedCooldownStyle) -- legacy SavedVariables compatibility only.
+    -- DurationObjects are authoritative for the swipe, never for visible text.
+    -- An opaque own-CD state keeps the swipe and waits for CooldownTracker's
+    -- pre-cached/event-driven safe number; it must not fall back to Blizzard's
+    -- MM:SS CountdownNumbers.
 
     -- Direct action-bar cards use Blizzard's own DurationObject as the first
     -- authority.  This avoids a local spell estimate or base/override SpellID
@@ -549,38 +682,54 @@ local function updateCooldown(card, item, spellStyle, gcdStyle)
             item,
             spellEnabled,
             true,
-            nativeNumbersRequested
+            suppressSharedGcd
         )
         -- A direct action-bar DurationObject is exact and always wins. Only
         -- when that renderer is genuinely unavailable/failed (not when it
         -- explicitly reports ready) may a sanitized local/API timer provide a
         -- last-resort visual fallback.
-        if nativeSpell ~= true and spellKnown == true and spellMode ~= "ready" then
+        if nativeSpell ~= true and spellKnown == true and spellMode ~= "ready" and sharedGcdOnly ~= true then
             spellShown = showCooldown(card.cooldown, spellStart, spellDuration, spellEnabled and not globalOnly)
             setNativeCountdownNumbers(card.cooldown, false)
         end
     else
-        -- Spell and item DurationObjects are also authoritative client timers;
-        -- displaying their native numbers fixes the protected-value path for
-        -- unbound skills, macros and potion/category cooldowns. Numeric model
-        -- values are retained only as a compatibility fallback.
+        -- Spell and item DurationObjects are also authoritative client timers
+        -- for swipe rendering. HUD text remains badge-only, so protected-value
+        -- paths rely on sanitized model/Tracker numerics rather than native
+        -- CountdownNumbers.
         nativeSpell, spellMode, nativeNumbersVisible = showDurationObjectCooldown(
             card.cooldown,
             item,
             spellEnabled,
             true,
-            nativeNumbersRequested
+            suppressSharedGcd
         )
-        if nativeSpell ~= true and spellKnown == true and spellMode ~= "ready" then
+        if nativeSpell ~= true and spellKnown == true and spellMode ~= "ready" and sharedGcdOnly ~= true then
             spellShown = showCooldown(card.cooldown, spellStart, spellDuration, spellEnabled and not globalOnly)
             setNativeCountdownNumbers(card.cooldown, false)
         end
     end
 
-    local gcdCanRender = gcdEnabled and not spellShown and not nativeSpell and not globalOnly
+    -- Equipped 13/14-slot trinkets deliberately never render the generic
+    -- player-GCD layer.  The primary trinket cooldown is already guarded by
+    -- the slot+ItemID own-cooldown authority above; leaving this secondary
+    -- `61304` overlay enabled would still paint the same 1–1.5s GCD sweep on
+    -- a ready trinket after the primary timer has been correctly suppressed.
+    -- This is presentation-only and must not affect AutoBurst/CD semantics.
+    local suppressItemGcdLayer = isItemBackedCard(item) or suppressSharedGcd == true
+    local gcdCanRender = gcdEnabled
+        and suppressItemGcdLayer ~= true
+        and not spellShown
+        and not nativeSpell
+        and not globalOnly
     local gcdShown = showCooldown(card.gcdCooldown, gcdStart, gcdDuration, gcdCanRender)
     local nativeGcd = false
-    if gcdKnown ~= true and nativeSpell ~= true then
+    if suppressItemGcdLayer == true then
+        -- Main/window cards intentionally hide the shared GCD layer; own spell
+        -- cooldowns above remain visible. Item cards retain the same policy.
+        hideCooldown(card.gcdCooldown)
+        setNativeCountdownNumbers(card.gcdCooldown, false)
+    elseif gcdKnown ~= true and nativeSpell ~= true then
         nativeGcd, gcdMode = showDurationObjectCooldown(card.gcdCooldown, { spellID = 61304 }, gcdEnabled, false, false)
     else
         setNativeCountdownNumbers(card.gcdCooldown, false)
@@ -606,14 +755,17 @@ local function updateCooldown(card, item, spellStyle, gcdStyle)
         or gcdShown and "numeric_gcd"
         or (spellMode ~= "numeric" and spellMode)
         or gcdMode
-    card.nativeCountdownVisible = nativeNumbersVisible == true
+    card.nativeCountdownVisible = false
+    -- Kept for diagnostic schema compatibility. Native countdown fallback was
+    -- retired: DurationObject now renders only the swipe, never the digits.
+    card.nativeCountdownFallback = false
     card.cooldownPresentationSignature = signature
     card.lastCooldownKnown = spellKnown == true
     card.lastGcdShown = (gcdShown or nativeGcd) == true
     card.lastGlobalOnly = globalOnly == true
     card.lastNativeCooldownRendered = (nativeSpell or nativeGcd) == true
-    card.lastNativeCountdownVisible = nativeNumbersVisible == true
-    return spellKnown, gcdShown or nativeGcd, globalOnly, nativeSpell or nativeGcd, nativeNumbersVisible
+    card.lastNativeCountdownVisible = false
+    return spellKnown, gcdShown or nativeGcd, globalOnly, nativeSpell or nativeGcd, false
 end
 
 local function updateChargeEdge(card, item)
@@ -648,14 +800,18 @@ local function updateHighlight(card, item, style)
     card.highlight:Show()
 end
 
-local function cooldownText(item)
+local function cooldownRemainingValue(item)
     item = type(item) == "table" and item or {}
+    if (isItemBackedCard(item) or suppressSharedGcdPresentation(item))
+        and (item.cooldownOnGCD == true or item.cooldownGcdAlias == true) then
+        return nil
+    end
     local remaining = safeNumber(item.cooldownRemaining)
     -- The model normally supplies a sanitized remaining value. Keep a public
     -- numeric start/duration fallback for cards that receive a fresh cooldown
     -- sample before the next state-collector projection. Never inspect a
-    -- DurationObject here; protected values stay inside Blizzard's native
-    -- renderer, which now owns their own countdown digits.
+    -- DurationObject here; protected values remain inside Blizzard's swipe
+    -- renderer while the HUD badge owns every visible countdown digit.
     if remaining == nil then
         local start, duration = safeNumber(item.cooldownStart), safeNumber(item.cooldownDuration)
         if start and duration and duration > 0 and GetTime then
@@ -663,9 +819,70 @@ local function cooldownText(item)
             if now then remaining = math.max(0, (start + duration) - now) end
         end
     end
+    return remaining and remaining > 0 and remaining or nil
+end
+
+local function formatCooldownText(remaining)
+    remaining = safeNumber(remaining)
     if remaining == nil or remaining <= 0 then return "" end
-    if remaining >= 10 then return tostring(math.floor(remaining + 0.5)) end
-    return string.format("%.1f", remaining)
+    -- Uniform HUD contract: always plain seconds, never Blizzard's MM:SS
+    -- formatter and never a different sub-10 decimal style on another card.
+    return tostring(math.max(1, math.ceil(remaining)))
+end
+
+local function cooldownText(item)
+    local remaining = cooldownRemainingValue(item)
+    return formatCooldownText(remaining), remaining
+end
+
+-- The retail client can briefly continue to render a perfectly valid native
+-- DurationObject while its public numeric snapshot is delayed/opaque. Do not
+-- erase a HUD-custom countdown that was just confirmed for the same immutable
+-- card identity. This cache is display-only: it stores only previously safe
+-- Lua numerics, never reads a DurationObject, and never feeds planning, TEAP
+-- or input dispatch.
+local function cooldownLabelIdentity(item)
+    item = type(item) == "table" and item or {}
+    return table.concat({
+        safeText(item.cooldownIdentityKey, ""),
+        safeText(item.spellID, ""),
+        safeText(item.itemID, ""),
+        safeText(item.inventorySlot, ""),
+        safeText(item.actionSlot or item.slot, ""),
+        safeText(item.kind, ""),
+    }, "|")
+end
+
+local function cachedCooldownText(card, item, ownCooldown)
+    local identity = cooldownLabelIdentity(item)
+    local now = GetTime and safeNumber(GetTime()) or nil
+    local text, remaining = cooldownText(item)
+    if ownCooldown == true and remaining ~= nil and now ~= nil then
+        card.hudCooldownLabelCache = {
+            identity = identity,
+            expiresAt = now + remaining,
+            source = safeText(item.cooldownSource, "snapshot"),
+        }
+        return text, "snapshot"
+    end
+
+    local cache = card.hudCooldownLabelCache
+    if ownCooldown == true and type(cache) == "table" and cache.identity == identity and now ~= nil then
+        local cachedRemaining = safeNumber(cache.expiresAt)
+        cachedRemaining = cachedRemaining and (cachedRemaining - now) or nil
+        if cachedRemaining and cachedRemaining > 0 then
+            return formatCooldownText(cachedRemaining), "continuity_cache"
+        end
+    end
+
+    -- An explicit ready/shared-GCD/non-own state invalidates stale display data
+    -- immediately. Never let an old countdown survive onto another action.
+    if ownCooldown ~= true or (item.cooldownKnown == true and item.cooldownActive ~= true) then
+        card.hudCooldownLabelCache = nil
+    elseif type(cache) == "table" and cache.identity ~= identity then
+        card.hudCooldownLabelCache = nil
+    end
+    return text, remaining ~= nil and "snapshot" or "unavailable"
 end
 
 local function tooltipLines(item, visual, card)
@@ -708,12 +925,25 @@ local function tooltipLines(item, visual, card)
     if item.defensiveConditionText then lines[#lines + 1] = "技能条件：" .. safeText(item.defensiveConditionText, "未知") end
     local charges, maxCharges = safeNumber(item.charges), safeNumber(item.maxCharges)
     if charges ~= nil and maxCharges ~= nil then lines[#lines + 1] = "充能：" .. tostring(charges) .. "/" .. tostring(maxCharges) end
-    if item.cooldownKnown == true then
+    if isItemBackedCard(item) and (item.cooldownOnGCD == true or item.cooldownGcdAlias == true) then
+        lines[#lines + 1] = isEquippedTrinketCard(item)
+            and "冷却：公共 GCD 已隐藏；饰品自身就绪"
+            or "冷却：公共 GCD 已隐藏；物品自身就绪"
+        if item.cooldownGcdAliasReason then
+            lines[#lines + 1] = "GCD 判定：" .. safeText(item.cooldownGcdAliasReason, "shared_gcd")
+        end
+    elseif item.cooldownKnown == true then
         local text = cooldownText(item)
         lines[#lines + 1] = "冷却：" .. (text ~= "" and (text .. " 秒") or "就绪")
+        if card and card.cooldownLabelSource == "continuity_cache" then
+            lines[#lines + 1] = "HUD 数字：沿用刚才确认的真实冷却快照（等待 API 重同步）"
+        end
         if item.cooldownSource then
             local sourceText = {
                 spell_api = "技能 API",
+                actionbar_numeric = "可信直接动作条数值（HUD 样式，数字与动作条一致）",
+                actionbar_numeric_observed = "可信直接动作条数值（已观测并由本地追踪保持连续）",
+                actionbar_api = "可信直接动作条状态（等待数值确认）",
                 spell_api_confirmation = "技能 API（施法后确认）",
                 spell_api_ooc_resync = "技能 API（脱战重同步）",
                 local_tracker_observed = "本地追踪（已观测技能 CD，原生 CD 不可渲染时兜底）",
@@ -727,7 +957,9 @@ local function tooltipLines(item, visual, card)
             lines[#lines + 1] = "CD 数值来源：" .. (sourceText[item.cooldownSource] or safeText(item.cooldownSource, "未知"))
         end
         if item.cooldownFallback == true then
+            local origin = safeText(item.cooldownFallbackOrigin, "")
             lines[#lines + 1] = "CD 兜底：原生 DurationObject 不可用时，已采用施法事件追踪；后续技能 API 会自动校正。"
+            if origin ~= "" then lines[#lines + 1] = "CD 兜底来源：" .. origin end
         end
         if item.cooldownConfirmationPending == true then
             lines[#lines + 1] = "CD 校验：施法后正在等待动作条/技能 API 确认。"
@@ -738,7 +970,7 @@ local function tooltipLines(item, visual, card)
             lines[#lines + 1] = "饰品校验：装备槽位与当前装备 ItemID 冷却均已确认"
         end
     elseif item.cooldownActive == true then
-        lines[#lines + 1] = "冷却：进行中（由游戏原生转盘和倒计时渲染）"
+        lines[#lines + 1] = "冷却：进行中（HUD 暂无安全数值；原生 DurationObject 仅用于转盘渲染）"
     elseif state.cooldownUnknownReason then
         lines[#lines + 1] = "冷却：状态由游戏原生界面渲染"
     end
@@ -750,10 +982,10 @@ local function tooltipLines(item, visual, card)
     end
     if card and card.cooldownRenderMode then
         local modeText = {
-            duration_object_actionbar = "动作条 DurationObject 原生 CD（数字与动作条一致）",
-            duration_object_spell = "技能 DurationObject 原生 CD",
-            duration_object_item = "物品 DurationObject 原生 CD",
-            duration_object = "DurationObject 原生 CD",
+            duration_object_actionbar = "动作条 DurationObject CD 转盘（数字由 HUD 统一绘制）",
+            duration_object_spell = "技能 DurationObject CD 转盘（数字由 HUD 统一绘制）",
+            duration_object_item = "物品 DurationObject CD 转盘（数字由 HUD 统一绘制）",
+            duration_object = "DurationObject CD 转盘（数字由 HUD 统一绘制）",
             duration_object_gcd = "DurationObject 原生共 CD",
             numeric = "普通数值技能 CD",
             numeric_gcd = "普通数值共 CD",
@@ -763,6 +995,24 @@ local function tooltipLines(item, visual, card)
         lines[#lines + 1] = "CD 转盘渲染：" .. (modeText[card.cooldownRenderMode] or "未激活")
     end
     if item.procHighlight == true then lines[#lines + 1] = "触发效果：已高亮" end
+    if item.reactionKind then
+        local kindLabels = { interrupt = "自动打断候选", single_control = "自动单体控制候选", aoe_control = "自动群控候选" }
+        lines[#lines + 1] = "P3 反应候选：" .. (kindLabels[item.reactionKind] or safeText(item.reactionKind, "候选"))
+        if item.reactionSourceLabel then lines[#lines + 1] = "读条来源：" .. safeText(item.reactionSourceLabel, "目标") end
+        if item.reactionAoe == true and item.reactionQualifyingCount then
+            lines[#lines + 1] = "可见有效钢条：" .. tostring(item.reactionQualifyingCount) .. " / 阈值 " .. tostring(item.reactionAoeThreshold or 4)
+        end
+        if item.reactionVerification == "unverified" then
+            lines[#lines + 1] = "钢条状态：未验证；P3 仅提示，不能自动打断"
+        end
+        if item.reactionRouteSafe == true then
+            lines[#lines + 1] = "动作条路由：已识别（P3 仅高亮，不自动按键）"
+        elseif item.reactionRouteAvailable == false then
+            lines[#lines + 1] = "动作条路由：尚未识别；P3 仅高亮，不自动按键"
+        else
+            lines[#lines + 1] = "动作条路由：已识别；后续自动化仍需路由校验"
+        end
+    end
     if item.castingThisSpell == true then lines[#lines + 1] = item.channeling and "正在引导该技能" or "正在施放该技能" end
     if item.burstState then lines[#lines + 1] = "爆发状态：" .. safeText(item.burstState, "未知") end
     if item.advisoryCondition then lines[#lines + 1] = "触发依据：" .. safeText(item.advisoryCondition, "未知") end
@@ -962,10 +1212,17 @@ function TacticalIconButton:Create(parent, name, size)
         safeShown(self.pushedTexture, false)
         if GameTooltip then GameTooltip:Hide() end
     end)
-    card:SetScript("OnMouseDown", function(self)
-        if self.resolvedAppearance and self.resolvedAppearance.theme == "native" and self.resolvedAppearance.pressedHighlight then safeShown(self.pushedTexture, true) end
+    card:SetScript("OnMouseDown", function(self, button)
+        if button == "LeftButton" and self.resolvedAppearance and self.resolvedAppearance.theme == "native" and self.resolvedAppearance.pressedHighlight then
+            safeShown(self.pushedTexture, true)
+        end
     end)
-    card:SetScript("OnMouseUp", function(self) safeShown(self.pushedTexture, false) end)
+    card:SetScript("OnMouseUp", function(self, button)
+        safeShown(self.pushedTexture, false)
+        if button == "RightButton" and TE.ControlPanel and type(TE.ControlPanel.Show) == "function" then
+            TE.ControlPanel:Show(self.settingsPage or "general")
+        end
+    end)
     card:Hide()
     return card
 end
@@ -1052,14 +1309,12 @@ function TacticalIconButton:Apply(card, item, hud, moduleKey)
     end
 
     setIcon(card, item.spellIcon or item.icon)
-    card.icon:SetDesaturated(
-        visual.desaturate == true
-        or item.usableState == "unavailable"
-        or item.usableState == "resource"
-        or item.usableState == "range"
-        or item.usableState == "target"
-        or item.usableState == "unknown"
-    )
+    -- Cooldown, resource, range and target status are expressed by one swipe
+    -- plus their state label/border. Do not add an independent grey mask: that
+    -- duplicated the cooldown visual and also made normal advisory cards look
+    -- falsely disabled. Only explicit hard states chosen by TacticalHudStyles
+    -- (blocked/error/unbound) may desaturate the icon.
+    card.icon:SetDesaturated(visual.desaturate == true)
 
     applyBorder(card, visual.borderColor)
     safeShown(card.castTexture, card.resolvedAppearance and card.resolvedAppearance.theme == "native" and card.resolvedAppearance.castHighlight and item.castingThisSpell == true)
@@ -1114,22 +1369,23 @@ function TacticalIconButton:RefreshDynamic(card, item)
     end
     updateChargeEdge(card, item)
     updateHighlight(card, item, card.resolvedHighlightStyle)
-    local cooldownKnown, gcdShown, globalOnly, nativeCooldownRendered, nativeCountdownVisible = updateCooldown(card, item, card.resolvedSwipeStyle, card.resolvedGcdSwipeStyle)
+    local cooldownKnown, gcdShown, globalOnly, nativeCooldownRendered = updateCooldown(card, item, card.resolvedSwipeStyle, card.resolvedGcdSwipeStyle)
     card.nativeCooldownRendered = nativeCooldownRendered == true
-    card.nativeCountdownVisible = nativeCountdownVisible == true
-    local cooldownMode = cooldownTextMode(card.resolvedCooldownStyle)
+    card.nativeCountdownVisible = false
 
-    -- CD text no longer multiplexes state labels. It remains central and is
-    -- shown whenever a reliable own-CD/charge value exists, even if the card is
-    -- also paused, casting, unbound or blocked.
-    if not card.resolvedCooldownStyle or card.resolvedCooldownStyle.enabled == false
-        or card.nativeCountdownVisible == true or cooldownMode == "duration" then
-        -- Direct action-bar DurationObjects render Blizzard's own countdown
-        -- digits. Keeping the custom badge empty prevents a second, potentially
-        -- different number from being drawn over the authoritative timer.
+    -- CD text no longer multiplexes state labels. The HUD badge is the only
+    -- countdown text authority, regardless of legacy text-mode settings. It is
+    -- shown whenever a safe own-CD/charge value exists, even if the card is also
+    -- paused, casting, unbound or blocked.
+    if not card.resolvedCooldownStyle or card.resolvedCooldownStyle.enabled == false then
         card.badge:SetText("")
     else
-        local ownCooldown = (globalOnly ~= true) and (
+        local itemSharedGcd = (isItemBackedCard(item) or suppressSharedGcdPresentation(item))
+            and (item.cooldownOnGCD == true or item.cooldownGcdAlias == true)
+        local mainOrWindowSharedGcd = suppressSharedGcdPresentation(item)
+            and item.gcdActive == true
+            and not (item.cooldownActive == true and item.cooldownOnGCD ~= true)
+        local ownCooldown = (globalOnly ~= true) and itemSharedGcd ~= true and mainOrWindowSharedGcd ~= true and (
             cooldownKnown == true or item.cooldownKnown == true
             or item.usableState == "cooldown" or item.cooldownActive == true
             or nativeCooldownRendered == true
@@ -1137,16 +1393,22 @@ function TacticalIconButton:RefreshDynamic(card, item)
         local chargeRemaining = safeNumber(item.chargeCooldownRemaining)
         local chargeCooling = item.chargeCooldownKnown == true and chargeRemaining ~= nil and chargeRemaining > 0
         if chargeCooling then
-            card.badge:SetText(chargeRemaining >= 10 and tostring(math.floor(chargeRemaining + 0.5)) or string.format("%.1f", chargeRemaining))
+            card.badge:SetText(formatCooldownText(chargeRemaining))
         elseif ownCooldown then
-            -- Never use a generic “cooling” label as the normal combat path.
-            -- A local tracker/resolver supplies a numeric time when safe; an
-            -- empty label is preferable to false precision.
-            card.badge:SetText(cooldownText(item))
+            -- Preserve the configurable HUD label through a one-snapshot API
+            -- blackout when an exact numeric cooldown was already observed for
+            -- this same card. No DurationObject value is materialized here.
+            local label, labelSource = cachedCooldownText(card, item, true)
+            card.cooldownLabelSource = labelSource
+            card.badge:SetText(label)
         elseif globalOnly == true or gcdShown == true then
             -- Pure GCD is intentionally unlabeled; its swipe is still visible.
+            card.hudCooldownLabelCache = nil
+            card.cooldownLabelSource = "shared_gcd"
             card.badge:SetText("")
         else
+            card.hudCooldownLabelCache = nil
+            card.cooldownLabelSource = "none"
             card.badge:SetText("")
         end
     end

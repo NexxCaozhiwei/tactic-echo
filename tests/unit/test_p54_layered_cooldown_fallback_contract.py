@@ -3,7 +3,6 @@ from __future__ import annotations
 import unittest
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[2]
 ADDON = ROOT / "addon" / "!TacticEcho"
 TRACKER = ADDON / "Tactics" / "CooldownTracker.lua"
@@ -44,12 +43,15 @@ class P54LayeredCooldownFallbackContractTests(unittest.TestCase):
         self.assertIn("state.cooldownFallback = trackedCooldown.fallback == true", self.state)
         self.assertIn("state.chargeCooldownKnown = charges.cooldownKnown == true", self.state)
 
-    def test_renderer_uses_native_object_before_numeric_compatibility_path(self) -> None:
+    def test_renderer_keeps_the_legacy_native_timer_then_numeric_fallback_order(self) -> None:
         native_index = self.icon.index("nativeSpell, spellMode, nativeNumbersVisible = showDurationObjectCooldown(")
-        fallback_index = self.icon.index('if nativeSpell ~= true and spellKnown == true and spellMode ~= "ready" then')
-        self.assertLess(native_index, fallback_index)
-        self.assertIn("duration_object_item", self.icon)
-        self.assertIn("duration_object_spell", self.icon)
+        numeric_index = self.icon.index("spellShown = showCooldown(card.cooldown, spellStart, spellDuration")
+        self.assertLess(native_index, numeric_index)
+        self.assertIn("Direct action-bar DurationObjects remain the authoritative swipe source", self.icon)
+        self.assertIn("cooldownPresentationSignature", self.icon)
+        self.assertIn("C_Spell.GetSpellCooldownDuration", self.icon)
+        self.assertIn("C_ActionBar.GetActionCooldownDuration", self.icon)
+        self.assertNotIn("BuildCooldownPresentation", self.state)
 
 
 if __name__ == "__main__":

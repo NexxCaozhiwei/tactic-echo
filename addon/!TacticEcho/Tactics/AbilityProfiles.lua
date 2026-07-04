@@ -341,6 +341,65 @@ AbilityProfiles.controls = {
     WARRIOR = { 5246, 132168 },
 }
 
+-- Typed control catalogue used by P2 reaction-binding inspection.  The legacy
+-- `controls` list above remains untouched for the existing advisory planner.
+-- `role` expresses only the intended future reaction bucket; it grants no
+-- control immunity assumption and no automatic action.
+AbilityProfiles.reactionControls = {
+    DEATHKNIGHT = {
+        { spellID = 108194, role = "single", roleLabel = "单体控制" },
+        { spellID = 47476, role = "single", roleLabel = "单体控制" },
+    },
+    DEMONHUNTER = {
+        { spellID = 179057, role = "aoe", roleLabel = "群体控制" },
+        { spellID = 207684, role = "aoe", roleLabel = "群体控制" },
+    },
+    DRUID = {
+        { spellID = 5211, role = "single", roleLabel = "单体控制" },
+        { spellID = 99, role = "aoe", roleLabel = "群体控制" },
+    },
+    EVOKER = {
+        { spellID = 360806, role = "single", roleLabel = "单体控制" },
+        { spellID = 351338, role = "single", roleLabel = "单体控制" },
+    },
+    HUNTER = {
+        { spellID = 24394, role = "single", roleLabel = "单体控制" },
+        { spellID = 187650, role = "single", roleLabel = "单体控制" },
+    },
+    MAGE = {
+        { spellID = 118, role = "single", roleLabel = "单体控制" },
+        { spellID = 122, role = "aoe", roleLabel = "群体控制" },
+    },
+    MONK = {
+        { spellID = 119381, role = "aoe", roleLabel = "群体控制" },
+        { spellID = 115078, role = "single", roleLabel = "单体控制" },
+    },
+    PALADIN = {
+        { spellID = 853, role = "single", roleLabel = "单体控制" },
+        { spellID = 105421, role = "aoe", roleLabel = "群体控制" },
+    },
+    PRIEST = {
+        { spellID = 8122, role = "aoe", roleLabel = "群体控制" },
+        { spellID = 605, role = "single", roleLabel = "单体控制" },
+    },
+    ROGUE = {
+        { spellID = 2094, role = "single", roleLabel = "单体控制" },
+        { spellID = 1776, role = "single", roleLabel = "单体控制" },
+    },
+    SHAMAN = {
+        { spellID = 51514, role = "single", roleLabel = "单体控制" },
+        { spellID = 192058, role = "aoe", roleLabel = "群体控制" },
+    },
+    WARLOCK = {
+        { spellID = 5782, role = "single", roleLabel = "单体控制" },
+        { spellID = 710, role = "single", roleLabel = "单体控制" },
+    },
+    WARRIOR = {
+        { spellID = 5246, role = "aoe", roleLabel = "群体控制" },
+        { spellID = 132168, role = "aoe", roleLabel = "群体控制" },
+    },
+}
+
 AbilityProfiles.mobility = {
     DEATHKNIGHT = { 49576, 77761 }, DEMONHUNTER = { 195072, 198793 },
     DRUID = { 102401, 1850 }, EVOKER = { 358267, 361227 },
@@ -458,6 +517,39 @@ end
 
 function AbilityProfiles:GetBursts(classFile) return self.bursts[classFile] or {} end
 function AbilityProfiles:GetControls(classFile) return self.controls[classFile] or {} end
+
+-- Returns copies so the read-only reaction inspector cannot mutate profile
+-- data used by the existing advisory planner. If a future class entry is only
+-- present in the legacy list, keep it visible as an unclassified single-target
+-- candidate rather than silently omitting a learned control binding.
+function AbilityProfiles:GetReactionControls(classFile)
+    local out, seen = {}, {}
+    for _, entry in ipairs(self.reactionControls[classFile] or {}) do
+        local spellID = tonumber(entry and entry.spellID)
+        if spellID and not seen[spellID] then
+            out[#out + 1] = {
+                spellID = spellID,
+                role = entry.role == "aoe" and "aoe" or "single",
+                roleLabel = entry.roleLabel or (entry.role == "aoe" and "群体控制" or "单体控制"),
+            }
+            seen[spellID] = true
+        end
+    end
+    for _, spellID in ipairs(self.controls[classFile] or {}) do
+        spellID = tonumber(spellID)
+        if spellID and not seen[spellID] then
+            out[#out + 1] = {
+                spellID = spellID,
+                role = "single",
+                roleLabel = "单体控制（未分类）",
+                legacyFallback = true,
+            }
+            seen[spellID] = true
+        end
+    end
+    return out
+end
+
 function AbilityProfiles:GetMobility(classFile) return self.mobility[classFile] or {} end
 
 -- Optional dangerous-cast registry.  It starts empty deliberately: exact NPC

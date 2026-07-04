@@ -75,6 +75,12 @@ local function primaryVisual(item)
         end
         return "empowering_lock", "玩家正在蓄力；当前推荐将在蓄力结束后恢复"
     end
+    -- A normal non-channel cast remains a display-only runtime fact.  It must
+    -- outrank an ordinary pause label so the main card clearly reports the
+    -- spell currently being cast, without changing any TEAP or dispatch state.
+    if item.castingThisSpell == true then
+        return "casting", "正在施放该技能"
+    end
     if runtimeState == "paused" or item.paused == true then
         return "paused", runtimeReason or "TE 已暂停"
     end
@@ -86,6 +92,9 @@ local function primaryVisual(item)
     end
     if not item.binding or item.binding == "" then
         return "unbound", "未找到现实动作条绑定"
+    end
+    if item.burstVerificationPending == true then
+        return "burst_check", "当前自动爆发步骤正在校验施放或冷却确认"
     end
     if item.usableState == "cooldown" or item.cooldownActive == true then
         return "cooldown", "技能冷却中；图标转盘由客户端渲染，CD 标签由 HUD 统一绘制"
@@ -123,6 +132,9 @@ local function advisoryVisual(item, kind)
     if item.resourceBlocked == true or item.usableState == "resource" then
         return "resource", item.unusableReason or "资源不足"
     end
+    if item.burstVerificationPending == true then
+        return "burst_check", "当前自动爆发步骤正在校验施放或冷却确认"
+    end
     if item.usableState == "cooldown" or item.cooldownActive == true then
         return "cooldown", "技能冷却中；图标转盘由客户端渲染，CD 标签由 HUD 统一绘制"
     end
@@ -146,7 +158,11 @@ local function effectIntent(item, kind, meta, visual)
         -- several unrelated animated textures at once.
         marching = kind == "primary" and (visual == "primary" or visual == "dispatchable"),
         proc = item.procHighlight == true,
-        interrupt = kind == "interrupt" and (meta.interruptible == true or item.interruptible == true),
+        -- P3 can deliberately suppress a legacy current-target interrupt glow
+        -- when a higher-priority group/single-control candidate owns the one
+        -- reaction highlight. Nil preserves pre-P3 interrupt behavior.
+        interrupt = kind == "interrupt" and item.reactionHighlight ~= false
+            and (meta.interruptible == true or item.interruptible == true),
         burst = burstActive,
         mobility = kind == "mobility" or item.gapCloser == true,
         hotkeyFlash = item.usableState == "ready",
@@ -205,22 +221,38 @@ function TacticalHudStyles:Resolve(item, kind, meta)
         colorKey, alpha, overlay, label, desaturate = "error", 0.56, "error", "异常", true
         stateLabel = label
     elseif visual == "unknown" then
-        colorKey, alpha, overlay, label, desaturate = "unknown", 0.56, "unknown", "未知", true
+        -- Unknown is a data-quality state, not confirmed self-cooldown. Keep
+        -- the icon saturated and use the purple overlay/state text so a player
+        -- can distinguish it from an actual grey cooldown card.
+        colorKey, alpha, overlay, label, desaturate = "unknown", 0.84, "unknown", "待确认", false
+        stateLabel = label
+    elseif visual == "burst_check" then
+        -- “校验” is reserved for the active AutoBurst injection/window step.
+        -- General post-cast cooldown tracking remains internal and never
+        -- changes unrelated interrupt/defense/control HUD labels.
+        colorKey, alpha, overlay, label, desaturate = "unknown", 0.90, "unknown", "校验", false
         stateLabel = label
     elseif visual == "unbound" then
         colorKey, alpha, overlay, label, desaturate = "unbound", 0.48, "unbound", "无绑定", true
         stateLabel = label
     elseif visual == "paused" then
-        colorKey, alpha, overlay, label, desaturate = "paused", 0.52, "paused", "暂停", true
+        if kind == "primary" then
+            -- Main-key pause is an operational state, not a disabled spell.
+            -- Keep its icon fully readable and retain only the explicit
+            -- “暂停” state label plus the pause-colored border.
+            colorKey, alpha, overlay, label, desaturate = "paused", 1.00, "none", "暂停", false
+        else
+            colorKey, alpha, overlay, label, desaturate = "paused", 0.52, "paused", "暂停", true
+        end
         stateLabel = label
     elseif visual == "resource" then
-        colorKey, alpha, overlay, label, desaturate = "resource", 0.70, "unknown", "资源", true
+        colorKey, alpha, overlay, label, desaturate = "resource", 0.92, "none", "资源", false
         stateLabel = label
     elseif visual == "range" then
-        colorKey, alpha, overlay, label, desaturate = "range", 0.72, "blocked", "超距", true
+        colorKey, alpha, overlay, label, desaturate = "range", 0.92, "none", "超距", false
         stateLabel = label
     elseif visual == "target" then
-        colorKey, alpha, overlay, label, desaturate = "target", 0.62, "blocked", "目标", true
+        colorKey, alpha, overlay, label, desaturate = "target", 0.90, "none", "目标", false
         stateLabel = label
     elseif visual == "casting" then
         colorKey, alpha, label = "casting", 1.00, "施法"
@@ -229,9 +261,10 @@ function TacticalHudStyles:Resolve(item, kind, meta)
         colorKey, alpha, label = "channeling", 1.00, "引导"
         stateLabel = label
     elseif visual == "channeling_lock" then
-        -- Label + restrained border tint only. No timing fill or queued input
-        -- behavior is attached to this presentation state.
-        colorKey, alpha, label = "channeling_lock", 0.94, "引导锁"
+        -- The lock remains distinct internally, but the player-facing main
+        -- state tag is deliberately the concise action label “引导”.
+        -- No timing fill or queued input behavior is attached here.
+        colorKey, alpha, label = "channeling_lock", 0.94, "引导"
         stateLabel = label
     elseif visual == "empowering" then
         colorKey, alpha, label = "empowering", 1.00, "蓄力"
@@ -242,7 +275,10 @@ function TacticalHudStyles:Resolve(item, kind, meta)
         colorKey, alpha, label = "empowering_lock", 0.94, "蓄力锁"
         stateLabel = label
     elseif visual == "cooldown" then
-        colorKey, alpha, overlay, label, desaturate = "cooldown", 0.72, "none", "", true
+        -- A real self-CD uses one client cooldown swipe plus one countdown label.
+        -- Keep the spell art saturated; greying the art duplicated the swipe and
+        -- made it indistinguishable from a hard disabled state.
+        colorKey, alpha, overlay, label, desaturate = "cooldown", 1.00, "none", "", false
     end
 
     local effects = effectIntent(item, kind, meta, visual)

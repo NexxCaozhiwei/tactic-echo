@@ -84,7 +84,8 @@ class P5UnifiedCooldownContractTests(unittest.TestCase):
         self.assertIn('inventorySlot = slot', self.planner)
         self.assertIn('itemCandidate(itemID, "potion"', self.planner)
         self.assertIn('return "unbound", "未在现实动作条白名单中找到绑定"', self.styles)
-        self.assertIn('shown whenever a reliable own-CD/charge value exists, even if the card is', self.icon)
+        self.assertIn("card.badge = card.cooldownText", self.icon)
+        self.assertIn("pcall(frame.SetHideCountdownNumbers, frame, true)", self.icon)
 
     def test_hud_has_independent_source_cooldown_and_state_text_layers(self) -> None:
         for marker in (
@@ -105,10 +106,15 @@ class P5UnifiedCooldownContractTests(unittest.TestCase):
         self.assertIn('sourceLabel = sourceLabel', self.styles)
         self.assertIn('stateLabel = stateLabel', self.styles)
 
-    def test_raw_duration_objects_stay_in_renderer_not_hud_model(self) -> None:
+    def test_cooldown_model_keeps_scalar_state_while_renderer_restores_live_duration_objects(self) -> None:
         self.assertIn('function Resolver:GetDurationObject(item)', self.resolver)
+        self.assertNotIn('function IconState:BuildCooldownPresentation', self.icon_state)
+        self.assertNotIn('sanitizeCooldownPresentation', self.model)
+        self.assertNotIn('durationObjectKey', self.model)
+        self.assertIn('local function showDurationObjectCooldown', self.icon)
         self.assertIn('SetCooldownFromDurationObject', self.icon)
-        self.assertNotIn('DurationObject', self.model)
+        self.assertIn('C_Spell.GetSpellCooldownDuration', self.icon)
+        self.assertIn('C_ActionBar.GetActionCooldownDuration', self.icon)
         self.assertIn('cooldownUnknownReason', self.model)
         self.assertIn('cooldownIdentityKey', self.model)
 

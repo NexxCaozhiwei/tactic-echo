@@ -69,7 +69,24 @@ local function plainEntry(entry)
         macroResolvedSpellID = asNumber(entry.macroResolvedSpellID),
         macroActionInfoSpellID = asNumber(entry.macroActionInfoSpellID),
         macroLookupSource = macroDiagnostic.lookupSource,
+        macroIdentitySource = macroDiagnostic.macroIdentitySource,
+        macroIdentityVerified = macroDiagnostic.macroIdentityVerified == true,
+        macroActionInfoMacroIndex = asNumber(macroDiagnostic.actionInfoMacroIndex),
+        macroActionInfoReadAttempts = asNumber(macroDiagnostic.actionInfoIdReadAttempts),
+        macroActionInfoSuccessfulReads = asNumber(macroDiagnostic.actionInfoIdSuccessfulReads),
+        macroActionInfoFirstReadBodyLength = asNumber(macroDiagnostic.actionInfoIdFirstReadBodyLength),
+        -- Historical P4.6 fields remain exported as false/zero for backward
+        -- diagnostic consumers; P5 never uses a macro name as an identity key.
+        macroLookupAttemptCount = asNumber(macroDiagnostic.lookupAttemptCount),
+        macroLookupByActionText = macroDiagnostic.lookupByActionText == true,
+        macroLookupByActionInfoName = macroDiagnostic.lookupByActionInfoName == true,
+        macroActionInfoName = macroDiagnostic.getMacroInfoByActionInfoIdName,
         macroFailureReason = macroDiagnostic.failureReason,
+        macroShape = type(entry.macroSemanticSummary) == "table" and entry.macroSemanticSummary.macroShape or nil,
+        macroResolvedSpellTokenCount = type(entry.macroSemanticSummary) == "table"
+            and asNumber(entry.macroSemanticSummary.resolvedSpellTokenCount) or 0,
+        macroBroadReferenceEligible = type(entry.macroSemanticSummary) == "table" and entry.macroSemanticSummary.broadReferenceEligible == true or false,
+        macroAutoBurstEligible = type(entry.macroSemanticSummary) == "table" and entry.macroSemanticSummary.autoBurstEligible == true or false,
         scanReason = entry.scanReason,
     }
 end
@@ -93,9 +110,11 @@ local function plainCandidate(candidate)
         macroID = asNumber(candidate.macroID),
         macroName = candidate.macroName,
         macroAssociation = candidate.macroAssociation,
+        macroAutoBurstEligible = candidate.macroAutoBurstEligible == true,
         matchedSpellID = asNumber(candidate.matchedSpellID),
         matchKind = candidate.matchKind,
         directActionSlot = candidate.directActionSlot == true,
+        actionBarStateTrusted = candidate.actionBarStateTrusted == true,
     }
 end
 
@@ -113,6 +132,8 @@ local function copyBindingInfo(bindingInfo)
         bindingToken = asNumber(bindingInfo.bindingToken),
         source = bindingInfo.source,
         bindingSourceIndex = asNumber(bindingInfo.bindingSourceIndex),
+        macroAssociation = bindingInfo.macroAssociation,
+        macroAutoBurstEligible = bindingInfo.macroAutoBurstEligible == true,
         buttonName = bindingInfo.buttonName,
         actionSlot = asNumber(bindingInfo.actionSlot or bindingInfo.slot),
         cacheGeneration = asNumber(bindingInfo.cacheGeneration),
@@ -127,9 +148,38 @@ local function copyBindingInfo(bindingInfo)
         stateHash = asNumber(bindingInfo.stateHash),
         bindingSettling = bindingInfo.bindingSettling == true,
         directActionSlot = bindingInfo.directActionSlot == true,
+        actionBarStateTrusted = bindingInfo.actionBarStateTrusted == true,
         candidates = candidates,
         specialActionBar = copySpecial(bindingInfo.specialActionBar),
     }
+end
+
+local function copyPriorityBurstEvents(source)
+    source = type(source) == "table" and source or {}
+    local out = {}
+    local first = math.max(1, #source - 15)
+    for index = first, #source do
+        local entry = type(source[index]) == "table" and source[index] or {}
+        out[#out + 1] = {
+            event = entry.event,
+            elapsed = asNumber(entry.elapsed),
+            planId = asNumber(entry.planId),
+            captureId = asNumber(entry.captureId),
+            ruleId = entry.ruleId,
+            reason = entry.reason,
+            phase = entry.phase,
+            state = entry.state,
+            role = entry.role,
+            spellID = asNumber(entry.spellID),
+            currentStep = asNumber(entry.currentStep),
+            armedEpoch = asNumber(entry.armedEpoch),
+            windowGeneration = asNumber(entry.windowGeneration),
+            cooldownIdentityKey = entry.cooldownIdentityKey,
+            confirmations = asNumber(entry.confirmations),
+            preInjectionSkipStatus = entry.preInjectionSkipStatus,
+        }
+    end
+    return out
 end
 
 local function copyAutoBurstDiagnostics()
@@ -151,6 +201,7 @@ local function copyAutoBurstDiagnostics()
     local officialBindingInfo = type(message.officialBindingInfo) == "table" and message.officialBindingInfo or {}
     local dispatchBindingInfo = type(message.bindingInfo) == "table" and message.bindingInfo or {}
     local candidate = type(data.lastCandidate) == "table" and data.lastCandidate or {}
+    local preflight = type(data.lastInjectionPreflight) == "table" and data.lastInjectionPreflight or {}
     return {
         available = true,
         build = data.build,
@@ -167,12 +218,29 @@ local function copyAutoBurstDiagnostics()
         consumedWindowGeneration = asNumber(data.consumedWindowGeneration),
         activePlanGeneration = asNumber(data.activePlanGeneration),
         departureLockGeneration = asNumber(data.departureLockGeneration),
+        preCombatBridgeWorldFence = data.preCombatBridgeWorldFence == true,
+        preCombatBridgeAuthorizationRequiresHandoff = data.preCombatBridgeAuthorizationRequiresHandoff == true,
+        worldTransitionEpoch = asNumber(data.worldTransitionEpoch),
+        lastWorldTransitionReason = type(data.lastWorldTransition) == "table" and data.lastWorldTransition.reason or nil,
+        preWindowCapture = {
+            active = type(data.preWindowCapture) == "table" and data.preWindowCapture.active == true,
+            id = asNumber(type(data.preWindowCapture) == "table" and data.preWindowCapture.id),
+            ruleId = type(data.preWindowCapture) == "table" and data.preWindowCapture.ruleId or nil,
+            officialSpellID = asNumber(type(data.preWindowCapture) == "table" and data.preWindowCapture.officialSpellID),
+            windowGeneration = asNumber(type(data.preWindowCapture) == "table" and data.preWindowCapture.windowGeneration),
+            armedEpoch = asNumber(type(data.preWindowCapture) == "table" and data.preWindowCapture.armedEpoch),
+            handoffBarrierPending = type(data.preWindowCapture) == "table" and data.preWindowCapture.handoffBarrierPending == true,
+            preCombatBridge = type(data.preWindowCapture) == "table" and data.preWindowCapture.preCombatBridge == true,
+            retryCount = asNumber(type(data.preWindowCapture) == "table" and data.preWindowCapture.retryCount),
+            lastReason = type(data.preWindowCapture) == "table" and data.preWindowCapture.lastReason or nil,
+        },
         officialSpellID = asNumber(message.officialSpellID or decision.officialSpellID),
         officialBinding = officialBindingInfo.binding or officialBindingInfo.rawBinding,
         dispatchSpellID = asNumber(message.dispatchSpellID or candidate.spellID),
         dispatchBinding = message.binding or dispatchBindingInfo.binding or dispatchBindingInfo.rawBinding or candidate.binding,
         dispatchOrigin = message.dispatchOrigin or "official",
         observationOnly = message.observationOnly == true,
+        preCombatBurstBridge = message.preCombatBurstBridge == true,
         planState = plan.planState or plan.state,
         currentStep = asNumber(plan.currentStep),
         stepState = plan.stepState,
@@ -193,6 +261,23 @@ local function copyAutoBurstDiagnostics()
         lastConfirmationSource = data.lastConfirmationSource,
         lastAbortReason = data.lastAbortReason,
         lastWindowRejectReason = data.lastWindowRejectReason,
+        lastInjectionPreflight = {
+            status = preflight.status,
+            ruleId = preflight.ruleId,
+            phase = preflight.phase,
+            reason = preflight.reason,
+            spellID = asNumber(preflight.spellID),
+            inventorySlot = asNumber(preflight.inventorySlot),
+            index = asNumber(preflight.index),
+            excludedCount = asNumber(preflight.excludedCount),
+            firstExcludedPhase = preflight.firstExcludedPhase,
+            firstExcludedReason = preflight.firstExcludedReason,
+            firstExcludedCooldownUncertain = preflight.firstExcludedCooldownUncertain == true,
+            firstExcludedSpellID = asNumber(preflight.firstExcludedSpellID),
+            firstExcludedInventorySlot = asNumber(preflight.firstExcludedInventorySlot),
+            cooldownUncertain = preflight.cooldownUncertain == true,
+            dispatchAttempt = asNumber(preflight.dispatchAttempt),
+        },
         resolvedRule = {
             id = rule.id,
             source = rule.source,
@@ -210,8 +295,17 @@ local function copyAutoBurstDiagnostics()
             currentSpellID = asNumber(plan.currentSpellID),
             pauseReason = plan.pauseReason,
             requireWindowDeparture = plan.requireWindowDeparture == true,
+            preCombatBridge = plan.preCombatBridge == true,
+            preCombatBridgeEnteredCombat = plan.preCombatBridgeEnteredCombat == true,
+            preCombatBridgeDepartureLock = plan.preCombatBridgeDepartureLock == true,
+            preCombatBridgeWorldFence = plan.preCombatBridgeWorldFence == true,
+            preCombatBridgeAuthorizationRequiresHandoff = plan.preCombatBridgeAuthorizationRequiresHandoff == true,
+            worldTransitionEpoch = asNumber(plan.worldTransitionEpoch),
             preInjectionRequired = plan.preInjectionRequired == true,
             preInjectionSkipAllowed = plan.preInjectionSkipAllowed == true,
+            preInjectionSkipStatus = plan.preInjectionSkipStatus,
+            preInjectionCooldownConfirmations = asNumber(plan.preInjectionCooldownConfirmations),
+            preInjectionCooldownIdentityKey = plan.preInjectionCooldownIdentityKey,
             waitingForConfirmation = plan.waitingForConfirmation == true,
             pendingConfirmationSpellID = asNumber(plan.pendingConfirmationSpellID),
             confirmationEventSpellID = asNumber(plan.confirmationEventSpellID),
@@ -221,6 +315,18 @@ local function copyAutoBurstDiagnostics()
             consumedWindowGeneration = asNumber(plan.consumedWindowGeneration),
             activePlanGeneration = asNumber(plan.activePlanGeneration),
             departureLockGeneration = asNumber(plan.departureLockGeneration),
+            preWindowCaptureActive = plan.preWindowCaptureActive == true,
+            preWindowCaptureId = asNumber(plan.preWindowCaptureId),
+            preWindowCaptureRuleId = plan.preWindowCaptureRuleId,
+            preWindowCaptureOfficialSpellID = asNumber(plan.preWindowCaptureOfficialSpellID),
+            preWindowCaptureWindowGeneration = asNumber(plan.preWindowCaptureWindowGeneration),
+            preWindowCaptureArmedEpoch = asNumber(plan.preWindowCaptureArmedEpoch),
+            preWindowCaptureHandoffBarrierPending = plan.preWindowCaptureHandoffBarrierPending == true,
+            preWindowCaptureHandoffBarrierRequiredFrames = asNumber(plan.preWindowCaptureHandoffBarrierRequiredFrames),
+            preWindowCaptureHandoffBarrierRemainingFrames = asNumber(plan.preWindowCaptureHandoffBarrierRemainingFrames),
+            preWindowCaptureHandoffBarrierPublishedFrames = asNumber(plan.preWindowCaptureHandoffBarrierPublishedFrames),
+            preWindowCaptureRetryCount = asNumber(plan.preWindowCaptureRetryCount),
+            preWindowCaptureLastReason = plan.preWindowCaptureLastReason,
             planWindowGeneration = asNumber(plan.planWindowGeneration),
             planState = plan.planState,
             stepState = plan.stepState,
@@ -229,7 +335,14 @@ local function copyAutoBurstDiagnostics()
             initialInjectionReason = plan.initialInjectionReason,
             initialWindowPhase = plan.initialWindowPhase,
             initialWindowReason = plan.initialWindowReason,
+            windowAvailabilityConflict = plan.windowAvailabilityConflict == true,
+            windowAvailabilityConflictReason = plan.windowAvailabilityConflictReason,
+            windowAvailabilityConflictResolvedAt = asNumber(plan.windowAvailabilityConflictResolvedAt),
             candidateOfferCount = asNumber(plan.candidateOfferCount),
+            handoffBarrierPending = plan.handoffBarrierPending == true,
+            handoffBarrierRequiredFrames = asNumber(plan.handoffBarrierRequiredFrames),
+            handoffBarrierRemainingFrames = asNumber(plan.handoffBarrierRemainingFrames),
+            handoffBarrierPublishedFrames = asNumber(plan.handoffBarrierPublishedFrames),
         },
         lastDecision = {
             phase = decision.phase,
@@ -258,12 +371,33 @@ local function copyAutoBurstDiagnostics()
             cooldownPublicActive = step.cooldownPublicActive,
             cooldownPublicOnGCDKnown = step.cooldownPublicOnGCDKnown == true,
             cooldownPublicOnGCD = step.cooldownPublicOnGCD,
+            cooldownActionBarPublicActiveKnown = step.cooldownActionBarPublicActiveKnown == true,
+            cooldownActionBarPublicActive = step.cooldownActionBarPublicActive,
+            cooldownActionBarPublicOnGCDKnown = step.cooldownActionBarPublicOnGCDKnown == true,
+            cooldownActionBarPublicOnGCD = step.cooldownActionBarPublicOnGCD,
+            cooldownActionBarDurationKnown = step.cooldownActionBarDurationKnown == true,
+            cooldownActionBarDurationOwnEvidence = step.cooldownActionBarDurationOwnEvidence == true,
+            cooldownActionBarNumericReady = step.cooldownActionBarNumericReady == true,
             cooldownGcdAlias = step.cooldownGcdAlias == true,
             cooldownLiveRead = step.cooldownLiveRead == true,
             cooldownSource = step.cooldownSource,
+            cooldownDirectActionBarReadyEvidence = step.cooldownDirectActionBarReadyEvidence == true,
+            cooldownIdentityKey = step.cooldownIdentityKey,
+            cooldownConfirmationPending = step.cooldownConfirmationPending == true,
+            cooldownUnknownReason = step.cooldownUnknownReason,
+            cooldownRequestedActionSlot = asNumber(step.cooldownRequestedActionSlot),
+            cooldownActionBarStateTrusted = step.cooldownActionBarStateTrusted == true,
             chargeCount = asNumber(step.chargeCount),
             chargeMaximum = asNumber(step.chargeMaximum),
         },
+        lastArmedRebase = {
+            reason = type(data.lastArmedRebase) == "table" and data.lastArmedRebase.reason or nil,
+            armedEpoch = asNumber(type(data.lastArmedRebase) == "table" and data.lastArmedRebase.armedEpoch),
+            officialSpellID = asNumber(type(data.lastArmedRebase) == "table" and data.lastArmedRebase.officialSpellID),
+            priorOfficialSpellID = asNumber(type(data.lastArmedRebase) == "table" and data.lastArmedRebase.priorOfficialSpellID),
+            priorWindowGeneration = asNumber(type(data.lastArmedRebase) == "table" and data.lastArmedRebase.priorWindowGeneration),
+        },
+        recentPriorityEvents = copyPriorityBurstEvents(data.recentPriorityEvents),
         lastFault = {
             reason = fault.reason,
         },

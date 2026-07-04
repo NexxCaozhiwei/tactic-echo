@@ -11,11 +11,12 @@ local MAX_BURST_CARDS = 5 -- slot 1 window + up to four followups
 local MAX_DEFENSIVES = 4
 
 local NUMERIC_FIELDS = {
-    "spellID", "itemID", "itemCount", "itemSlot", "charges", "maxCharges",
+    "spellID", "matchedSpellID", "itemID", "itemCount", "itemSlot", "charges", "maxCharges",
     "cooldownRemaining", "cooldownDuration", "cooldownStart",
     "gcdRemaining", "gcdDuration", "gcdStart",
     "chargeCooldownRemaining", "chargeCooldownDuration", "chargeCooldownStart", "castingSpellID", "castingStartTimeMS", "castingEndTimeMS", "defensivePriority",
     "actionSlot", "slot", "inventorySlot", "bindingSourceIndex", "bindingToken", "displayBindingToken", "dispatchBindingToken", "burstOrder", "channelingSpellID", "empoweringSpellID",
+    "reactionQualifyingCount", "reactionAoeThreshold",
 }
 
 local BOOLEAN_FIELDS = {
@@ -23,8 +24,10 @@ local BOOLEAN_FIELDS = {
     "unknown", "procHighlight", "burstOverlay", "casting", "channeling", "empowering",
     "channelingMatchesRecommendation", "empoweringMatchesRecommendation", "castingThisSpell", "globalCasting", "globalChanneling", "targetInvalid",
     "targetChecked", "rangeBlocked", "resourceBlocked", "advisoryOnly", "displayOnly", "gcdKnown",
-    "cooldownKnown", "cooldownActive", "cooldownOnGCD", "cooldownFallback", "cooldownConfirmationPending", "gcdActive", "chargeCooldownKnown", "directActionSlot", "actionBarStateTrusted", "bindingMissing",
+    "cooldownKnown", "cooldownActive", "cooldownOnGCD", "cooldownGcdAlias", "cooldownFallback", "cooldownConfirmationPending", "cooldownActionBarNumericOwnEvidence", "burstVerificationPending", "gcdActive", "chargeCooldownKnown", "directActionSlot", "actionBarStateTrusted", "bindingMissing",
     "interruptible", "dangerous", "burstWindow", "burstReady", "gapCloser",
+    "reactionHighlight", "reactionObservedTarget", "reactionAoe", "reactionRouteSafe",
+    "reactionRouteAvailable", "reactionMappingRequired",
 }
 
 local function plainNumber(value)
@@ -99,13 +102,20 @@ local function sanitize(item)
     item.defensiveConditionMode = plainText(item.defensiveConditionMode, nil)
     item.defensiveConditionText = plainText(item.defensiveConditionText, nil)
     item.cooldownSource = plainText(item.cooldownSource, nil)
+    item.cooldownFallbackOrigin = plainText(item.cooldownFallbackOrigin, nil)
     item.cooldownIdentityKey = plainText(item.cooldownIdentityKey, nil)
     item.cooldownUnknownReason = plainText(item.cooldownUnknownReason, nil)
+    item.cooldownGcdAliasReason = plainText(item.cooldownGcdAliasReason, nil)
     item.bindingReason = plainText(item.bindingReason, nil)
     item.source = plainText(item.source, nil)
     item.category = plainText(item.category, nil)
     item.burstRole = plainText(item.burstRole, nil)
     item.burstState = plainText(item.burstState, nil)
+    item.burstVerificationRole = plainText(item.burstVerificationRole, nil)
+    item.reactionKind = plainText(item.reactionKind, nil)
+    item.reactionSource = plainText(item.reactionSource, nil)
+    item.reactionSourceLabel = plainText(item.reactionSourceLabel, nil)
+    item.reactionRouteMode = plainText(item.reactionRouteMode, nil)
     item.spellIcon = plainTexture(item.spellIcon)
     item.icon = plainTexture(item.icon)
     return item

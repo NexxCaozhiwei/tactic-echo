@@ -243,79 +243,124 @@ local function macroSpellMatches(spellValue, spellID, spellName)
     return false
 end
 
--- User-confirmed macro policy: never interpret or execute macro branches.
--- A macro button is only associated to a recommendation when Blizzard reports
--- its current macro spell or its cached body explicitly contains the localized
--- spell name / numeric SpellID.  Once associated, TEK only presses the
--- player's existing bound macro button.
-local function macroBodyReferencesSpell(body, spellName, spellID)
-    -- A textual macro-body fallback is intentionally stricter than Blizzard's
-    -- current macro-spell APIs.  We never evaluate conditions, targets or
-    -- multi-command branches.  Only one unconditioned /cast line with an
-    -- exact spell name/ID is safe to associate by text alone.  Complex macros
-    -- remain visible in diagnostics and can still resolve when Blizzard itself
-    -- reports their current macro spell through GetMacroSpell/ActionInfo.
-    if type(body) ~= "string" or body == "" then return false end
-    local directArgument = nil
-    local actionableLines = 0
-    for raw in body:gmatch("[^\r\n]+") do
-        local line = trim(raw)
-        if line ~= "" and line:sub(1, 1) ~= "#" then
-            local command, argument = line:match("^(%S+)%s*(.-)$")
-            command = type(command) == "string" and command:lower() or nil
-            argument = trim(argument)
-            if command == "/cast" or command == "/use" or command == "/castsequence" then
-                actionableLines = actionableLines + 1
-                -- Conditional blocks, target directives and semicolon branches
-                -- require macro evaluation and are never inferred here.
-                if command ~= "/cast" or argument:find("[", 1, true)
-                    or argument:find(";", 1, true) or argument:find("@", 1, true) then
-                    return false
-                end
-                directArgument = argument
-            end
-        end
+-- Macro association remains read-only: TE never evaluates conditions or
+-- executes a branch itself. The parser only determines whether the user's
+-- existing visible macro button references the requested spell; TEK still
+-- presses the same binding the player assigned to that button.
+local function macroBodyReferencesSpell(body, spellName, spellID, semantics)
+    if type(body) ~= "string" or body == "" then return false, "macro_body_unavailable" end
+    semantics = type(semantics) == "table" and semantics
+        or (TE.MacroSemantics and type(TE.MacroSemantics.Analyze) == "function"
+            and TE.MacroSemantics:Analyze(body) or nil)
+    if not (semantics and TE.MacroSemantics and type(TE.MacroSemantics.MatchSpell) == "function") then
+        return false, "macro_semantics_unavailable"
     end
-    if actionableLines ~= 1 or not directArgument or directArgument == "" then return false end
-    return macroSpellMatches(directArgument, spellID, spellName)
+    -- Broad association deliberately accepts common user-authored macro forms
+    -- such as [@cursor], mouseover/target conditionals, /stopcasting helpers
+    -- and multi-line utility commands. The caller still verifies the exact
+    -- requested spell after dispatch; no macro branch is inferred or replayed.
+    return TE.MacroSemantics:MatchSpell(semantics, spellID, spellName, "broad")
 end
 
 local function macroBodyLength(body)
     return type(body) == "string" and #body or 0
 end
 
-local function lookupMacroByName(name)
-    if type(name) ~= "string" or name == "" or type(GetMacroInfo) ~= "function" then return nil end
+-- P5 macro identity contract:
+-- GetActionInfo(actionSlot) returns the macro's numeric action-info ID. That
+-- numeric index, not a user-visible macro name, is the only identity accepted
+-- for body recovery. Macro names are mutable, localized and may be duplicated
+-- between account and character macros; using a name as a lookup key can read a
+-- different macro body from the button the player actually bound.
+--
+-- Some Retail states expose the correct macro name but with an empty body on
+-- the first GetMacroInfo(index) read. Retry the *same numeric index* a small,
+-- bounded number of times during the existing event-driven action-bar scan.
+-- Never enumerate or query GetMacroInfo(name) as a recovery path.
+local MAX_MACRO_INFO_INDEX_READS = 3
 
-    local okNamed, macroName, icon, body = safeCall(GetMacroInfo, name)
-    if okNamed and macroName and body then
-        return { macroIndex=name, macroName=macroName, icon=icon, body=body, lookup="GetMacroInfo(actionText)" }
+local function normalizeMacroIndex(value)
+    local numeric = tonumber(value)
+    if not numeric or numeric <= 0 then return nil end
+    return math.floor(numeric)
+end
+
+local function hasMacroBody(body)
+    return type(body) == "string" and body ~= ""
+end
+
+local function resolveMacroByActionInfoIndex(actionInfoID, diag)
+    local macroIndex = normalizeMacroIndex(actionInfoID)
+    diag.actionInfoMacroIndex = macroIndex
+    diag.macroIdentitySource = "action_info_id"
+    diag.macroIdentityVerified = false
+    diag.lookupByActionText = false
+    diag.lookupByActionInfoName = false
+    if not macroIndex then
+        diag.failureReason = "macro_action_info_id_invalid"
+        return nil
+    end
+    if type(GetMacroInfo) ~= "function" then
+        diag.failureReason = "macro_info_api_unavailable"
+        return nil
     end
 
-    if type(GetNumMacros) ~= "function" then return nil end
-    local okCount, globalCount, characterCount = safeCall(GetNumMacros)
-    if not okCount then return nil end
-    globalCount = tonumber(globalCount) or 0
-    characterCount = tonumber(characterCount) or 0
-    for index = 1, globalCount do
-        local ok, candidateName, candidateIcon, candidateBody = safeCall(GetMacroInfo, index)
-        if ok and candidateName == name then
-            return { macroIndex=index, macroName=candidateName, icon=candidateIcon, body=candidateBody, lookup="enumerate_global" }
+    local firstName, lastName, lastIcon = nil, nil, nil
+    local firstBodyLength, largestBodyLength = 0, 0
+    local successfulReads = 0
+    for attempt = 1, MAX_MACRO_INFO_INDEX_READS do
+        local ok, macroName, icon, body = safeCall(GetMacroInfo, macroIndex)
+        if ok then
+            successfulReads = successfulReads + 1
+            if type(macroName) == "string" and macroName ~= "" then
+                firstName = firstName or macroName
+                lastName = macroName
+            end
+            if icon ~= nil then lastIcon = icon end
+            local bodyLength = macroBodyLength(body)
+            if attempt == 1 then firstBodyLength = bodyLength end
+            if bodyLength > largestBodyLength then largestBodyLength = bodyLength end
+            if hasMacroBody(body) then
+                diag.getMacroInfoByActionInfoIdSuccess = true
+                diag.getMacroInfoByActionInfoIdName = firstName or macroName
+                diag.getMacroInfoByActionInfoIdBodyLength = bodyLength
+                diag.actionInfoIdFirstReadBodyLength = firstBodyLength
+                diag.actionInfoIdReadAttempts = attempt
+                diag.actionInfoIdSuccessfulReads = successfulReads
+                diag.resolvedMacroIndex = macroIndex
+                diag.macroName = macroName or firstName
+                diag.body = body
+                diag.lookupSource = attempt == 1 and "action_info_id" or "action_info_id_retry"
+                diag.macroIdentityVerified = true
+                return {
+                    macroIndex = macroIndex,
+                    macroName = macroName or firstName,
+                    icon = icon or lastIcon,
+                    body = body,
+                    readAttempts = attempt,
+                    successfulReads = successfulReads,
+                }
+            end
         end
     end
-    -- Blizzard reserves 1..120 for account macros; character macros are
-    -- conventionally addressed from 121 onward.
-    for index = 121, 120 + characterCount do
-        local ok, candidateName, candidateIcon, candidateBody = safeCall(GetMacroInfo, index)
-        if ok and candidateName == name then
-            return { macroIndex=index, macroName=candidateName, icon=candidateIcon, body=candidateBody, lookup="enumerate_character" }
-        end
-    end
+
+    diag.getMacroInfoByActionInfoIdSuccess = successfulReads > 0 and (firstName ~= nil or lastName ~= nil)
+    diag.getMacroInfoByActionInfoIdName = firstName or lastName
+    diag.getMacroInfoByActionInfoIdBodyLength = largestBodyLength
+    diag.actionInfoIdFirstReadBodyLength = firstBodyLength
+    diag.actionInfoIdReadAttempts = MAX_MACRO_INFO_INDEX_READS
+    diag.actionInfoIdSuccessfulReads = successfulReads
+    diag.failureReason = "macro_body_unavailable_action_info_id"
     return nil
 end
 
 local function resolveMacroFromActionSlot(actionSlot, actionInfoID)
-    local diag = { actionSlot=actionSlot, actionInfoId=actionInfoID }
+    local diag = {
+        actionSlot = actionSlot,
+        actionInfoId = actionInfoID,
+        actionInfoMacroIndex = normalizeMacroIndex(actionInfoID),
+        macroIdentitySource = "action_info_id",
+    }
 
     local okText, actionText = safeCall(GetActionText, actionSlot)
     diag.actionText = okText and actionText or nil
@@ -323,32 +368,15 @@ local function resolveMacroFromActionSlot(actionSlot, actionInfoID)
     local okSpellByID, macroSpellByID = safeCall(GetMacroSpell, actionInfoID)
     diag.getMacroSpellByActionInfoId = okSpellByID and macroSpellByID or nil
 
-    local okInfoByID, nameByID, _, bodyByID = safeCall(GetMacroInfo, actionInfoID)
-    diag.getMacroInfoByActionInfoIdSuccess = okInfoByID and nameByID ~= nil
-    diag.getMacroInfoByActionInfoIdBodyLength = macroBodyLength(bodyByID)
-    if okInfoByID and nameByID and bodyByID then
-        diag.resolvedMacroIndex = actionInfoID
-        diag.macroName = nameByID
-        diag.body = bodyByID
-        diag.lookupSource = "actionInfoId"
-        return diag
-    end
-
-    local resolved = lookupMacroByName(actionText)
+    local resolved = resolveMacroByActionInfoIndex(actionInfoID, diag)
     if resolved then
-        diag.resolvedMacroIndex = resolved.macroIndex
-        diag.macroName = resolved.macroName
-        diag.body = resolved.body
-        diag.lookupSource = resolved.lookup
-        diag.lookupByActionText = true
-        local okResolvedSpell, resolvedSpell = safeCall(GetMacroSpell, resolved.macroIndex)
-        diag.getMacroSpellByResolvedIndex = okResolvedSpell and resolvedSpell or nil
         diag.resolvedBodyLength = macroBodyLength(resolved.body)
         return diag
     end
 
-    diag.lookupByActionText = false
-    diag.failureReason = (actionText and actionText ~= "") and "macro_lookup_failed" or "macro_action_text_missing"
+    -- actionText and the macro name are retained solely as diagnostics. They
+    -- must never identify another macro body: duplicate names such as "打断"
+    -- are common across account and character macro scopes.
     return diag
 end
 
@@ -442,6 +470,13 @@ local function addByItem(index, itemID, entry)
     addBySpell(index, itemID, entry)
 end
 
+local function addByInventorySlot(index, slot, entry)
+    slot = tonumber(slot)
+    if slot ~= 13 and slot ~= 14 then return end
+    index[slot] = index[slot] or {}
+    index[slot][#index[slot] + 1] = entry
+end
+
 local function resolveBindingPair(primaryBinding, secondaryBinding)
     -- GetBindingKey can legitimately return nil for the primary binding while
     -- a valid secondary binding exists. Do not put the pair in an array and
@@ -491,6 +526,8 @@ local function buildMacroEntry(base, actionInfoID, subType, actionMacroSpellID)
     base.macroName = diag.macroName or diag.actionText
     base.macroBody = diag.body
     base.macroSemantics = TE.MacroSemantics and TE.MacroSemantics:Analyze(diag.body) or nil
+    base.macroSemanticSummary = TE.MacroSemantics and type(TE.MacroSemantics.Summary) == "function"
+        and TE.MacroSemantics:Summary(base.macroSemantics) or nil
     base.macroSpellID = actionMacroSpellID
     base.macroResolvedSpellID = normalizeSpellID(diag.getMacroSpellByResolvedIndex)
     base.macroActionInfoSpellID = normalizeSpellID(diag.getMacroSpellByActionInfoId)
@@ -558,6 +595,11 @@ local function scanStandardButton(cache, spec, index)
         addBySpell(cache.macroBySpell, entry.macroSpellID, entry)
         addBySpell(cache.macroBySpell, entry.macroResolvedSpellID, entry)
         addBySpell(cache.macroBySpell, entry.macroActionInfoSpellID, entry)
+        if TE.MacroSemantics and type(TE.MacroSemantics.InventorySlots) == "function" then
+            for _, inventorySlot in ipairs(TE.MacroSemantics:InventorySlots(entry.macroSemantics)) do
+                addByInventorySlot(cache.macroByInventorySlot, inventorySlot, entry)
+            end
+        end
     elseif actionType == "item" then
         entry.source = "item"
         entry.itemID = tonumber(actionInfoID)
@@ -622,7 +664,7 @@ local function buildButtonCache(scanReason)
         generation = Resolver.scanGeneration + 1,
         scanReason = scanReason or "manual",
         scannedAt = GetTime and GetTime() or 0,
-        entries = {}, bySpell = {}, byItem = {}, macroEntries = {}, macroBySpell = {}, diagnostics = {},
+        entries = {}, bySpell = {}, byItem = {}, macroEntries = {}, macroBySpell = {}, macroByInventorySlot = {}, diagnostics = {},
         scannedButtons = 0, visibleButtons = 0,
         state = { mainPage = currentMainPage(), stateHash = actionBarStateSignature(), specialActionBar = specialActionBar },
     }
@@ -772,9 +814,9 @@ local function macroCandidateMatches(entry, spellID, spellName)
     if macroSpellMatches(entry.macroActionInfoSpellID, spellID, spellName) then
         return true, "GetMacroSpell(actionInfoId)"
     end
-    local matched = macroBodyReferencesSpell(entry.macroBody, spellName, spellID)
-    if matched then return true, "macro_body_reference" end
-    return false, nil
+    local matched, association = macroBodyReferencesSpell(entry.macroBody, spellName, spellID, entry.macroSemantics)
+    if matched then return true, association or "macro_body_broad_reference" end
+    return false, association
 end
 
 local function appendUnique(list, seen, value)
@@ -836,6 +878,20 @@ end
 local function makeCandidate(entry, spellID, association, matchedSpellID, matchKind)
     local parsed = entry.parsedBinding
     local reason = entry.bindingError
+    local isMacro = entry.source == "macro"
+    local semantics = entry.macroSemantics
+    local macroAssociation = isMacro and association or nil
+    local macroAssociationFromAPI = macroAssociation == "action_info_macro_spell"
+        or macroAssociation == "GetMacroSpell"
+        or macroAssociation == "GetMacroSpell(actionInfoId)"
+    local macroAutoBurstEligible = not isMacro or (
+        macroAssociation ~= nil and (
+            macroAssociationFromAPI == true or (semantics and semantics.autoBurstEligible == true)
+        )
+    )
+    local actionBarStateTrusted = entry.actionSlot ~= nil and (
+        not isMacro or macroAutoBurstEligible == true
+    )
     return {
         spellID = spellID,
         slot = entry.actionSlot,
@@ -843,9 +899,12 @@ local function makeCandidate(entry, spellID, association, matchedSpellID, matchK
         buttonName = entry.buttonName,
         bar = entry.bar,
         visualOrder = entry.visualOrder,
+        visualX = entry.visualX,
+        visualY = entry.visualY,
         source = entry.source,
         kind = entry.source,
         directActionSlot = (entry.source == "spell" or entry.source == "item") and entry.actionSlot ~= nil,
+        actionBarStateTrusted = actionBarStateTrusted == true,
         matchKind = matchKind or "direct_spell",
         bindingCommand = entry.bindingCommand,
         rawBinding = entry.rawBinding,
@@ -854,10 +913,11 @@ local function makeCandidate(entry, spellID, association, matchedSpellID, matchK
         reason = reason,
         macroID = entry.macroID,
         macroName = entry.macroName,
-        macroAssociation = association,
-        macroCommand = association,
+        macroAssociation = macroAssociation,
+        macroCommand = macroAssociation,
+        macroAutoBurstEligible = macroAutoBurstEligible == true,
         macroDiagnostic = entry.macroDiagnostic,
-        macroSemantics = entry.macroSemantics,
+        macroSemantics = semantics,
         matchedSpellName = getSpellName(matchedSpellID or spellID),
         matchedSpellID = matchedSpellID or spellID,
     }
@@ -942,7 +1002,7 @@ function Resolver:ResolveSpell(spellID)
 
     local macroDiagnostics = {}
     for _, entry in ipairs(cache.macroEntries or {}) do
-        local matches = macroCandidateMatches(entry, spellID, spellName)
+        local matches, macroReason = macroCandidateMatches(entry, spellID, spellName)
         if not matches then
             local diag = entry.macroDiagnostic or {}
             macroDiagnostics[#macroDiagnostics + 1] = {
@@ -955,9 +1015,21 @@ function Resolver:ResolveSpell(spellID)
                 actionMacroSpellID = entry.macroSpellID,
                 macroName = entry.macroName,
                 resolvedMacroIndex = entry.macroID,
+                macroIdentitySource = diag.macroIdentitySource,
+                macroIdentityVerified = diag.macroIdentityVerified == true,
+                actionInfoMacroIndex = diag.actionInfoMacroIndex,
+                actionInfoIdReadAttempts = tonumber(diag.actionInfoIdReadAttempts) or 0,
+                actionInfoIdSuccessfulReads = tonumber(diag.actionInfoIdSuccessfulReads) or 0,
+                identityFailureReason = diag.failureReason,
                 lookupSource = diag.lookupSource,
+                lookupAttemptCount = tonumber(diag.lookupAttemptCount) or 0,
+                lookupByActionText = diag.lookupByActionText == true,
+                lookupByActionInfoName = diag.lookupByActionInfoName == true,
+                actionInfoMacroName = diag.getMacroInfoByActionInfoIdName,
                 resolvedBodyLength = macroBodyLength(entry.macroBody),
-                failureReason = diag.failureReason or (entry.macroBody and "macro_spell_not_referenced" or "macro_body_unavailable"),
+                resolvedSpellTokenCount = type(entry.macroSemanticSummary) == "table"
+                    and tonumber(entry.macroSemanticSummary.resolvedSpellTokenCount) or 0,
+                failureReason = macroReason or diag.failureReason or (entry.macroBody and "macro_spell_not_referenced" or "macro_body_unavailable"),
             }
         end
     end
@@ -990,11 +1062,13 @@ function Resolver:ResolveSpell(spellID)
             source=selected.source, bindingCommand=selected.bindingCommand, rawBinding=selected.rawBinding,
             bindingSourceIndex=selected.bindingSourceIndex,
             macroID=selected.macroID, macroName=selected.macroName, macroAssociation=selected.macroAssociation,
-            macroCommand=selected.macroCommand, macroDiagnostic=selected.macroDiagnostic,
+            macroCommand=selected.macroCommand, macroAutoBurstEligible=selected.macroAutoBurstEligible == true,
+            macroDiagnostic=selected.macroDiagnostic, macroSemantics=selected.macroSemantics,
             matchedSpellName=selected.matchedSpellName, matchedSpellID=selected.matchedSpellID,
             requestedSpellID = spellID, matchKind = selected.matchKind,
             equivalentSpellIDs = equivalentSpellIDs, stateHash = cache.state and cache.state.stateHash or nil,
             bindingSettling = self:IsBindingSettling(), directActionSlot = selected.directActionSlot == true,
+            actionBarStateTrusted = selected.actionBarStateTrusted == true,
             candidates=candidates, macroDiagnostics=macroDiagnostics,
             cacheGeneration=cache.generation, cacheSummary=self:GetCacheSummary(),
             specialActionBar=specialActionBar,
@@ -1008,11 +1082,13 @@ function Resolver:ResolveSpell(spellID)
             binding=selected.parsed.binding, bindingToken=selected.parsed.token,
             inputType=selected.parsed.inputType, key=selected.parsed.key, modifier=selected.parsed.modifier,
             macroID=selected.macroID, macroName=selected.macroName, macroAssociation=selected.macroAssociation,
-            macroCommand=selected.macroCommand, macroDiagnostic=selected.macroDiagnostic,
+            macroCommand=selected.macroCommand, macroAutoBurstEligible=selected.macroAutoBurstEligible == true,
+            macroDiagnostic=selected.macroDiagnostic, macroSemantics=selected.macroSemantics,
             matchedSpellName=selected.matchedSpellName, matchedSpellID=selected.matchedSpellID,
             requestedSpellID = spellID, matchKind = selected.matchKind,
             equivalentSpellIDs = equivalentSpellIDs, stateHash = cache.state and cache.state.stateHash or nil,
             bindingSettling = self:IsBindingSettling(), directActionSlot = selected.directActionSlot == true,
+            actionBarStateTrusted = selected.actionBarStateTrusted == true,
             candidates=candidates, macroDiagnostics=macroDiagnostics,
             cacheGeneration=cache.generation, cacheSummary=self:GetCacheSummary(),
             specialActionBar=specialActionBar,
@@ -1079,6 +1155,185 @@ function Resolver:ResolveItem(itemID)
             cacheGeneration = self.buttonCache.generation, specialActionBar = specialActionBar }
     end
     self.cache[cacheKey] = result
+    return result, result.reason
+end
+
+
+-- Resolve one explicitly configured equipped trinket slot.  Direct item buttons
+-- and visible user macros such as `/use 13` are both accepted.  This resolver
+-- never changes the macro or evaluates a branch: it only returns the existing
+-- button's BindingToken.  A macro referring to both 13 and 14 is rejected so
+-- callers must model each trinket as a separate explicit action.
+local function currentInventoryItemID(slot)
+    if type(GetInventoryItemID) ~= "function" then return nil end
+    local ok, itemID = safeCall(GetInventoryItemID, "player", slot)
+    itemID = ok and tonumber(itemID) or nil
+    return itemID and itemID > 0 and math.floor(itemID) or nil
+end
+
+local function inventoryMacroMatches(entry, slot)
+    if not (entry and entry.source == "macro" and TE.MacroSemantics
+        and type(TE.MacroSemantics.MatchInventorySlot) == "function") then
+        return false, "macro_inventory_semantics_unavailable"
+    end
+    return TE.MacroSemantics:MatchInventorySlot(entry.macroSemantics, slot, "broad")
+end
+
+local function makeInventoryCandidate(entry, slot, itemID, association)
+    local parsed = entry.parsedBinding
+    local isMacro = entry.source == "macro"
+    local semantics = entry.macroSemantics
+    local macroEligible = not isMacro or (association ~= nil and semantics and semantics.autoBurstEligible == true)
+    return {
+        itemID = itemID,
+        expectedItemID = itemID,
+        inventorySlot = slot,
+        actionKind = "inventory",
+        slot = entry.actionSlot,
+        actionSlot = entry.actionSlot,
+        buttonName = entry.buttonName,
+        bar = entry.bar,
+        visualOrder = entry.visualOrder,
+        visualX = entry.visualX,
+        visualY = entry.visualY,
+        source = entry.source,
+        kind = entry.source,
+        directActionSlot = (entry.source == "item") and entry.actionSlot ~= nil,
+        actionBarStateTrusted = entry.actionSlot ~= nil and (not isMacro or macroEligible == true),
+        bindingCommand = entry.bindingCommand,
+        rawBinding = entry.rawBinding,
+        bindingSourceIndex = entry.bindingSourceIndex,
+        parsed = parsed,
+        reason = entry.bindingError,
+        macroID = entry.macroID,
+        macroName = entry.macroName,
+        macroAssociation = isMacro and association or nil,
+        macroCommand = isMacro and association or nil,
+        macroAutoBurstEligible = macroEligible == true,
+        macroDiagnostic = entry.macroDiagnostic,
+        macroSemantics = semantics,
+        matchKind = isMacro and (association or "macro_inventory") or "direct_inventory_item",
+    }
+end
+
+function Resolver:ResolveInventorySlot(slot, expectedItemID)
+    slot = tonumber(slot)
+    if slot ~= 13 and slot ~= 14 then
+        return { status = "NoBinding", reason = "inventory_slot_invalid", bindingToken = 0, candidates = {} }, "inventory_slot_invalid"
+    end
+    expectedItemID = tonumber(expectedItemID)
+    expectedItemID = expectedItemID and expectedItemID > 0 and math.floor(expectedItemID) or nil
+    local currentItemID = currentInventoryItemID(slot)
+    if not currentItemID then
+        return {
+            inventorySlot = slot, expectedItemID = expectedItemID, itemID = nil,
+            status = "NoBinding", reason = "inventory_item_missing", bindingToken = 0, candidates = {},
+        }, "inventory_item_missing"
+    end
+    if expectedItemID and expectedItemID ~= currentItemID then
+        return {
+            inventorySlot = slot, expectedItemID = expectedItemID, itemID = currentItemID,
+            status = "NoBinding", reason = "inventory_equipment_changed", bindingToken = 0, candidates = {},
+        }, "inventory_equipment_changed"
+    end
+    local specialActionBar = self:GetSpecialActionBarState()
+    if specialActionBar.active then
+        return {
+            inventorySlot = slot, expectedItemID = currentItemID, itemID = currentItemID,
+            status = "NoBinding", reason = specialActionBar.reason, bindingToken = 0,
+            candidates = {}, specialActionBar = specialActionBar,
+        }, specialActionBar.reason
+    end
+    self:EnsureCache("resolve_inventory_slot")
+    local cacheKey = "inventory_slot:" .. tostring(slot) .. ":" .. tostring(currentItemID)
+    local cached = self.cache[cacheKey]
+    if cached then
+        cached.specialActionBar = specialActionBar
+        cached.bindingSettling = self:IsBindingSettling()
+        return cached, cached.reason
+    end
+
+    local cache = self.buttonCache
+    local candidates = {}
+    for _, entry in ipairs((cache.byItem or {})[currentItemID] or {}) do
+        candidates[#candidates + 1] = makeInventoryCandidate(entry, slot, currentItemID, nil)
+    end
+    local macroSeen = {}
+    for _, entry in ipairs((cache.macroByInventorySlot or {})[slot] or {}) do
+        local key = tostring(entry.buttonName) .. ":" .. tostring(entry.actionSlot)
+        if not macroSeen[key] then
+            local matches, association = inventoryMacroMatches(entry, slot)
+            if matches then
+                macroSeen[key] = true
+                candidates[#candidates + 1] = makeInventoryCandidate(entry, slot, currentItemID, association)
+            end
+        end
+    end
+    candidates = dedupeCandidates(candidates)
+    table.sort(candidates, candidateCompare)
+
+    local macroDiagnostics = {}
+    for _, entry in ipairs(cache.macroEntries or {}) do
+        local matches, association = inventoryMacroMatches(entry, slot)
+        if not matches then
+            macroDiagnostics[#macroDiagnostics + 1] = {
+                slot = entry.actionSlot,
+                buttonName = entry.buttonName,
+                bindingCommand = entry.bindingCommand,
+                rawBinding = entry.rawBinding,
+                macroName = entry.macroName,
+                resolvedMacroIndex = entry.macroID,
+                macroIdentitySource = type(entry.macroDiagnostic) == "table" and entry.macroDiagnostic.macroIdentitySource or nil,
+                macroIdentityVerified = type(entry.macroDiagnostic) == "table" and entry.macroDiagnostic.macroIdentityVerified == true,
+                actionInfoMacroIndex = type(entry.macroDiagnostic) == "table" and entry.macroDiagnostic.actionInfoMacroIndex or nil,
+                actionInfoIdReadAttempts = type(entry.macroDiagnostic) == "table" and tonumber(entry.macroDiagnostic.actionInfoIdReadAttempts) or 0,
+                identityFailureReason = type(entry.macroDiagnostic) == "table" and entry.macroDiagnostic.failureReason or nil,
+                failureReason = association or "macro_inventory_slot_not_referenced",
+            }
+        end
+    end
+
+    local selected = candidates[1]
+    local result
+    if not selected then
+        result = {
+            inventorySlot = slot, expectedItemID = currentItemID, itemID = currentItemID,
+            status = "NoBinding", reason = "actionbar_inventory_slot_not_found", bindingToken = 0,
+            candidates = candidates, macroDiagnostics = macroDiagnostics,
+            cacheGeneration = cache.generation, cacheSummary = self:GetCacheSummary(), specialActionBar = specialActionBar,
+        }
+    elseif not selected.parsed then
+        result = {
+            inventorySlot = slot, expectedItemID = currentItemID, itemID = currentItemID,
+            status = "NoBinding", reason = selected.reason or "binding_token_invalid", bindingToken = 0,
+            slot = selected.slot, actionSlot = selected.actionSlot, buttonName = selected.buttonName,
+            source = selected.source, bindingCommand = selected.bindingCommand, rawBinding = selected.rawBinding,
+            bindingSourceIndex = selected.bindingSourceIndex, macroID = selected.macroID, macroName = selected.macroName,
+            macroAssociation = selected.macroAssociation, macroCommand = selected.macroCommand,
+            macroAutoBurstEligible = selected.macroAutoBurstEligible == true,
+            macroDiagnostic = selected.macroDiagnostic, macroSemantics = selected.macroSemantics,
+            directActionSlot = selected.directActionSlot == true, actionBarStateTrusted = selected.actionBarStateTrusted == true,
+            candidates = candidates, macroDiagnostics = macroDiagnostics, cacheGeneration = cache.generation,
+            cacheSummary = self:GetCacheSummary(), specialActionBar = specialActionBar,
+        }
+    else
+        result = {
+            inventorySlot = slot, expectedItemID = currentItemID, itemID = currentItemID,
+            status = "Ready", reason = nil, slot = selected.slot, actionSlot = selected.actionSlot,
+            buttonName = selected.buttonName, bar = selected.bar, source = selected.source,
+            bindingCommand = selected.bindingCommand, bindingSourceIndex = selected.bindingSourceIndex,
+            binding = selected.parsed.binding, bindingToken = selected.parsed.token,
+            inputType = selected.parsed.inputType, key = selected.parsed.key, modifier = selected.parsed.modifier,
+            macroID = selected.macroID, macroName = selected.macroName, macroAssociation = selected.macroAssociation,
+            macroCommand = selected.macroCommand, macroAutoBurstEligible = selected.macroAutoBurstEligible == true,
+            macroDiagnostic = selected.macroDiagnostic, macroSemantics = selected.macroSemantics,
+            directActionSlot = selected.directActionSlot == true, actionBarStateTrusted = selected.actionBarStateTrusted == true,
+            candidates = candidates, macroDiagnostics = macroDiagnostics, cacheGeneration = cache.generation,
+            cacheSummary = self:GetCacheSummary(), specialActionBar = specialActionBar,
+        }
+    end
+    self.cache[cacheKey] = result
+    self.lastReason = result.reason or "ready"
     return result, result.reason
 end
 

@@ -110,12 +110,17 @@ local function printMacroDiagnostics(bindingInfo)
         .. " 绑定=" .. tostring(diag.rawBinding or "无")
         .. " 命令=" .. tostring(diag.bindingCommand or "无")
         .. " actionInfoId=" .. tostring(diag.actionInfoId or "无")
+        .. " macroIndex=" .. tostring(diag.actionInfoMacroIndex or "无")
+        .. " 身份=" .. tostring(diag.macroIdentitySource or "无")
+        .. " 已核验=" .. tostring(diag.macroIdentityVerified == true)
         .. " actionText=" .. tostring(diag.actionText or "无")
         .. " macroSpellID=" .. tostring(diag.actionMacroSpellID or "无")
         .. " 查找=" .. tostring(diag.lookupSource or diag.failureReason or "无"))
-    if diag.macroName or diag.resolvedMacroIndex or diag.resolvedBodyLength then
-        safePrint("宏候选详情：宏=" .. tostring(diag.macroName or "未知")
-            .. " index=" .. tostring(diag.resolvedMacroIndex or "无")
+    if diag.macroName or diag.resolvedMacroIndex or diag.resolvedBodyLength
+        or diag.actionInfoIdReadAttempts then
+        safePrint("宏候选详情：宏=" .. tostring(diag.macroName or diag.getMacroInfoByActionInfoIdName or "未知")
+            .. " index=" .. tostring(diag.resolvedMacroIndex or diag.actionInfoMacroIndex or "无")
+            .. " 读取=" .. tostring(diag.actionInfoIdReadAttempts or 0)
             .. " bodyLength=" .. tostring(diag.resolvedBodyLength or diag.getMacroInfoByActionInfoIdBodyLength or 0)
             .. " 原因=" .. tostring(diag.failureReason or "待匹配"))
     end
@@ -194,26 +199,40 @@ end
 
 local function printAutoBurstStatus()
     if not (TE.AutoBurst and type(TE.AutoBurst.GetDiagnostics) == "function") then
-        safePrint("自动爆发：模块未加载。请确认当前加载的插件目录为 !TacticEcho，版本为 1.0.07。")
+        safePrint("自动爆发：模块未加载。请确认当前加载的插件目录为 !TacticEcho。")
         return
     end
     local data = TE.AutoBurst:GetDiagnostics() or {}
     local rule = data.resolvedRule or {}
     local decision = data.lastDecision or {}
     local plan = data.plan or {}
+    local labels = {}
+    for _, step in ipairs(rule.steps or {}) do
+        if step.category == "window" then
+            labels[#labels + 1] = "窗口"
+        elseif step.actionKind == "inventory" then
+            labels[#labels + 1] = "饰品" .. tostring(step.inventorySlot or "?")
+        else
+            labels[#labels + 1] = "注入" .. tostring(step.spellID or "?")
+        end
+    end
     safePrint("自动爆发：构建=" .. tostring(data.build or "未知")
         .. " 启用=" .. tostring(data.enabled == true)
-        .. " 方向=" .. tostring(data.direction or "-")
-        .. " 模式=" .. tostring(data.mode or "-"))
-    safePrint("自动爆发规则：来源=" .. tostring(rule.source or "无")
+        .. " 模式=" .. tostring(data.mode or "-")
+        .. " 宏=" .. tostring(data.macroPolicy or "-"))
+    safePrint("自动爆发规则：专精=" .. tostring(rule.profileKey or "无")
         .. " 窗口=" .. tostring(rule.windowSpellID or "-")
-        .. " 注入=" .. tostring(rule.injectionSpellID or "-")
+        .. " 顺序=" .. (#labels > 0 and table.concat(labels, "→") or "无")
         .. " 原因=" .. tostring(data.ruleReason or "无"))
+    local pendingLabel = plan.pendingConfirmationActionKind == "inventory"
+        and ("饰品槽=" .. tostring(plan.pendingConfirmationInventorySlot or "-")
+            .. " 物品=" .. tostring(plan.pendingConfirmationItemID or "-"))
+        or tostring(plan.pendingConfirmationSpellID or "-")
     safePrint("自动爆发最近：阶段=" .. tostring(decision.phase or "-")
         .. " 原因=" .. tostring(decision.reason or "-")
         .. " 官方=" .. tostring(decision.officialSpellID or "-")
         .. " 计划=" .. tostring(plan.state or "IDLE")
-        .. " 等待确认=" .. tostring(plan.pendingConfirmationSpellID or "-")
+        .. " 等待确认=" .. pendingLabel
         .. " 候选帧=" .. tostring(plan.candidateOfferCount or 0))
     if data.lastFault and data.lastFault.reason then
         safePrint("自动爆发错误：" .. tostring(data.lastFault.reason))
@@ -228,28 +247,14 @@ SlashCmdList.TACTICECHOAUTOBURST = function(message)
         printAutoBurstStatus()
     elseif command == "on" then
         tactics.autoBurstEnabled = true
-        safePrint("自动爆发测试已开启；仍需 /tesignal armed 且官方推荐以边沿进入窗口技能。")
+        safePrint("自动爆发已开启；仍需 /tesignal armed，且仅当前专精的爆发顺序通过预检后才会建立计划。")
         printAutoBurstStatus()
     elseif command == "off" then
         tactics.autoBurstEnabled = false
         if TE.AutoBurst and type(TE.AutoBurst.Abort) == "function" then TE.AutoBurst:Abort("slash_disabled", false) end
-        safePrint("自动爆发测试已关闭。")
-    elseif command == "clear" then
-        tactics.autoBurstWindowSpellID = 0
-        tactics.autoBurstInjectionSpellID = 0
-        safePrint("自动爆发显式 SpellID 已清空。")
-        printAutoBurstStatus()
+        safePrint("自动爆发已关闭。")
     else
-        local windowSpellID, injectionSpellID = command:match("^set%s+(%d+)%s+(%d+)$")
-        windowSpellID, injectionSpellID = tonumber(windowSpellID), tonumber(injectionSpellID)
-        if windowSpellID and injectionSpellID and windowSpellID > 0 and injectionSpellID > 0 then
-            tactics.autoBurstWindowSpellID = math.floor(windowSpellID)
-            tactics.autoBurstInjectionSpellID = math.floor(injectionSpellID)
-            safePrint("自动爆发测试规则已设置：窗口=" .. tostring(tactics.autoBurstWindowSpellID) .. " 注入=" .. tostring(tactics.autoBurstInjectionSpellID))
-            printAutoBurstStatus()
-        else
-            safePrint("用法：/teab status|on|off|clear|set <官方窗口SpellID> <注入SpellID>")
-        end
+        safePrint("用法：/teab status|on|off。爆发窗口、注入技能、饰品和顺序请在 TE 设置 → 爆发设置中按当前专精配置。")
     end
 end
 
@@ -405,7 +410,7 @@ SLASH_TACTICECHO1 = "/te"
 SlashCmdList.TACTICECHO = function(message)
     local command = string.lower(message or "")
     if command == "" or command == "help" then
-        safePrint("命令：/te context；/te current；/te cache；/te mapping；/te policy；/te tactics；/teab status；/teab set <窗口ID> <注入ID>；/te once；/te armed；/te pause；/te off；/te status；/te ui。")
+        safePrint("命令：/te context；/te current；/te cache；/te mapping；/te policy；/te tactics；/teab status|on|off；/te once；/te armed；/te pause；/te off；/te status；/te ui。爆发顺序、窗口、注入与饰品请在 /teui burst 按当前专精配置。")
     elseif command == "context" then
         SlashCmdList.TACTICECHOCONTEXT("")
     elseif command == "current" then

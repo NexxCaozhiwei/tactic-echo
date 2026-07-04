@@ -26,11 +26,14 @@ class ProtocolMonitorSecretBooleanContractTests(unittest.TestCase):
             "local function plainNumber(value)",
             "local function plainText(value)",
             "local safeSpellID = plainNumber(spellID)",
-            "local safeName = ok and plainText(name) or nil",
+            "local function castRecordPresent(apiOk, arity, requiredArity)",
+            "castRecordPresent(ok, arity, 9)",
+            "packReturns(UnitCastingInfo(\"target\"))",
             "secret boolean",
             "fail-unknown",
         ):
             self.assertIn(marker, text)
+        self.assertNotIn("local safeName = ok and plainText(name) or nil", text)
 
 
 if __name__ == "__main__":

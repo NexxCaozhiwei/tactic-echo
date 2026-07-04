@@ -18,7 +18,8 @@ class Hud082CooldownLabelStabilityContractTests(unittest.TestCase):
     def test_hud_never_uses_generic_cd_placeholder_text(self) -> None:
         self.assertNotIn('card.badge:SetText("CD")', self.icon)
         self.assertNotIn('label = "CD"', self.styles)
-        self.assertIn('card.badge:SetText(cooldownText(item))', self.icon)
+        self.assertIn('local function cachedCooldownText(card, item, ownCooldown)', self.icon)
+        self.assertIn('card.badge:SetText(label)', self.icon)
         self.assertIn('SetCooldownFromDurationObject', self.icon)
 
     def test_unchanged_urgent_primary_does_not_reapply(self) -> None:

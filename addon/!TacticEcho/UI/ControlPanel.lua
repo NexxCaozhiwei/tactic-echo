@@ -21,9 +21,12 @@ local normalFooter
 local compactView
 local activePage = "general"
 local panes = {}
+local burstSubpages = {}
+local interruptSubpages = {}
 local navButtons = {}
 local labels = {}
 local controls = {}
+local controlBuildScope
 local profileNameBox
 local elapsedSinceRefresh = 0
 local hotkeyOwner
@@ -57,8 +60,8 @@ local PAGE_META = {
     general = { label = "常规", description = "运行状态、手动启停 / 脱战策略与 Tactic Echo 自身快捷键。" },
     hud = { label = "HUD", description = "四模块显示、图标大小、队列模式、全局标签和布局。" },
     main = { label = "主键", description = "主推荐队列的按键、充能、冷却时间和转盘遮罩样式。" },
-    burst = { label = "爆发", description = "爆发窗口辅助的图标样式与只读策略。" },
-    interrupt = { label = "打断与控制", description = "打断、控制提示的图标样式与目标读条策略。" },
+    burst = { label = "爆发", description = "爆发窗口辅助、可排序自动爆发与爆发图标样式。" },
+    interrupt = { label = "打断与控制", description = "打断与控制的自动化预设、目标优先级、读条策略与图标样式。" },
     defense = { label = "防御与生存", description = "专精防御提示、治疗石与血瓶提示的显示策略。" },
     monitor = { label = "监控与调试", description = "动作条、专精、推荐链路、协议与安全诊断。" },
     profiles = { label = "配置文件", description = "Default、角色、职业、专精的配置保存与自动切换。" },
@@ -156,7 +159,10 @@ local function ensureTextStyle(style, defaults)
     style.offsetX = tonumber(style.offsetX) or (defaults.offsetX or -3)
     style.offsetY = tonumber(style.offsetY) or (defaults.offsetY or -3)
     if defaults.mode ~= nil or style.mode ~= nil then
-        style.mode = ({ auto = true, custom = true, duration = true })[style.mode] and style.mode or (defaults.mode or "auto")
+        -- Native DurationObject digits are no longer selectable: the HUD owns
+        -- all CD text so its font, anchor and integer-seconds format stay
+        -- consistent across burst, interrupt and defense cards.
+        style.mode = "custom"
     end
     style.color = copyColor(style.color, defaults.color or COLOR_PRESETS.white.color)
     style.colorKey = COLOR_PRESETS[style.colorKey] and style.colorKey or colorKey(style.color)
@@ -176,7 +182,7 @@ local function ensureModuleStyle(hud, key)
         point = "BOTTOMRIGHT", offsetX = -3, offsetY = 3, color = COLOR_PRESETS.white.color,
     })
     module.cooldownText = ensureTextStyle(module.cooldownText, {
-        enabled = true, mode = "auto", fontPreset = "highlight", fontSize = 14, scale = 1,
+        enabled = true, mode = "custom", fontPreset = "highlight", fontSize = 14, scale = 1,
         point = "CENTER", offsetX = 0, offsetY = 0, color = COLOR_PRESETS.white.color,
     })
     module.stateText = ensureTextStyle(module.stateText, {
@@ -287,9 +293,9 @@ end
 local function setButtonVisual(button, active)
     if not button or not button.SetBackdropColor then return end
     if active then
-        button:SetBackdropColor(0.10, 0.18, 0.32, 0.98)
-        button:SetBackdropBorderColor(0.55, 0.74, 1.00, 1)
-        if button.text then button.text:SetTextColor(1.00, 0.85, 0.18) end
+        button:SetBackdropColor(0.11, 0.20, 0.36, 1)
+        button:SetBackdropBorderColor(0.98, 0.76, 0.22, 1)
+        if button.text then button.text:SetTextColor(1.00, 0.90, 0.36) end
     else
         button:SetBackdropColor(0.025, 0.035, 0.06, 0.92)
         button:SetBackdropBorderColor(0.16, 0.22, 0.32, 0.95)
@@ -351,14 +357,23 @@ local function createActionButton(parent, text, x, y, width, callback)
     button.text:SetJustifyH("CENTER")
     button.text:SetText(text or "按钮")
     button:SetScript("OnEnter", function(self) setButtonVisual(self, true) end)
-    button:SetScript("OnLeave", function(self) setButtonVisual(self, false) end)
+    button:SetScript("OnLeave", function(self) setButtonVisual(self, self.selected == true) end)
     button:SetScript("OnClick", function() if callback then callback() end end)
     setButtonVisual(button, false)
     return button
 end
 
 local function registerControl(refresh)
-    controls[#controls + 1] = refresh
+    controls[#controls + 1] = { refresh = refresh, scope = controlBuildScope }
+end
+
+local function refreshControls(scope)
+    for _, entry in ipairs(controls) do
+        if type(entry) == "table" and type(entry.refresh) == "function"
+            and (entry.scope == nil or entry.scope == scope) then
+            pcall(entry.refresh)
+        end
+    end
 end
 
 local function createCheckbox(parent, text, x, y, getter, setter, tooltipText)
@@ -451,8 +466,12 @@ local function createColorChoice(parent, label, x, y, getter, setter)
 end
 
 local function createReadout(parent, key, title, x, y, width, template)
-    local caption = createText(parent, "GameFontHighlight", x, y, width or (CONTENT_PANE_WIDTH - CONTENT_MARGIN * 2), title)
-    local value = createText(parent, template or "GameFontHighlightSmall", x, y - 24, width or (CONTENT_PANE_WIDTH - CONTENT_MARGIN * 2), "等待刷新")
+    local resolvedWidth = width or (CONTENT_PANE_WIDTH - CONTENT_MARGIN * 2)
+    local caption = createText(parent, "GameFontHighlight", x, y, resolvedWidth, title)
+    local value = createText(parent, template or "GameFontHighlightSmall", x, y - 24, resolvedWidth, "等待刷新")
+    -- Runtime diagnostics are allowed to wrap, so reserve two text lines by
+    -- default. Builders place the next section after this fixed readable block.
+    value:SetHeight(38)
     labels[key] = value
     return caption, value
 end
@@ -935,14 +954,74 @@ function ControlPanel:Restore()
     self:SetMinimized(false)
 end
 
-function ControlPanel:Show(page)
+function ControlPanel:SetBurstSubpage(subpage)
+    subpage = subpage == "style" and "style" or "settings"
+    root().burstSubpage = subpage
+    for key, entry in pairs(burstSubpages) do
+        if entry.pane then entry.pane:SetShown(key == subpage) end
+        if entry.button then
+            entry.button.selected = key == subpage
+            setButtonVisual(entry.button, entry.button.selected)
+        end
+    end
+    if activePage == "burst" and panes.burst and type(panes.burst.SetVerticalScroll) == "function" then
+        panes.burst:SetVerticalScroll(0)
+    end
+    if activePage == "burst" and labels.pageTitle then
+        labels.pageTitle:SetText("爆发 · " .. (subpage == "style" and "样式设置" or "爆发设置"))
+    end
+    if activePage == "burst" and labels.pageDescription then
+        labels.pageDescription:SetText(subpage == "style"
+            and "爆发卡片的按键、充能、CD、状态标签、转盘与光效样式。"
+            or "爆发显示策略、当前专精的可排序爆发序列与注入技能规则。")
+    end
+end
+
+function ControlPanel:SetInterruptSubpage(subpage)
+    subpage = ({ interrupt = true, control = true, style = true })[subpage] and subpage or "interrupt"
+    root().interruptSubpage = subpage
+    for key, entry in pairs(interruptSubpages) do
+        if entry.pane then entry.pane:SetShown(key == subpage) end
+        if entry.button then
+            entry.button.selected = key == subpage
+            setButtonVisual(entry.button, entry.button.selected)
+        end
+    end
+    if activePage == "interrupt" and panes.interrupt and type(panes.interrupt.SetVerticalScroll) == "function" then
+        panes.interrupt:SetVerticalScroll(0)
+    end
+    local pageInfo = {
+        interrupt = {
+            title = "打断设置",
+            description = "打断提示、P2 动作条/宏识别、自动打断预设与目标来源优先级。",
+        },
+        control = {
+            title = "控制设置",
+            description = "控制提示、P2 单体/群控动作条宏识别、自动控制预设与目标来源优先级。",
+        },
+        style = {
+            title = "样式设置",
+            description = "打断与控制 HUD 图标的按键、充能、CD、状态标签、转盘与光效样式。",
+        },
+    }
+    local info = pageInfo[subpage] or pageInfo.interrupt
+    if activePage == "interrupt" and labels.pageTitle then
+        labels.pageTitle:SetText("打断与控制 · " .. info.title)
+    end
+    if activePage == "interrupt" and labels.pageDescription then labels.pageDescription:SetText(info.description) end
+end
+
+function ControlPanel:Show(page, subpage)
     page = LEGACY_PAGE_ALIAS[page] or page
     if not PAGE_META[page] then page = "general" end
     self:Create()
     root().visible = true
     if root().minimized then self:Restore() end
     activePage = page
-    for key, button in pairs(navButtons) do setButtonVisual(button, key == activePage) end
+    for key, button in pairs(navButtons) do
+        button.selected = key == activePage
+        setButtonVisual(button, button.selected)
+    end
     for key, pane in pairs(panes) do
         pane:SetShown(key == activePage)
         if key == activePage and type(pane.SetVerticalScroll) == "function" then pane:SetVerticalScroll(0) end
@@ -950,6 +1029,11 @@ function ControlPanel:Show(page)
     if labels.pageTitle then labels.pageTitle:SetText(PAGE_META[activePage].label) end
     if labels.pageDescription then labels.pageDescription:SetText(PAGE_META[activePage].description) end
     root().page = activePage
+    if activePage == "burst" then
+        self:SetBurstSubpage(subpage or root().burstSubpage)
+    elseif activePage == "interrupt" then
+        self:SetInterruptSubpage(subpage or root().interruptSubpage)
+    end
     frame:Show()
     self:UpdateInputStatus()
 end
@@ -1054,6 +1138,150 @@ local function userVisibleReason(rawReason, reasonText)
     return nil
 end
 
+-- P2 only renders the read-only mapping data assembled from the existing
+-- visible default action-bar cache and the same MacroSemantics parser used by
+-- Burst. It is deliberately outside TacticalAdvisors / SignalFrame: this UI
+-- never creates a token, emits TEAP or requests input.
+local REACTION_BINDING_ROUTE_ORDER = { "target", "focus", "mouseover", "cursor" }
+local REACTION_BINDING_ROUTE_LABELS = {
+    target = "当前目标",
+    focus = "焦点目标",
+    mouseover = "鼠标指向目标",
+    cursor = "@cursor",
+}
+
+local function reactionBindingSnapshot()
+    local registry = TE.ReactionBindings
+    if not (registry and type(registry.GetSnapshot) == "function") then return nil end
+    local ok, snapshot = pcall(registry.GetSnapshot, registry)
+    return ok and type(snapshot) == "table" and snapshot or nil
+end
+
+local function reactionBindingRouteText(route)
+    route = type(route) == "table" and route or {}
+    local label = tostring(route.routeLabel or REACTION_BINDING_ROUTE_LABELS[route.route] or route.route or "目标")
+    local key = route.binding and tostring(route.binding) or "无受支持键位"
+    local kind = route.routeKind == "macro" and "宏" or "直绑"
+    local suffix
+    if route.routeKind == "macro" and route.macroPriorityChain == true and route.safeForFutureAuto == true then
+        suffix = "鼠标指向→焦点→当前目标；仅同一宏分支可命中时自动可按"
+    elseif route.routeKind == "macro" and route.macroManagedTarget == true and route.safeForFutureAuto == true then
+        suffix = "宏内目标逻辑，自动可按"
+    elseif route.safeForFutureAuto == true then
+        suffix = "目标路由明确"
+    elseif route.routeKind == "macro" then
+        suffix = "宏路由仅供手动"
+    else
+        suffix = "键位未纳入安全范围"
+    end
+    return label .. "=" .. key .. "（" .. kind .. "，" .. suffix .. "）"
+end
+
+local function reactionBindingEntryText(entry)
+    entry = type(entry) == "table" and entry or {}
+    local name = tostring(entry.spellName or entry.spellID or "未知技能")
+    local parts = {}
+    for _, route in ipairs(REACTION_BINDING_ROUTE_ORDER) do
+        local detail = type(entry.routes) == "table" and entry.routes[route] or nil
+        if detail then parts[#parts + 1] = reactionBindingRouteText(detail) end
+    end
+    if #parts > 0 then
+        local suffix = ""
+        if entry.macroRouteReason == "macro_priority_chain_auto" then
+            suffix = "；已识别为严格鼠标指向→焦点→当前目标整合宏。自动打断仅在没有更高优先级有效单位会抢占宏分支时按键；宏不能判断“是否正在施法”。"
+        elseif entry.macroRouteReason == "macro_target_switch_fallback_auto" then
+            suffix = "；已识别为焦点优先、选敌回退并恢复原目标的宏。后续自动打断/控制会直接按此宏，目标处理由宏自身完成。"
+        elseif entry.macroRouteReason == "macro_target_mutation_auto" then
+            suffix = "；已识别为宏内目标处理。后续自动打断/控制会直接按此宏，目标处理由宏自身完成。"
+        end
+        return name .. "：" .. table.concat(parts, "；") .. suffix
+    end
+    if entry.status == "recognized_manual_only" then
+        return name .. "：宏已识别，但目标分支、目标切换或 /castsequence 不透明；仅保留动作条手动使用。"
+    end
+    if entry.status == "binding_unsupported" then
+        return name .. "：已找到动作条/宏，但键位不在当前安全键位范围内。"
+    end
+    local macroDiag = type(entry.macroDiagnostics) == "table" and entry.macroDiagnostics[1] or nil
+    if type(macroDiag) == "table" then
+        local detail = "槽位=" .. tostring(macroDiag.slot or "-")
+            .. "，键位=" .. tostring(macroDiag.rawBinding or "无")
+            .. "，身份=" .. tostring(macroDiag.macroIdentitySource or "action_info_id")
+            .. "#" .. tostring(macroDiag.actionInfoMacroIndex or macroDiag.resolvedMacroIndex or "-")
+            .. "，查找=" .. tostring(macroDiag.lookupSource or macroDiag.identityFailureReason or macroDiag.failureReason or "无")
+        if macroDiag.actionInfoMacroName or macroDiag.macroName or macroDiag.resolvedSpellTokenCount then
+            detail = detail .. "，宏名=" .. tostring(macroDiag.actionInfoMacroName or macroDiag.macroName or "-")
+                .. "，读取=" .. tostring(macroDiag.actionInfoIdReadAttempts or 0)
+                .. "，令牌SpellID=" .. tostring(macroDiag.resolvedSpellTokenCount or 0)
+        end
+        return name .. "：存在未匹配宏候选（" .. detail .. "）。"
+    end
+    return name .. "：未找到当前可见默认动作条或可解析宏绑定。"
+end
+
+local function reactionBindingGroupText(entries, role)
+    local lines = {}
+    for _, entry in ipairs(entries or {}) do
+        if role == nil or entry.role == role then lines[#lines + 1] = reactionBindingEntryText(entry) end
+    end
+    return #lines > 0 and table.concat(lines, "\n") or "当前职业没有该类预置技能。"
+end
+
+local function formatInterruptBindingState()
+    local snapshot = reactionBindingSnapshot()
+    if not snapshot then return "P2 动作条/宏识别模块未加载。" end
+    return "来源：当前可见默认动作条与已有宏（只读，缓存 #" .. tostring(snapshot.cacheGeneration or "-") .. "）\n"
+        .. reactionBindingGroupText(snapshot.interrupt)
+end
+
+local function formatControlBindingState()
+    local snapshot = reactionBindingSnapshot()
+    if not snapshot then return "P2 动作条/宏识别模块未加载。" end
+    return "来源：当前可见默认动作条与已有宏（只读，缓存 #" .. tostring(snapshot.cacheGeneration or "-") .. "）\n"
+        .. "单体控制：\n" .. reactionBindingGroupText(snapshot.control, "single")
+        .. "\n群体控制：\n" .. reactionBindingGroupText(snapshot.control, "aoe")
+end
+
+-- P3.2 exposes only scalar, secret-safe observer facts. This makes a failed
+-- live highlight diagnosable in-game without logging spell names, macro bodies
+-- or protected cast values.
+local function formatReactionDiagnostics(reaction)
+    reaction = type(reaction) == "table" and reaction or {}
+    local diag = type(reaction.diagnostics) == "table" and reaction.diagnostics or {}
+    local target = diag.targetExists == true and "存在" or "无目标"
+    local hostile = diag.targetHostile == true and "敌对" or "非敌对/未知"
+    local alive = diag.targetAlive == true and "存活" or "死亡/未知"
+    local cast = diag.targetCastActive == true and "读条中" or "未读条"
+    local interrupt = ({ interruptible = "可打断", not_interruptible = "不可打断", unknown = "钢条状态未知" })[diag.targetInterruptState] or "钢条状态未知"
+    local evidence = tostring(diag.targetCastEvidence or "无")
+    local arity = diag.targetCastArity and ("，API返回=" .. tostring(diag.targetCastArity)) or ""
+    local native = diag.targetNativeCastbar == true and ("，原生施法条=" .. tostring(diag.targetNativeCastbarSource or "已命中")) or ""
+    local nativeState = diag.targetNativeInterruptibilityEvidence and ("，钢条证据=" .. tostring(diag.targetNativeInterruptibilityEvidence)) or ""
+    local shield = diag.targetNativeShieldKnown == true
+        and (diag.targetNativeShieldVisible == true and "，可见盾=是" or "，可见盾=否")
+        or ""
+    local shieldSource = diag.targetNativeShieldSource and ("，盾组件=" .. tostring(diag.targetNativeShieldSource)) or ""
+    local continuity = diag.targetCastContinuity and ("，连续性=" .. tostring(diag.targetCastContinuity)) or ""
+    local reconcile = diag.reconciledTargetCast == true and "，已用监控回退" or ""
+    local mapping = diag.bindingsAvailable == true and "P2映射已加载" or "P2映射暂不可用（P3仅提示回退）"
+    local auto = type(reaction.auto) == "table" and reaction.auto or {}
+    local autoText = "P4自动打断：" .. tostring(auto.state or "未初始化")
+        .. " / " .. tostring(auto.reason or "-")
+        .. (auto.source and (" / " .. tostring(REACTION_TARGET_LABELS[auto.source] or auto.source)) or "")
+        .. (auto.confirmationReason and (" / 判定=" .. tostring(auto.confirmationReason)) or "")
+        .. (auto.eventEvidence and (" / 事件=" .. tostring(auto.eventEvidence)) or "")
+        .. (auto.routeReason and (" / 路由=" .. tostring(auto.routeReason)) or "")
+        .. (auto.routeRefresh and (" / 重扫=" .. tostring(auto.routeRefresh)) or "")
+        .. (auto.nativeEvidence and (" / 原生=" .. tostring(auto.nativeEvidence)) or "")
+        .. ((tonumber(auto.nativeVisualSamples) or 0) > 0 and (" / 视觉采样=" .. tostring(auto.nativeVisualSamples) .. "/2") or "")
+        .. (auto.burstBlocked == true and " / Burst占用" or "")
+    return "P3 目标观测：" .. target .. " / " .. hostile .. " / " .. alive
+        .. "\n读条：" .. cast .. " / " .. interrupt
+        .. "\n证据：" .. evidence .. arity .. native .. nativeState .. shield .. shieldSource .. continuity .. reconcile
+        .. "\n" .. mapping
+        .. "\n" .. autoText
+end
+
 local function compactToggleGlyph(status)
     -- Channeling / empowering retain the user's armed intent. Showing II keeps
     -- the button truthful: clicking it records a manual pause after the cast
@@ -1119,6 +1347,7 @@ function ControlPanel:UpdateInputStatus()
     local advisory = snapshot.advisory or {}
     local interrupt = snapshot.interrupt or {}
     local defense = snapshot.defensives or {}
+    local reaction = snapshot.reaction or {}
 
     local compactStatus = self:GetCompactStatus()
     setLabel("headerState", "状态：" .. compactStatus.label .. "  ·  " .. tostring(context.class or "-") .. " / " .. tostring(context.specName or "未知专精"))
@@ -1154,10 +1383,26 @@ function ControlPanel:UpdateInputStatus()
     setLabel("burstState", "状态：" .. tostring((advisory.burst or {}).state or "等待")
         .. "  ·  配置：" .. tostring((advisory.burst or {}).profileKey or "当前专精暂无")
         .. "\n说明：" .. tostring((advisory.burst or {}).notice or "爆发模块只读"))
+    local reactionSelected = type(reaction.selected) == "table" and reaction.selected or nil
+    local reactionItem = reactionSelected and reactionSelected.item or nil
+    local reactionAuto = type(reaction.auto) == "table" and reaction.auto or {}
+    local reactionText = reaction.active == true
+        and ("P3 高亮：" .. tostring(reaction.state or "候选") .. "  ·  " .. tostring(reactionItem and reactionItem.spellName or "无")
+            .. "\n说明：" .. tostring(reaction.notice or "只读候选"))
+        or ("P3 监测：" .. tostring(reaction.state or "monitoring") .. "  ·  " .. tostring(reaction.notice or "等待可打断或可控制读条"))
+    reactionText = reactionText .. "\nP4 自动打断：" .. tostring(reactionAuto.state or "未初始化")
+        .. "  ·  " .. tostring(reactionAuto.reason or "-")
+        .. (reactionAuto.confirmationReason and ("  ·  判定=" .. tostring(reactionAuto.confirmationReason)) or "")
+        .. (reactionAuto.routeReason and ("  ·  路由=" .. tostring(reactionAuto.routeReason)) or "")
+        .. (reactionAuto.routeRefresh and ("  ·  重扫=" .. tostring(reactionAuto.routeRefresh)) or "")
     setLabel("interruptState", "打断：" .. tostring(interrupt.state or "monitoring")
         .. "  ·  建议：" .. tostring(interrupt.suggestion and interrupt.suggestion.spellName or "无")
         .. "\n控制：" .. tostring((advisory.control or {}).state or "monitoring")
-        .. "  ·  " .. tostring((advisory.control or {}).notice or "等待目标读条"))
+        .. "  ·  " .. tostring((advisory.control or {}).notice or "等待目标读条")
+        .. "\n" .. reactionText
+        .. "\n" .. formatReactionDiagnostics(reaction))
+    setLabel("interruptBindingState", formatInterruptBindingState())
+    setLabel("controlBindingState", formatControlBindingState())
     setLabel("defenseState", "防御：" .. tostring(defense.state or "monitoring")
         .. "  ·  配置：" .. tostring(defense.profileKey or "-")
         .. "\n来源：" .. tostring(defense.profileSource or "-")
@@ -1198,7 +1443,10 @@ function ControlPanel:UpdateInputStatus()
             .. "\n专精：" .. tostring(assignments[keys.spec] or "未指定")
     end)())
 
-    for _, refresh in ipairs(controls) do pcall(refresh) end
+    -- Only active-page controls need periodic synchronization. Hidden pages
+    -- refresh on first show and after their own user actions, avoiding needless
+    -- list/row rebuild work and focus flicker across the entire settings center.
+    refreshControls(activePage)
 end
 
 local function buildTextStyleSection(pane, style, label, y, options)
@@ -1208,12 +1456,9 @@ local function buildTextStyleSection(pane, style, label, y, options)
     createChoice(pane, "字体", RIGHT_X, y, 160, {
         { value = "normal", label = "标准" }, { value = "highlight", label = "高亮" }, { value = "disable", label = "弱化" },
     }, function() return style.fontPreset end, function(value) style.fontPreset = value end)
-    if options.cooldownMode == true then
-        y = y - 38
-        createChoice(pane, "CD 数字", 14, y, 160, {
-            { value = "auto", label = "自动" }, { value = "duration", label = "原生" }, { value = "custom", label = "HUD" },
-        }, function() return style.mode or "auto" end, function(value) style.mode = value end)
-    end
+    -- CD digits are uniformly rendered by the HUD badge. The old native-mode
+    -- picker was removed because DurationObject uses a separate MM:SS formatter
+    -- and would bypass the current module's font/position settings.
     y = y - 38
     createNumberStepper(pane, "字号", 14, y, 64, function() return style.fontSize end, function(value) style.fontSize = value end, 1, 8, 30, "")
     createNumberStepper(pane, "缩放", RIGHT_X, y, 64, function() return math.floor(style.scale * 100 + 0.5) end, function(value) style.scale = value / 100 end, 10, 60, 200, "%")
@@ -1239,7 +1484,7 @@ local function buildIconStyleEditor(pane, moduleKey, title, y)
     y = y - 48
     y = buildTextStyleSection(pane, style.keyLabel, "按键标签", y)
     y = buildTextStyleSection(pane, style.chargeLabel, "充能次数", y)
-    y = buildTextStyleSection(pane, style.cooldownText, "CD 时间", y, { cooldownMode = true })
+    y = buildTextStyleSection(pane, style.cooldownText, "CD 时间（HUD 统一秒数）", y)
     y = buildTextStyleSection(pane, style.stateText, "状态标签（施法 / 暂停等）", y)
 
     y = createSection(pane, "图标外观", y)
@@ -1296,6 +1541,10 @@ local function buildIconStyleEditor(pane, moduleKey, title, y)
     style.effects = type(style.effects) == "table" and style.effects or {}
     createCheckbox(pane, "启用动态光效", 14, y, function() return style.effects.enabled ~= false end, function(value) style.effects.enabled = value end,
         "使用暴雪图集做显示层效果。所有效果只反映当前卡片状态，不改推荐、按键绑定、TEAP 或 TEK。")
+    -- The master toggle occupies this line by itself.  Start the effect matrix
+    -- on the next row; previously the first effect checkbox shared the exact
+    -- same anchor and overlapped on every module page.
+    y = y - 34
 
     local effectRows = {
         main = { { "主推荐跑马边框", "marching" }, { "Proc 光效", "proc" }, { "按键就绪闪烁", "hotkeyFlash" }, { "引导条填充", "channelFill" } },
@@ -1482,8 +1731,8 @@ local function buildMain(pane)
     createReadout(pane, "mainState", "当前主推荐状态", 14, y, 720, "GameFontHighlightSmall")
 end
 
-local function buildBurst(pane)
-    local y = buildIconStyleEditor(pane, "burst", "爆发", -12)
+local function buildBurstSettings(pane)
+    local y = -12
     local tactics = select(1, ensureTactics())
     y = createSection(pane, "爆发逻辑", y)
     createCheckbox(pane, "启用爆发窗口辅助", 14, y, function() return tactics.burstEnabled end, function(value) tactics.burstEnabled = value end,
@@ -1491,59 +1740,163 @@ local function buildBurst(pane)
     createCheckbox(pane, "显示爆发候选栏", RIGHT_X, y, function() return tactics.burstShowCandidates end, function(value) tactics.burstShowCandidates = value end)
     y = y - 38
 
-    y = createSection(pane, "自动爆发测试（仅窗口技能 + 注入技能）", y)
-    createCheckbox(pane, "启用自动爆发", 14, y, function() return tactics.autoBurstEnabled == true end, function(value) tactics.autoBurstEnabled = value end,
-        "必须同时处于“运行中”并且当前官方推荐首次命中窗口技能。第一阶段只接管一条当前专精规则，不包含饰品、药水或组合宏。")
-    createCheckbox(pane, "完整调试日志", RIGHT_X, y, function() return tactics.autoBurstDebug == true end, function(value) tactics.autoBurstDebug = value end)
-    y = y - 38
-    createChoice(pane, "注入顺序", 14, y, 230, {
-        { value = "pre", label = "前置：注入 → 窗口" }, { value = "post", label = "后置：窗口 → 注入" },
-    }, function() return tactics.autoBurstDirection end, function(value) tactics.autoBurstDirection = value end)
-    createChoice(pane, "联动模式", RIGHT_X, y, 230, {
-        { value = "simple", label = "简易：注入不可用可跳过" }, { value = "focused", label = "集中：两步均就绪才启动" },
-    }, function() return tactics.autoBurstMode end, function(value) tactics.autoBurstMode = value end)
-    createText(pane, "GameFontDisableSmall", 14, y - 32, 720,
-        "每轮只派发一个动作；占 GCD 技能会在客户端预输入窗口内单次发送，随后等待技能专属 CD 或充能确认。自动爆发等待确认、软暂停或等待窗口推荐离开期间会发送非派发 TEAP 帧。")
-    y = y - 68
-
-    y = createSection(pane, "Phase 1 测试规则（推荐显式填写）", y)
-    createText(pane, "GameFontDisableSmall", 14, y, 720,
-        "“官方窗口技能”必须是暴雪官方推荐实际会给出的触发锚点；“注入技能”是 TE 要在其前或后插入的技能。两个 ID 必须同时填写；空白时才会使用当前爆发列表首项。")
-    y = y - 34
-    local windowBox = createEditBox(pane, "官方窗口 SpellID", LEFT_X, y, 196, tostring(tactics.autoBurstWindowSpellID or 0))
-    local injectionBox = createEditBox(pane, "注入 SpellID", RIGHT_X, y, 196, tostring(tactics.autoBurstInjectionSpellID or 0))
-    y = y - 36
-    createActionButton(pane, "保存测试规则", LEFT_X, y, 146, function()
-        local windowSpellID = math.max(0, math.floor(tonumber(windowBox:GetText()) or 0))
-        local injectionSpellID = math.max(0, math.floor(tonumber(injectionBox:GetText()) or 0))
-        if (windowSpellID == 0) ~= (injectionSpellID == 0) then
-            panelStatus("窗口与注入 SpellID 必须同时填写，或同时清空。")
-            return
-        end
-        tactics.autoBurstWindowSpellID = windowSpellID
-        tactics.autoBurstInjectionSpellID = injectionSpellID
-        windowBox:SetText(tostring(windowSpellID))
-        injectionBox:SetText(tostring(injectionSpellID))
-        panelStatus(windowSpellID > 0 and "自动爆发测试规则已保存。" or "已清空显式规则；将按下方设置决定是否使用爆发列表首项。")
-        ControlPanel:ApplyVisuals(true)
+    y = createSection(pane, "自动爆发", y)
+    createCheckbox(pane, "启用自动爆发", 14, y, function() return tactics.autoBurstEnabled == true end, function(value)
+        tactics.autoBurstEnabled = value == true
+    end, "仅在系统处于运行状态、官方推荐命中当前专精窗口技能、且顺序中的可选步骤通过真实绑定与冷却预检时创建计划。普通官方推荐不会因此获得派发资格。")
+    createCheckbox(pane, "完整调试日志", RIGHT_X, y, function() return tactics.autoBurstDebug == true end, function(value)
+        tactics.autoBurstDebug = value == true
     end)
-    createCheckbox(pane, "未填写 ID 时使用爆发列表首项", 176, y, function() return tactics.autoBurstUseProfileFallback == true end, function(value) tactics.autoBurstUseProfileFallback = value end,
-        "仅用于兼容旧列表。若官方推荐不会显示该首项，自动爆发不会触发；请优先填写上方两个 SpellID。")
     y = y - 38
+    createChoice(pane, "组装模式", 14, y, 270, {
+        { value = "simple", label = "简易：排除 CD / 未知步骤" },
+        { value = "focused", label = "集中：任一启用步骤不可用则不组装" },
+    }, function() return tactics.autoBurstMode end, function(value)
+        tactics.autoBurstMode = value == "focused" and "focused" or "simple"
+    end, "预检发生在计划创建前。共享 GCD 不视为自身 CD；明确自身 CD、冷却读取未知、无真实绑定、未装备或装备身份变化的可选步骤不会被写入本轮计划。")
+    createText(pane, "GameFontDisableSmall", RIGHT_X, y - 3, 360,
+        "顺序中的窗口技能固定存在。注入和饰品只作为受控 Burst 步骤，不会放开普通脱战或普通官方技能派发。")
+    y = y - 58
+
+    y = createSection(pane, "爆发顺序（当前专精）", y)
+    createText(pane, "GameFontDisableSmall", 14, y, 720,
+        "窗口出现后，TE 先按此顺序读取每个已启用可选步骤的真实绑定、自身 CD 与装备状态；简易模式只保留可用步骤，集中模式要求全部已启用步骤均可用。窗口之前存在实际步骤时，才会执行四帧 observation-only handoff。")
+    y = y - 50
+
+    local function sequenceBurstContext()
+        return (TE.Context and TE.Context:GetPlayer()) or {}
+    end
+    local function sequenceSpellLabel(spellID)
+        spellID = tonumber(spellID)
+        local name
+        if spellID and C_Spell and type(C_Spell.GetSpellName) == "function" then
+            local ok, value = pcall(C_Spell.GetSpellName, spellID)
+            if ok and type(value) == "string" and value ~= "" then name = value end
+        end
+        if not name and spellID and type(GetSpellInfo) == "function" then
+            local ok, value = pcall(GetSpellInfo, spellID)
+            if ok and type(value) == "string" and value ~= "" then name = value end
+        end
+        return (name or "SpellID") .. " " .. tostring(spellID or "-")
+    end
+    local function sequenceEntryLabel(entry)
+        if not entry then return "" end
+        if entry.category == "window" then
+            return "窗口技能：" .. sequenceSpellLabel(entry.spellID) .. "（固定）"
+        end
+        if entry.category == "trinket" then
+            return "饰品 " .. tostring(entry.inventorySlot or "?") .. "：实时装备栏步骤"
+        end
+        return "注入技能 " .. tostring(entry.slotIndex or "?") .. "：" .. sequenceSpellLabel(entry.spellID)
+    end
+    local sequenceRows = {}
+    local refreshSequenceRows
+    for rowIndex = 1, 6 do
+        local row = { index = rowIndex }
+        row.label = createText(pane, "GameFontHighlightSmall", 14, y - 4, 332, "")
+        row.up = createActionButton(pane, "上", 354, y, 38, function()
+            if not row.key or not (TE.BurstProfiles and TE.BurstProfiles.MoveAutoBurstStep) then return end
+            local ok, reason = TE.BurstProfiles:MoveAutoBurstStep(sequenceBurstContext(), row.key, -1)
+            if not ok then panelStatus("爆发顺序未调整：" .. tostring(reason)) end
+            if refreshSequenceRows then refreshSequenceRows() end
+            ControlPanel:ApplyVisuals(false)
+        end)
+        row.down = createActionButton(pane, "下", 398, y, 38, function()
+            if not row.key or not (TE.BurstProfiles and TE.BurstProfiles.MoveAutoBurstStep) then return end
+            local ok, reason = TE.BurstProfiles:MoveAutoBurstStep(sequenceBurstContext(), row.key, 1)
+            if not ok then panelStatus("爆发顺序未调整：" .. tostring(reason)) end
+            if refreshSequenceRows then refreshSequenceRows() end
+            ControlPanel:ApplyVisuals(false)
+        end)
+        row.toggle = createActionButton(pane, "启用", 444, y, 62, function()
+            if not row.key or row.fixed or not (TE.BurstProfiles and TE.BurstProfiles.SetAutoBurstStepEnabled) then return end
+            local ok, reason = TE.BurstProfiles:SetAutoBurstStepEnabled(sequenceBurstContext(), row.key, not row.enabled)
+            if not ok then panelStatus("步骤状态未调整：" .. tostring(reason)) end
+            if refreshSequenceRows then refreshSequenceRows() end
+            ControlPanel:ApplyVisuals(false)
+        end)
+        row.fixedLabel = createText(pane, "GameFontDisableSmall", 516, y - 4, 88, "固定")
+        sequenceRows[#sequenceRows + 1] = row
+        y = y - 34
+    end
+    refreshSequenceRows = function()
+        local sequence
+        if TE.BurstProfiles and type(TE.BurstProfiles.GetAutoBurstSequence) == "function" then
+            sequence = select(1, TE.BurstProfiles:GetAutoBurstSequence(sequenceBurstContext()))
+        end
+        local entries = sequence and sequence.entries or {}
+        for index, row in ipairs(sequenceRows) do
+            local entry = entries[index]
+            row.key = entry and entry.key or nil
+            row.enabled = entry and entry.enabled == true or false
+            row.fixed = entry and entry.fixed == true or false
+            row.label:SetShown(entry ~= nil)
+            row.up:SetShown(entry ~= nil and index > 1)
+            row.down:SetShown(entry ~= nil and index < #entries)
+            row.toggle:SetShown(entry ~= nil and row.fixed ~= true)
+            row.fixedLabel:SetShown(entry ~= nil and row.fixed == true)
+            if entry then
+                row.label:SetText(sequenceEntryLabel(entry) .. (entry.enabled == true and "" or "（已停用）"))
+                row.toggle.text:SetText(row.enabled and "停用" or "启用")
+            end
+        end
+    end
+    registerControl(refreshSequenceRows)
+    refreshSequenceRows()
+    y = y - 8
+    createText(pane, "GameFontDisableSmall", 14, y, 720,
+        "注入技能 1–3 由本页下方“注入技能”列表的当前专精已启用前 3 项自动匹配。上方只控制参与、停用和顺序；要更换 SpellID，请在下方列表调整。饰品 13 / 14 固定代表装备栏，计划创建时才锁定本轮实际 ItemID。")
+    y = y - 40
+
+    local function getSequenceEntry(key)
+        if not (TE.BurstProfiles and type(TE.BurstProfiles.GetAutoBurstSequence) == "function") then return nil end
+        local sequence = select(1, TE.BurstProfiles:GetAutoBurstSequence(sequenceBurstContext()))
+        for _, entry in ipairs(sequence and sequence.entries or {}) do
+            if entry.key == key then return entry end
+        end
+        return nil
+    end
+    local function setTrinketOffGCD(key, value)
+        if not (TE.BurstProfiles and type(TE.BurstProfiles.SetAutoBurstTrinketOffGCD) == "function") then return end
+        local ok, reason = TE.BurstProfiles:SetAutoBurstTrinketOffGCD(sequenceBurstContext(), key, value == true)
+        if not ok then panelStatus("饰品 GCD 设置未调整：" .. tostring(reason)) end
+    end
+    createCheckbox(pane, "饰品 13 已确认脱 GCD", 14, y, function()
+        local entry = getSequenceEntry("trinket:13")
+        return entry and entry.offGCDExplicit == true
+    end, function(value) setTrinketOffGCD("trinket:13", value) end,
+        "仅在该饰品经实测确认不会触发公共冷却时勾选。TE 不会根据图标、物品类型或宏内容自行推断脱 GCD。")
+    createCheckbox(pane, "饰品 14 已确认脱 GCD", RIGHT_X, y, function()
+        local entry = getSequenceEntry("trinket:14")
+        return entry and entry.offGCDExplicit == true
+    end, function(value) setTrinketOffGCD("trinket:14", value) end,
+        "仅在该饰品经实测确认不会触发公共冷却时勾选。未勾选的饰品仍可参与序列，但会按普通 GCD 步骤在后续帧重新验证。")
+    y = y - 54
+
     createReadout(pane, "autoBurstRuntime", "自动爆发诊断", LEFT_X, y, 720, "GameFontHighlightSmall")
     registerControl(function()
         local data = TE.AutoBurst and type(TE.AutoBurst.GetDiagnostics) == "function" and TE.AutoBurst:GetDiagnostics() or nil
         if type(data) ~= "table" then setLabel("autoBurstRuntime", "AutoBurst 未加载") return end
         local rule = data.resolvedRule or {}
         local decision = data.lastDecision or {}
-        local source = rule.source or (data.ruleReason and "无有效规则") or "未解析"
-        setLabel("autoBurstRuntime", "规则=" .. tostring(source)
-            .. " 窗口=" .. tostring(rule.windowSpellID or "-")
-            .. " 注入=" .. tostring(rule.injectionSpellID or "-")
+        local steps = rule.steps or {}
+        local labels = {}
+        for _, step in ipairs(steps) do
+            if step.category == "window" then
+                labels[#labels + 1] = "窗口"
+            elseif step.actionKind == "inventory" then
+                labels[#labels + 1] = "饰品" .. tostring(step.inventorySlot or "?")
+            else
+                labels[#labels + 1] = "注入" .. tostring(step.spellID or "?")
+            end
+        end
+        setLabel("autoBurstRuntime", "规则=" .. tostring(rule.profileKey or data.ruleReason or "未解析")
+            .. " · 顺序=" .. (#labels > 0 and table.concat(labels, "→") or "无")
+            .. " · 模式=" .. tostring(data.mode or "-")
             .. " · 最近=" .. tostring(decision.reason or data.ruleReason or "等待官方窗口")
             .. " · 计划=" .. tostring(data.plan and data.plan.state or "IDLE"))
     end)
-    y = y - 70
+    y = y - 94
 
     createChoice(pane, "爆发策略", 14, y, 230, {
         { value = "immediate", label = "立即提示" }, { value = "align", label = "对齐主推荐" }, { value = "hold", label = "保留爆发" },
@@ -1555,7 +1908,7 @@ local function buildBurst(pane)
     createChoice(pane, "冷却中图标", 14, y, 230, {
         { value = "gray", label = "保留并显示倒计时" }, { value = "hide", label = "冷却时隐藏" },
     }, function() return tactics.burstCooldownDisplay end, function(value) tactics.burstCooldownDisplay = value end,
-        "保留时，只会显示已在当前有效动作条绑定、且确实处于自身冷却的爆发技能。图标由游戏原生转盘与倒计时渲染，不会显示“CD”占位字。")
+        "保留时只显示真实自身 CD；共享 GCD 不会作为爆发技能 CD。CD 数字默认遵从“样式设置”的 HUD 字体、颜色、位置。")
     createNumberStepper(pane, "后续候选数量", RIGHT_X, y, 64, function() return tactics.burstMaxCandidates end, function(value) tactics.burstMaxCandidates = value end, 1, 0, 4, "")
     createText(pane, "GameFontDisableSmall", RIGHT_X, y - 32, 360, "第 1 个图标始终保留爆发窗口技能；此项只控制其后的注入技能、饰品、药水和种族技能数量。")
     y = y - 38
@@ -1582,8 +1935,8 @@ local function buildBurst(pane)
         refreshTacticalBoard()
     end)
     createText(pane, "GameFontDisableSmall", 14, y - 38, 720,
-        "饰品、药水和种族技能只有同时满足已配置、当前动作条可解析到真实键位、且可用性状态可读取时才进入爆发后续队列；它们始终为只读 HUD 卡片。")
-    y = y - 96
+        "候选栏只负责 HUD 提示；不会改变自动爆发顺序或输入权限。饰品/药水/种族需已配置且可解析真实键位。")
+    y = y - 72
 
     y = createSection(pane, "当前专精覆盖", y)
     local override, profileKey = getCurrentBurstOverride()
@@ -1592,9 +1945,9 @@ local function buildBurst(pane)
     createCheckbox(pane, "允许药水提示", 14, y - 34, function() return override.allowPotionHint ~= false end, function(value) override.allowPotionHint = value end)
     createCheckbox(pane, "允许种族提示", RIGHT_X, y - 34, function() return override.allowRacialHint ~= false end, function(value) override.allowRacialHint = value end)
     createCheckbox(pane, "允许主推荐状态标记", 14, y - 68, function() return override.allowBurstOverlay ~= false end, function(value) override.allowBurstOverlay = value end)
-    createText(pane, "GameFontDisableSmall", 14, y - 110, 720,
-        "当前专精键：" .. tostring(profileKey) .. "。立即提示：战斗中有敌对目标即可提示已就绪窗口技能；对齐主推荐：还需当前官方主推荐存在；保留爆发：不主动提示窗口技能。候选栏始终只读；仅上方“自动爆发测试”可在严格双开关、单规则和 TEAP/TEK 门禁下临时接管下一步。")
-    y = y - 164
+    createText(pane, "GameFontDisableSmall", 14, y - 108, 720,
+        "当前专精：" .. tostring(profileKey) .. "。上方候选仅显示；自动爆发只使用本专精的“爆发顺序”，并始终受现有 TEAP/TEK 门禁约束。")
+    y = y - 150
 
     local function currentBurstContext()
         return (TE.Context and TE.Context:GetPlayer()) or {}
@@ -1626,9 +1979,9 @@ local function buildBurst(pane)
         return TE.BurstProfiles:RestoreDefaults(currentBurstContext())
     end
 
-    y = createSpellPriorityEditor(pane, "爆发窗口技能", "该列表的首个当前专精已知、且在当前有效动作条有真实键位的技能固定占据爆发队列第 1 格。常驻模式会保留其冷却状态；该卡片始终只读，BindingToken=0。", y, {
+    y = createSpellPriorityEditor(pane, "官方窗口候选库", "首个已启用、已知且有真实键位的技能是自动爆发窗口锚点。上方窗口步骤固定存在，可调整位置。", y, {
         maxRows = 5,
-        enabledLabel = "触发优先级",
+        enabledLabel = "窗口优先级",
         removeLabel = "停用",
         getEntries = function() return editableBurstEntries("trigger") end,
         move = function(spellID, delta) return burstMove("trigger", spellID, delta) end,
@@ -1639,9 +1992,9 @@ local function buildBurst(pane)
         showRestore = false,
     })
 
-    y = createSpellPriorityEditor(pane, "爆发后续技能", "这些技能位于爆发窗口技能之后。常驻模式会按注入技能、饰品、药水、种族技能顺序保留可解析的卡片；不会压入主键官方推荐，也不会进入 TEAP / TEK 输入链路。", y, {
+    y = createSpellPriorityEditor(pane, "注入技能", "当前专精已启用的前 3 项可加入上方爆发顺序。此处维护 SpellID 和优先级；上方只调参与和位置。", y, {
         maxRows = 6,
-        enabledLabel = "触发优先级",
+        enabledLabel = "注入优先级",
         removeLabel = "停用",
         getEntries = function() return editableBurstEntries("injection") end,
         move = function(spellID, delta) return burstMove("injection", spellID, delta) end,
@@ -1650,36 +2003,290 @@ local function buildBurst(pane)
         add = function(spellID) return burstAdd("injection", spellID) end,
         addLabel = "添加注入技能",
         restore = burstRestore,
-        resetLabel = "恢复当前专精爆发默认（两列）",
+        resetLabel = "恢复当前专精全部爆发默认",
     })
 
     createReadout(pane, "burstState", "爆发状态机", 14, y, 720, "GameFontHighlightSmall")
 end
 
-local function buildInterrupt(pane)
-    local y = buildIconStyleEditor(pane, "interrupt", "打断与控制", -12)
+local function buildBurst(pane)
+    local tabY = -12
+    local settingsButton = createActionButton(pane, "爆发设置", 14, tabY, 128, function()
+        ControlPanel:SetBurstSubpage("settings")
+    end)
+    local styleButton = createActionButton(pane, "样式设置", 152, tabY, 128, function()
+        ControlPanel:SetBurstSubpage("style")
+    end)
+    createText(pane, "GameFontDisableSmall", 300, tabY - 4, 400,
+        "设置负责当前专精的爆发顺序与注入规则；样式只控制爆发图标的文字、转盘、边框和动画。")
+    createLine(pane, 14, -46, 692)
+
+    local settingsPane = CreateFrame("Frame", nil, pane)
+    settingsPane:SetPoint("TOPLEFT", pane, "TOPLEFT", 0, -56)
+    settingsPane:SetSize(CONTENT_PANE_WIDTH, CONTENT_PANE_HEIGHT - 56)
+    local stylePane = CreateFrame("Frame", nil, pane)
+    stylePane:SetPoint("TOPLEFT", pane, "TOPLEFT", 0, -56)
+    stylePane:SetSize(CONTENT_PANE_WIDTH, CONTENT_PANE_HEIGHT - 56)
+
+    buildBurstSettings(settingsPane)
+    buildIconStyleEditor(stylePane, "burst", "爆发", -12)
+    createText(stylePane, "GameFontDisableSmall", 14, -2360, 720,
+        "样式设置不会改变爆发候选来源、当前专精爆发顺序、动作条绑定或派发资格。")
+
+    burstSubpages = {
+        settings = { pane = settingsPane, button = settingsButton },
+        style = { pane = stylePane, button = styleButton },
+    }
+    ControlPanel:SetBurstSubpage(root().burstSubpage)
+end
+
+local REACTION_TARGET_LABELS = {
+    target = "当前目标",
+    focus = "焦点目标",
+    mouseover = "鼠标指向目标",
+}
+local REACTION_TARGET_ORDER = { "target", "focus", "mouseover" }
+
+-- The normalizer owns production defaults. This small UI fallback only keeps
+-- the settings page readable if a third-party load order invokes it before
+-- Config/Normalize.lua; it does not create any automatic input behavior.
+local function ensureAutoReactionSettings(tactics)
+    tactics.autoReaction = type(tactics.autoReaction) == "table" and tactics.autoReaction or {}
+    local reaction = tactics.autoReaction
+    reaction.schema = 1
+    for _, kind in ipairs({ "interrupt", "control" }) do
+        reaction[kind] = type(reaction[kind]) == "table" and reaction[kind] or {}
+        local config = reaction[kind]
+        if config.enabled == nil then config.enabled = false end
+        if kind == "control" and config.aoeEnabled == nil then config.aoeEnabled = false end
+        config.targetOrder = type(config.targetOrder) == "table" and config.targetOrder or { "target", "focus", "mouseover" }
+        config.targetEnabled = type(config.targetEnabled) == "table" and config.targetEnabled or {}
+        if config.targetEnabled.target == nil then config.targetEnabled.target = true end
+        if config.targetEnabled.focus == nil then config.targetEnabled.focus = false end
+        if config.targetEnabled.mouseover == nil then config.targetEnabled.mouseover = false end
+    end
+    return reaction
+end
+
+local function normalizeReactionOrderInPlace(config)
+    local out, seen = {}, {}
+    for _, source in ipairs(type(config.targetOrder) == "table" and config.targetOrder or {}) do
+        if REACTION_TARGET_LABELS[source] and not seen[source] then
+            out[#out + 1] = source
+            seen[source] = true
+        end
+    end
+    for _, source in ipairs(REACTION_TARGET_ORDER) do
+        if not seen[source] then
+            out[#out + 1] = source
+            seen[source] = true
+        end
+    end
+    config.targetOrder = out
+    return out
+end
+
+local function moveReactionTarget(config, source, delta)
+    local order = normalizeReactionOrderInPlace(config)
+    local index
+    for i, value in ipairs(order) do
+        if value == source then index = i break end
+    end
+    if not index then return false, "目标来源不存在" end
+    local nextIndex = index + (tonumber(delta) or 0)
+    if nextIndex < 1 or nextIndex > #order then return false, "已到边界" end
+    order[index], order[nextIndex] = order[nextIndex], order[index]
+    return true
+end
+
+-- Shared editor for the automatic interrupt/control target-source preference.
+-- It only saves order and enablement. P1 does not poll casts, emit a token, or
+-- perform any input action from these controls.
+local function createReactionTargetPriorityEditor(parent, title, description, y, configGetter)
+    y = createSection(parent, title, y)
+    createText(parent, "GameFontDisableSmall", 14, y, 720, description or "")
+    local topY = y - 34
+    local rows = {}
+
+    for index = 1, #REACTION_TARGET_ORDER do
+        local row = { index = index }
+        row.enabled = CreateFrame("CheckButton", nil, parent, "UICheckButtonTemplate")
+        row.enabled:SetPoint("TOPLEFT", parent, "TOPLEFT", 14, topY - (index - 1) * 36 + 2)
+        row.label = createText(parent, "GameFontHighlightSmall", 44, topY - (index - 1) * 36 - 4, 180, "")
+        row.state = createText(parent, "GameFontDisableSmall", 228, topY - (index - 1) * 36 - 4, 88, "")
+        row.up = createActionButton(parent, "上移", 330, topY - (index - 1) * 36, 58, function()
+            if not row.source then return end
+            local ok, reason = moveReactionTarget(configGetter(), row.source, -1)
+            panelStatus(ok and "目标优先级已上移。" or ("无法上移：" .. tostring(reason or "边界")))
+            ControlPanel:ApplyVisuals(false)
+        end)
+        row.down = createActionButton(parent, "下移", 396, topY - (index - 1) * 36, 58, function()
+            if not row.source then return end
+            local ok, reason = moveReactionTarget(configGetter(), row.source, 1)
+            panelStatus(ok and "目标优先级已下移。" or ("无法下移：" .. tostring(reason or "边界")))
+            ControlPanel:ApplyVisuals(false)
+        end)
+        row.enabled:SetScript("OnClick", function(button)
+            if not row.source then return end
+            local config = configGetter()
+            config.targetEnabled = type(config.targetEnabled) == "table" and config.targetEnabled or {}
+            config.targetEnabled[row.source] = button:GetChecked() == true
+            panelStatus((config.targetEnabled[row.source] and "已启用：" or "已停用：") .. tostring(REACTION_TARGET_LABELS[row.source]))
+            ControlPanel:ApplyVisuals(false)
+        end)
+        rows[index] = row
+    end
+
+    local function refresh()
+        local config = configGetter()
+        local order = normalizeReactionOrderInPlace(config)
+        config.targetEnabled = type(config.targetEnabled) == "table" and config.targetEnabled or {}
+        for index, row in ipairs(rows) do
+            local source = order[index]
+            row.source = source
+            local enabled = source and config.targetEnabled[source] == true
+            row.enabled:SetShown(source ~= nil)
+            row.label:SetShown(source ~= nil)
+            row.state:SetShown(source ~= nil)
+            row.up:SetShown(source ~= nil and index > 1)
+            row.down:SetShown(source ~= nil and index < #order)
+            if source then
+                row.enabled:SetChecked(enabled)
+                row.label:SetText(tostring(index) .. ". " .. tostring(REACTION_TARGET_LABELS[source] or source))
+                row.state:SetText(enabled and "已勾选" or "未勾选")
+            end
+        end
+    end
+    registerControl(refresh)
+    refresh()
+    return topY - #REACTION_TARGET_ORDER * 36 - 18
+end
+
+local function buildInterruptSettings(pane)
+    local y = -12
     local tactics = select(1, ensureTactics())
-    y = createSection(pane, "打断逻辑", y)
+    local reaction = ensureAutoReactionSettings(tactics)
+
+    y = createSection(pane, "打断提示", y)
     createCheckbox(pane, "启用打断提示", 14, y, function() return tactics.interruptEnabled end, function(value) tactics.interruptEnabled = value end,
-        "仅展示已经在当前有效动作条中解析到的真实键位。打断提示不会覆盖官方主推荐或进入派发链。")
+        "仅展示已经在当前有效动作条中解析到的真实键位。该显示策略不会覆盖官方主推荐或进入派发链。")
     createChoice(pane, "显示方式", RIGHT_X, y, 240, {
         { value = "always", label = "常驻" }, { value = "cast", label = "目标读条时出现" }, { value = "highlight", label = "可打断时标记" },
     }, function() return tactics.interruptDisplayMode end, function(value) tactics.interruptDisplayMode = value end)
     y = y - 38
     createCheckbox(pane, "目标框 / 姓名板打断提示", LEFT_X, y, function() return select(2, ensureTactics()).showTargetPrompt end, function(value) select(2, ensureTactics()).showTargetPrompt = value end,
         "默认关闭。仅当当前目标正在进行可打断读条、打断技能存在真实动作条键位且当前可用时显示；不继承“打断常驻”模式。")
-    createCheckbox(pane, "启用位移脱险提示", RIGHT_X, y, function() return tactics.mobilityEnabled end, function(value) tactics.mobilityEnabled = value end,
-        "控制位移脱险类只读建议，不影响主键、TEAP 或 TEK。")
+    createText(pane, "GameFontDisableSmall", RIGHT_X, y - 4, 340, "P4 已接入确认可打断读条的自动尝试：仍沿用现有动作条/宏键位和 TEAP→TEK 门禁；控制与群控仍只提示。")
     y = y - 76
-    y = createSection(pane, "控制逻辑", y)
-    createCheckbox(pane, "启用控制提示", LEFT_X, y, function() return tactics.controlEnabled end, function(value) tactics.controlEnabled = value end)
+
+    y = createSection(pane, "P2 · 打断动作条与宏识别", y)
+    createText(pane, "GameFontDisableSmall", 14, y, 720,
+        "复用爆发模块的 ActionBarBindingResolver 与 MacroSemantics：读取当前可见暴雪默认动作条和已有宏，不改宏、不写按键。明确 @focus / @mouseover 路由会单独登记；同技能目标切换宏会保留宏自身目标逻辑，并标为后续自动可按。")
+    createActionButton(pane, "重扫按键 / 宏", 14, y - 36, 144, function() ControlPanel:RefreshActionBar("reaction_p2_interrupt") end)
+    local _, bindingValue = createReadout(pane, "interruptBindingState", "当前打断映射", 14, y - 76, 720, "GameFontHighlightSmall")
+    bindingValue:SetHeight(118)
+    y = y - 220
+
+    y = createSection(pane, "自动打断（P4）", y)
+    createCheckbox(pane, "启用自动打断", 14, y, function() return reaction.interrupt.enabled == true end, function(value)
+        reaction.interrupt.enabled = value == true
+    end, "开启后，仅在战斗内、TE 运行中，且当前读条获得直接 API、单位施法事件或连续两次“真实无盾/原生可打断”确认，并已解析为安全动作条/宏路由时，自动按一次现有打断键位。施法条的 showShield 配置位不参与判定；可见盾、未验证读条、无映射均只高亮。")
+    createText(pane, "GameFontDisableSmall", RIGHT_X, y - 4, 340,
+        "冲突策略：Burst 计划或前窗口捕获尚未结束时，自动打断不派发，仅保留高亮；Burst 结束后才允许下一段确认读条自动尝试。")
+    y = y - 52
+    y = createReactionTargetPriorityEditor(pane, "自动打断目标顺序", "勾选决定未来候选目标来源；上移、下移决定未来扫描顺序。默认仅启用当前目标，焦点和鼠标指向需由你显式勾选。", y, function()
+        return ensureAutoReactionSettings(select(1, ensureTactics())).interrupt
+    end)
+    y = y - 22
+    createReadout(pane, "interruptState", "当前打断 / 控制监控", 14, y, 720, "GameFontHighlightSmall")
+end
+
+local function buildControlSettings(pane)
+    local y = -12
+    local tactics = select(1, ensureTactics())
+    local reaction = ensureAutoReactionSettings(tactics)
+
+    y = createSection(pane, "控制提示", y)
+    createCheckbox(pane, "启用控制提示", LEFT_X, y, function() return tactics.controlEnabled end, function(value) tactics.controlEnabled = value end,
+        "控制候选仍是只读建议。当前版本不会根据该选项自动施放控制技能。")
     createChoice(pane, "显示方式", RIGHT_X, y, 240, {
         { value = "always", label = "常驻" }, { value = "cast", label = "读条时出现" }, { value = "highlight", label = "需要控制时标记" },
     }, function() return tactics.controlDisplayMode end, function(value) tactics.controlDisplayMode = value end)
-    createText(pane, "GameFontDisableSmall", 14, y - 48, 720,
-        "控制候选只在明确的不可打断读条时作为后备显示；目标可被打断时，TE 始终优先显示打断而非控制。控制递减、免控和队友技能不会被猜测为可派发键位。")
-    y = y - 102
-    createReadout(pane, "interruptState", "当前读条监控", 14, y, 720, "GameFontHighlightSmall")
+    y = y - 38
+    createCheckbox(pane, "启用位移脱险提示", LEFT_X, y, function() return tactics.mobilityEnabled end, function(value) tactics.mobilityEnabled = value end,
+        "保留现有位移脱险类只读建议，不影响主键、TEAP 或 TEK。")
+    createText(pane, "GameFontDisableSmall", RIGHT_X, y - 4, 340,
+        "P3 控制候选只处理明确不可打断读条；普通/非精英敌对 NPC 才会进入单体控制观察，可打断读条仍优先打断。")
+    y = y - 76
+
+    y = createSection(pane, "P2 · 单体控制与群控动作条/宏识别", y)
+    createText(pane, "GameFontDisableSmall", 14, y, 720,
+        "沿用爆发模块的宏关联规则。P3 只读识别不可打断钢条、排除精英/稀有精英/世界 Boss，并在可见有效钢条达到 4 个时高亮已有 @cursor 群控宏；仍不自动释放。")
+    createActionButton(pane, "重扫按键 / 宏", 14, y - 36, 144, function() ControlPanel:RefreshActionBar("reaction_p2_control") end)
+    local _, bindingValue = createReadout(pane, "controlBindingState", "当前控制映射", 14, y - 76, 720, "GameFontHighlightSmall")
+    bindingValue:SetHeight(174)
+    y = y - 278
+
+    y = createSection(pane, "自动控制（配置预设）", y)
+    createCheckbox(pane, "启用自动控制", LEFT_X, y, function() return reaction.control.enabled == true end, function(value)
+        reaction.control.enabled = value == true
+    end, "P3 已做只读候选：控制开关不会触发自动施法；P4/P5 才会接入实际打断、单控和群控派发。")
+    createCheckbox(pane, "启用自动群控", RIGHT_X, y, function() return reaction.control.aoeEnabled == true end, function(value)
+        reaction.control.aoeEnabled = value == true
+    end, "P3 会在当前可见姓名板中检测到 4 个及以上有效不可打断读条时高亮群控；本版仍不会自动释放。")
+    y = y - 52
+    createText(pane, "GameFontDisableSmall", 14, y, 720,
+        "已确认策略：群控仅允许已有明确 @cursor 宏时自动释放；无可靠宏、地面落点或目标可控性证据时，只高亮提示，不自动施放。")
+    y = y - 38
+    y = createReactionTargetPriorityEditor(pane, "自动控制目标顺序", "勾选决定未来自动单体控制的目标来源；上移、下移决定扫描顺序。群控使用独立的范围读条候选，不会自动切换目标。", y, function()
+        return ensureAutoReactionSettings(select(1, ensureTactics())).control
+    end)
+    y = y - 26
+    createText(pane, "GameFontDisableSmall", 14, y, 720,
+        "P3 仅完成读条候选与 HUD 高亮：不会新增 BindingToken、不会写 TEAP、不会调用 TEK，也不会改变现有 HUD、标签、CD 或 Burst 序列。")
+end
+
+local function buildInterruptStyleSettings(pane)
+    local y = buildIconStyleEditor(pane, "interrupt", "打断与控制", -12)
+    createText(pane, "GameFontDisableSmall", 14, y, 720,
+        "样式设置只影响现有打断与控制 HUD 图标的文字、转盘、边框和光效；不会改变 P2 按键/宏识别、读条策略、动作条绑定或未来自动化资格。")
+end
+
+local function buildInterrupt(pane)
+    local tabY = -12
+    local interruptButton = createActionButton(pane, "打断设置", 14, tabY, 128, function()
+        ControlPanel:SetInterruptSubpage("interrupt")
+    end)
+    local controlButton = createActionButton(pane, "控制设置", 152, tabY, 128, function()
+        ControlPanel:SetInterruptSubpage("control")
+    end)
+    local styleButton = createActionButton(pane, "样式设置", 290, tabY, 128, function()
+        ControlPanel:SetInterruptSubpage("style")
+    end)
+    createText(pane, "GameFontDisableSmall", 430, tabY - 4, 278,
+        "三页分别管理自动打断、控制预设与共享 HUD 样式；P4 仅自动打断，控制与群控仍保留提示。")
+    createLine(pane, 14, -46, 692)
+
+    local interruptPane = CreateFrame("Frame", nil, pane)
+    interruptPane:SetPoint("TOPLEFT", pane, "TOPLEFT", 0, -56)
+    interruptPane:SetSize(CONTENT_PANE_WIDTH, CONTENT_PANE_HEIGHT - 56)
+    local controlPane = CreateFrame("Frame", nil, pane)
+    controlPane:SetPoint("TOPLEFT", pane, "TOPLEFT", 0, -56)
+    controlPane:SetSize(CONTENT_PANE_WIDTH, CONTENT_PANE_HEIGHT - 56)
+    local stylePane = CreateFrame("Frame", nil, pane)
+    stylePane:SetPoint("TOPLEFT", pane, "TOPLEFT", 0, -56)
+    stylePane:SetSize(CONTENT_PANE_WIDTH, CONTENT_PANE_HEIGHT - 56)
+
+    buildInterruptSettings(interruptPane)
+    buildControlSettings(controlPane)
+    buildInterruptStyleSettings(stylePane)
+
+    interruptSubpages = {
+        interrupt = { pane = interruptPane, button = interruptButton },
+        control = { pane = controlPane, button = controlButton },
+        style = { pane = stylePane, button = styleButton },
+    }
+    ControlPanel:SetInterruptSubpage(root().interruptSubpage)
 end
 
 local function buildDefense(pane)
@@ -1775,8 +2382,51 @@ local function buildMonitor(pane)
     y = y - 126
     y = createSection(pane, "协议与安全", y)
     createReadout(pane, "monitorProtocol", "TEAP / TEK", 14, y, 720, "GameFontHighlightSmall")
-    createText(pane, "GameFontDisableSmall", 14, y - 66, 720,
-        "调试页包含原 TEUI 的动作条、宏、状态、协议与排错入口。战术图标、爆发、打断、防御均为显示层，不能通过此页获得现实按键派发资格。")
+    y = y - 112
+    y = createSection(pane, "/te 命令面板", y)
+    createText(pane, "GameFontDisableSmall", 14, y, 720,
+        "按钮等价于对应 /te 子命令，结果输出到游戏聊天框；不会绕过正常绑定、TEAP 或 TEK 门禁。/te ui 会将设置中心切换到常规页。")
+    y = y - 42
+
+    local function runTE(command)
+        if SlashCmdList and type(SlashCmdList.TACTICECHO) == "function" then
+            SlashCmdList.TACTICECHO(command or "")
+        else
+            safePrint("/te 命令未加载：" .. tostring(command or ""))
+        end
+    end
+    local commands = {
+        { "帮助", "", "/te：显示全部子命令摘要" },
+        { "环境", "context", "/te context：当前职业、专精、战斗环境" },
+        { "官方推荐", "current", "/te current：官方推荐、动作条映射与宏诊断" },
+        { "动作条缓存", "cache", "/te cache：查看 ButtonCache 摘要" },
+        { "刷新缓存", "cache refresh", "/te cache refresh：重扫当前默认动作条" },
+        { "导出映射", "mapping", "/te mapping：保存诊断映射快照" },
+        { "映射状态", "mapping status", "/te mapping status：查看映射导出状态" },
+        { "战术快照", "tactics", "/te tactics：查看只读战术快照" },
+        { "脱战策略", "policy", "/te policy：显示当前脱战策略" },
+        { "脱战保持", "policy keep", "/te policy keep：脱战保持运行" },
+        { "脱战暂停", "policy pause", "/te policy pause：脱战暂停" },
+        { "脱战停止", "policy close", "/te policy close：脱战停止" },
+        { "单次观察", "once", "/te once：仅发送一帧观察，不派发按键" },
+        { "启动运行", "armed", "/te armed：进入自动运行意图" },
+        { "暂停运行", "pause", "/te pause：暂停自动运行" },
+        { "关闭运行", "off", "/te off：关闭动态运行" },
+        { "运行状态", "status", "/te status：查看动态运行状态" },
+        { "打开设置", "ui", "/te ui：切换设置中心" },
+    }
+    local column, row = 0, 0
+    for _, entry in ipairs(commands) do
+        local x = column == 0 and 14 or RIGHT_X
+        createActionButton(pane, entry[1], x, y - row * 34, 112, function() runTE(entry[2]) end)
+        createText(pane, "GameFontDisableSmall", x + 122, y - row * 34 - 4, 226, entry[3])
+        if column == 1 then row = row + 1 end
+        column = 1 - column
+    end
+    if column == 1 then row = row + 1 end
+    y = y - row * 34 - 18
+    createText(pane, "GameFontDisableSmall", 14, y, 720,
+        "自动爆发控制命令保留为 /teab；它与 /te 运行命令分离，便于查看官方窗口、动作条绑定和计划诊断。")
 end
 
 local function profileAction(message, callback)
@@ -1992,7 +2642,9 @@ function ControlPanel:Create()
         scroll:SetScrollChild(pane)
         panes[page] = scroll
         scroll:Hide()
+        controlBuildScope = page
         builder(pane)
+        controlBuildScope = nil
     end
 
     normalFooter = CreateFrame("Frame", nil, frame, "BackdropTemplate")
@@ -2024,10 +2676,15 @@ function ControlPanel:Create()
     local store = root()
     activePage = PAGE_META[store.page] and store.page or "general"
     local meta = PAGE_META[activePage]
-    for page, button in pairs(navButtons) do setButtonVisual(button, page == activePage) end
+    for page, button in pairs(navButtons) do
+        button.selected = page == activePage
+        setButtonVisual(button, button.selected)
+    end
     for page, pane in pairs(panes) do pane:SetShown(page == activePage) end
     setLabel("pageTitle", meta.label)
     setLabel("pageDescription", meta.description)
+    if activePage == "burst" then ControlPanel:SetBurstSubpage(store.burstSubpage) end
+    if activePage == "interrupt" then ControlPanel:SetInterruptSubpage(store.interruptSubpage) end
     applyPanelPresentation(store.minimized == true)
     restorePanelPosition(store.minimized == true and "compact" or "normal")
     frame:Hide()
@@ -2071,8 +2728,12 @@ SlashCmdList.TACTICECHOUI = function(message)
         ControlPanel:Show("main")
     elseif command == "burst" then
         ControlPanel:Show("burst")
-    elseif command == "interrupt" or command == "control" then
-        ControlPanel:Show("interrupt")
+    elseif command == "interrupt" then
+        ControlPanel:Show("interrupt", "interrupt")
+    elseif command == "control" then
+        ControlPanel:Show("interrupt", "control")
+    elseif command == "interruptstyle" or command == "reactionstyle" then
+        ControlPanel:Show("interrupt", "style")
     elseif command == "defense" or command == "defensive" then
         ControlPanel:Show("defense")
     elseif command == "debug" or command == "monitor" or command == "actionbar" or command == "safety" then

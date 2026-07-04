@@ -9,21 +9,27 @@ def read(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 
 
-def test_autoburst_phase1_is_loaded_and_opt_in() -> None:
+def test_autoburst_ordered_sequence_is_loaded_and_opt_in() -> None:
     toc = read(ADDON / "!TacticEcho.toc")
     defaults = read(ADDON / "Config" / "Defaults.lua")
     normalize = read(ADDON / "Config" / "Normalize.lua")
+    profiles = read(ADDON / "Tactics" / "BurstProfiles.lua")
+    auto = read(ADDON / "Tactics" / "AutoBurst.lua")
     assert "Tactics/GCDGate.lua" in toc
+    assert "Tactics/BurstProfiles.lua" in toc
     assert "Tactics/AutoBurst.lua" in toc
     assert toc.index("Tactics/GCDGate.lua") < toc.index("Tactics/AutoBurst.lua")
     assert "autoBurstEnabled = false" in defaults
-    assert "autoBurstDirection = \"pre\"" in defaults
     assert "autoBurstMode = \"simple\"" in defaults
-    assert "autoBurstWindowSpellID = 0" in defaults
-    assert "autoBurstInjectionSpellID = 0" in defaults
-    assert "autoBurstUseProfileFallback = true" in defaults
-    assert "tactics.autoBurstWindowSpellID" in normalize
-    assert "tactics.autoBurstInjectionSpellID" in normalize
+    assert "autoBurstWindowSpellID" not in defaults
+    assert "autoBurstInjectionSpellID" not in defaults
+    assert "AUTO_BURST_MAX_INJECTIONS = 3" in profiles
+    assert "function BurstProfiles:GetAutoBurstSequence" in profiles
+    assert "function BurstProfiles:MoveAutoBurstStep" in profiles
+    assert "function BurstProfiles:SetAutoBurstStepEnabled" in profiles
+    assert "tactics.autoBurstWindowSpellID = nil" in normalize
+    assert "profile_sequence" in auto
+    assert "preflightSequence" in auto
 
 
 def test_autoburst_reads_only_cooldown_charge_and_normalized_gcd_states() -> None:
@@ -35,6 +41,8 @@ def test_autoburst_reads_only_cooldown_charge_and_normalized_gcd_states() -> Non
     assert "C_UnitAuras" not in source
     assert "GCD_LOCKED" in source
     assert "QUEUE_WINDOW" in source
+    assert "gcd_locked_delivery_continues" in source
+    assert "public GCD" in source
     assert "STEP_REVALIDATE_SECONDS" in source
     assert "SendInput(" not in source
     assert "function IconState:CollectCooldownOnly" in icon_state
@@ -48,16 +56,22 @@ def test_unknown_and_ambiguous_gcd_never_become_skip_eligible_own_cooldown() -> 
     auto = read(ADDON / "Tactics" / "AutoBurst.lua")
     icon = read(ADDON / "Tactics" / "IconState.lua")
     assert "cooldown_active_origin_unknown" in auto
-    assert 'creation.preInjectionSkipAllowed = injectionSample.phase == "COOLDOWN"' in auto
+    assert "PRE_INJECTION_COOLDOWN_CONFIRM_SAMPLES" in auto
+    assert "PRE_INJECTION_COOLDOWN_CONFIRM_INTERVAL_SECONDS" in auto
+    assert "explicitOwnCooldownEvidence" in auto
+    assert "confirmPreInjectionOwnCooldown" in auto
+    assert 'preInjectionSkipAllowed = false' in auto
+    assert "confirmed_own_cooldown" in auto
     assert "UNKNOWN is not cooldown" in auto
     assert "revalidateUnknownStep" in auto
-    assert "step_revalidate_timeout" in auto
+    assert "step_revalidate_persistent" in auto
+    assert "step_revalidate_timeout" not in auto
     assert "normalizeCooldownAgainstGcd" in icon
     assert "cooldownGcdAlias" in icon
     assert "gcd_snapshot_aligned" in icon
 
 
-def test_burst_candidate_is_auditable_persistent_and_deduplicated_without_new_protocol_bytes() -> None:
+def test_burst_candidate_is_auditable_persistent_and_uses_shared_rate_policy_without_new_protocol_bytes() -> None:
     auto = read(ADDON / "Tactics" / "AutoBurst.lua")
     encoder = read(ADDON / "Signal" / "SignalEncoder.lua")
     signal_frame = read(ADDON / "Signal" / "SignalFrame.lua")
@@ -70,10 +84,24 @@ def test_burst_candidate_is_auditable_persistent_and_deduplicated_without_new_pr
     assert "dispatchAttempt" in signal_frame
     assert "lastCandidate" in auto
     assert "candidateOfferCount" in auto
-    assert "until confirmation, explicit invalidation" in auto
+    assert "every fresh armed frame" in auto
+    assert "configured global rate limiter" in auto
     assert "dispatch_origin=\"burst\"" in teap
-    assert "burst_sequence_already_dispatched" in gate
+    assert "Burst and official candidates intentionally share the same delivery" in gate
+    assert "burst_sequence_already_dispatched" not in gate
     assert "last_burst_dispatch_sequence" in gate
+
+
+def test_autoburst_latched_plan_has_no_arbitrary_retry_or_outer_timeout() -> None:
+    auto = read(ADDON / "Tactics" / "AutoBurst.lua")
+    assert "inventoryRecoveryPersistent = true" in auto
+    assert "step_confirmation_grace_elapsed" in auto
+    assert "No outer plan timeout" in auto
+    assert 'self:Abort("plan_timeout"' not in auto
+    assert "step_revalidate_persistent" in auto
+    assert "confirmWindowOwnCooldown" in auto
+    assert "window_own_cooldown_confirmed" in auto
+    assert "PRE_INJECTION_COOLDOWN_CONFIRM_SAMPLES = 2" in auto
 
 
 def test_spellcast_success_is_confirmation_only_for_current_waiting_step() -> None:
@@ -82,8 +110,12 @@ def test_spellcast_success_is_confirmation_only_for_current_waiting_step() -> No
     assert "function AutoBurst:RecordSpellcastSucceeded" in auto
     assert "plan.state == \"WAIT_CONFIRM\"" in auto
     assert "spellcastSucceededSpellID" in auto
+    assert "spellcastMatchesCurrentStep" in auto
+    assert "equivalentSpellIDs" in auto
     assert "unit_spellcast_succeeded" in auto
     assert "t < (number(plan.wait.dispatchedAt) or 0)" in auto
+    assert "observeWindowQueueDelivery" in auto
+    assert "window_queue_delivery_continues" in auto
 
 
 def test_burst_internal_hold_and_evaluator_fault_are_armed_observation_not_global_pause() -> None:
@@ -119,6 +151,41 @@ def test_any_created_plan_keeps_window_ownership_after_terminal_abort() -> None:
     assert "planOwnsWindowBeforeDispatch" not in abort
 
 
+def test_precombat_bridge_is_front_window_only_and_keeps_default_policy_closed_for_ordinary_frames() -> None:
+    auto = read(ADDON / "Tactics" / "AutoBurst.lua")
+    signal = read(ADDON / "Signal" / "SignalFrame.lua")
+    assert "canStartPreCombatBridge" in auto
+    assert 'rule.requiresPreWindowCapture == true' in auto
+    assert 'runtime.runtimeReason == "out_of_combat_policy_pause"' in auto
+    assert "preCombatBridgeDepartureLock" in auto
+    assert "precombat_burst_bridge_combat_entered" in auto
+    assert "preCombatBurstBridgeFrame" in signal
+    assert "precombat_burst_bridge" in signal
+    assert "and not inCombat" in signal
+
+
+def test_world_transition_revokes_only_implicit_precombat_bridge_until_existing_run_action_or_combat() -> None:
+    auto = read(ADDON / "Tactics" / "AutoBurst.lua")
+    signal = read(ADDON / "Signal" / "SignalFrame.lua")
+    mapping = read(ADDON / "Diagnostics" / "MappingExport.lua")
+    for token in (
+        "PLAYER_LEAVING_WORLD",
+        "PLAYER_ENTERING_WORLD",
+        "ZONE_CHANGED_NEW_AREA",
+        "ActivateWorldTransitionFence",
+        "preCombatBridgeWorldFence",
+        "world_transition_precombat_fenced",
+        "AuthorizePreCombatBridge",
+        "precombat_bridge_reauthorized",
+        "world_transition_fence_cleared_by_combat",
+        "preCombatBridgeAuthorizationRequiresHandoff",
+    ):
+        assert token in auto
+    assert 'TE.AutoBurst:AuthorizePreCombatBridge("signal_state_armed")' in signal
+    assert "preCombatBridgeWorldFence" in mapping
+    assert "lastWorldTransitionReason" in mapping
+
+
 def test_window_edge_and_departure_lock_reset_at_new_combat_epoch() -> None:
     source = read(ADDON / "Tactics" / "AutoBurst.lua")
     assert '\"PLAYER_REGEN_DISABLED\"' in source
@@ -151,10 +218,13 @@ def test_autoburst_reads_fresh_spell_and_gcd_snapshots_for_each_step() -> None:
     assert "liveApiAuthoritative" in icon
 
 
-def test_front_window_unknown_creates_bounded_plan_instead_of_official_fallback() -> None:
+def test_front_window_cooldown_or_unknown_conflict_creates_persistent_latched_plan_instead_of_official_fallback() -> None:
     auto = read(ADDON / "Tactics" / "AutoBurst.lua")
-    assert "plan_gate_window_unknown" in auto
-    assert "create a bounded plan and revalidate" in auto
+    assert "isOfficialWindowAvailabilityConflict" in auto
+    assert "plan_gate_window_official_cooldown_conflict" in auto
+    assert "window_official_cooldown_revalidate" in auto
+    assert "observeLatchedPlanOfficialDeparture" in auto
+    assert "official_window_departed_plan_latched" in auto
     assert "burst_window_not_ready" in auto
 
 
@@ -163,15 +233,17 @@ def test_plan_creation_requires_both_window_and_injection_bindings() -> None:
     assert "validateRuleBindings" in auto
     assert "plan_gate_binding" in auto
     assert "burst_binding_not_ready" in auto
-    assert auto.index("local bindingsReady") < auto.index("        createPlan(self, rule, officialSpellID")
+    assert auto.index("local bindingsReady") < auto.rindex("createPlan(self, rule, officialSpellID")
 
 
-def test_post_simple_unknown_injection_is_optional_but_focused_unknown_aborts() -> None:
+def test_runtime_unknown_optional_step_is_skipped_only_in_simple_mode() -> None:
     auto = read(ADDON / "Tactics" / "AutoBurst.lua")
-    assert "post_injection_unknown" in auto
-    assert "skipOptionalInjection" in auto
-    assert "burst_step_unknown_focused" in auto
-    assert auto.index('if plan.rule.mode == "focused" then') < auto.index('"post_injection_unknown"')
+    assert "runtime_optional_unavailable" in auto
+    assert "skipOptionalStep" in auto
+    assert 'plan.rule and plan.rule.mode == "simple"' in auto
+    assert "focused_optional_step_unavailable" in auto
+    assert "sequence_optional_step_skipped" in auto
+    assert "UNKNOWN is not cooldown" in auto
 
 
 def test_hud_model_sanitizes_cast_timing_fields_used_by_effects() -> None:
@@ -203,13 +275,101 @@ def test_autoburst_exports_generation_and_candidate_diagnostics() -> None:
         assert token in mapping
 
 
-def test_cooldown_text_has_explicit_native_or_custom_mode_without_autoburst_dependency() -> None:
+def test_cooldown_text_is_unified_hud_badge_only_without_autoburst_dependency() -> None:
     defaults = read(ADDON / "Config" / "Defaults.lua")
     normalize = read(ADDON / "Config" / "Normalize.lua")
     button = read(ADDON / "UI" / "TacticalIconButton.lua")
     auto = read(ADDON / "Tactics" / "AutoBurst.lua")
-    assert 'mode = "auto"' in defaults
-    assert "{ auto = true, custom = true, duration = true }" in normalize
+    assert 'mode = "custom"' in defaults
+    # Legacy SavedVariables are normalized to the HUD-owned label; no stored
+    # mode can restore Blizzard DurationObject countdown digits.
+    assert 'style.mode = "custom"' in normalize
+    assert "priorSchema < 10" in normalize
+    assert 'cooldownText.mode = "custom"' in normalize
     assert "cooldownTextMode" in button
-    assert 'cooldownMode == "duration"' in button
+    assert 'return "custom"' in button
+    assert "pcall(frame.SetHideCountdownNumbers, frame, true)" in button
+    assert "nativeNumericFallback" not in button
+    assert 'preferExactDirectActionbarDigits' not in button
     assert "cooldownText(" not in auto
+
+
+def test_armed_rebase_and_priority_ring_preserve_field_diagnostics() -> None:
+    auto = read(ADDON / "Tactics" / "AutoBurst.lua")
+    mapping = read(ADDON / "Diagnostics" / "MappingExport.lua")
+    assert "armed_window_observation_rebased" in auto
+    assert "paused_to_armed_observation_rebase" in auto
+    assert "PRIORITY_LOG_EVENTS" in auto
+    assert "priorityEvents" in auto
+    assert "QUIET_DECISION_LOG_MIN_SECONDS" in auto
+    assert "lastArmedRebase" in mapping
+    assert "recentPriorityEvents" in mapping
+
+
+def test_unknown_and_cooldown_verification_icons_are_not_rendered_as_confirmed_gray_cooldown() -> None:
+    styles = read(ADDON / "UI" / "TacticalHudStyles.lua")
+    button = read(ADDON / "UI" / "TacticalIconButton.lua")
+    assert 'return "burst_check"' in styles
+    assert 'item.burstVerificationPending == true' in styles
+    assert 'General post-cast cooldown tracking remains internal' in styles
+    assert '"校验", false' in styles
+    assert 'or item.usableState == "unknown"' not in button
+
+
+
+def test_fresh_dispatchable_frames_advance_teap_sequence_for_burst_and_official_candidates() -> None:
+    signal = read(ADDON / "Signal" / "SignalFrame.lua")
+    assert "freshDispatchableFrame" in signal
+    assert "Give every dispatchable armed frame a fresh" in signal
+    assert "if freshDispatchableFrame then" in signal
+    assert "sequence = sequence + 1" in signal
+
+
+def test_official_window_cooldown_conflict_creates_bounded_plan_and_revalidates_before_dispatch() -> None:
+    auto = read(ADDON / "Tactics" / "AutoBurst.lua")
+    assert "isOfficialWindowAvailabilityConflict" in auto
+    assert "plan_gate_window_official_cooldown_conflict" in auto
+    assert "window_official_cooldown_revalidate" in auto
+    assert "windowAvailabilityConflict" in auto
+    assert "official_window_" in auto
+
+
+def test_pre_window_capture_owns_front_window_before_teap_binding_and_faults_fail_closed() -> None:
+    auto = read(ADDON / "Tactics" / "AutoBurst.lua")
+    signal = read(ADDON / "Signal" / "SignalFrame.lua")
+    mapping = read(ADDON / "Diagnostics" / "MappingExport.lua")
+    assert "preWindowCapture" in auto
+    assert "pre_window_capture_handoff_barrier" in auto
+    assert "PRE_WINDOW_HANDOFF_MIN_HOLD_FRAMES = 4" in auto
+    assert "transportHandoffTick" in signal
+    assert "isTransportHandoffTick(runtime)" in auto
+    assert "pre_window_capture_handoff_ready" in auto
+    assert "handoffBarrierRequiredFrames" in mapping
+    assert "handoffBarrierRemainingFrames" in mapping
+    assert "handoffBarrierPublishedFrames" in mapping
+    assert "pre_window_capture_binding_pending" in auto
+    assert "pre_window_capture_window_pending" in auto
+    assert "lockPreWindowCaptureDeparture" in auto
+    assert 'tostring(reason or "") == "evaluator_fault"' in auto
+    assert "preWindowCaptureActive == true" in signal
+    assert "heldBeforeAbort" in signal
+    assert 'reason = "burst_evaluator_fault_hold"' in signal
+
+
+def test_ordered_sequence_supports_window_three_injections_and_two_trinkets_per_spec() -> None:
+    profiles = read(ADDON / "Tactics" / "BurstProfiles.lua")
+    auto = read(ADDON / "Tactics" / "AutoBurst.lua")
+    ui = read(ADDON / "UI" / "ControlPanel.lua")
+    assert '"window"' in profiles
+    assert '"trinket:13"' in profiles
+    assert '"trinket:14"' in profiles
+    assert '"injection:"' in profiles
+    assert "AUTO_BURST_MAX_INJECTIONS = 3" in profiles
+    assert "stable action identities" in profiles
+    assert "selectedRuleForSequence" in auto
+    assert "sequence_preflight_selected" in auto
+    assert "sequence_preflight_no_eligible" in auto
+    assert "爆发顺序（当前专精）" in ui
+    assert "注入技能 1–3" in ui
+    assert "Phase 1.5 测试规则" not in ui
+    assert "官方窗口 SpellID" not in ui
