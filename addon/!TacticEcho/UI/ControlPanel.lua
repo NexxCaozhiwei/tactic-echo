@@ -1204,14 +1204,19 @@ local function reactionBindingEntryText(entry)
     end
     local macroDiag = type(entry.macroDiagnostics) == "table" and entry.macroDiagnostics[1] or nil
     if type(macroDiag) == "table" then
+        local identityValue = macroDiag.actionInfoLooksLikeMacroIndex == true
+            and ("索引#" .. tostring(macroDiag.actionInfoMacroIndex or macroDiag.resolvedMacroIndex or "-"))
+            or ("代表技能#" .. tostring(macroDiag.representedSpellID or macroDiag.actionInfoValue or "-"))
         local detail = "槽位=" .. tostring(macroDiag.slot or "-")
             .. "，键位=" .. tostring(macroDiag.rawBinding or "无")
-            .. "，身份=" .. tostring(macroDiag.macroIdentitySource or "action_info_id")
-            .. "#" .. tostring(macroDiag.actionInfoMacroIndex or macroDiag.resolvedMacroIndex or "-")
+            .. "，身份=" .. tostring(macroDiag.macroIdentitySource or "unresolved")
+            .. "（" .. identityValue .. "）"
             .. "，查找=" .. tostring(macroDiag.lookupSource or macroDiag.identityFailureReason or macroDiag.failureReason or "无")
         if macroDiag.actionInfoMacroName or macroDiag.macroName or macroDiag.resolvedSpellTokenCount then
             detail = detail .. "，宏名=" .. tostring(macroDiag.actionInfoMacroName or macroDiag.macroName or "-")
                 .. "，读取=" .. tostring(macroDiag.actionInfoIdReadAttempts or 0)
+                .. "，候选=" .. tostring(macroDiag.semanticCandidateCount or 0)
+                .. "/" .. tostring(macroDiag.actionTextCandidateCount or 0)
                 .. "，令牌SpellID=" .. tostring(macroDiag.resolvedSpellTokenCount or 0)
         end
         return name .. "：存在未匹配宏候选（" .. detail .. "）。"

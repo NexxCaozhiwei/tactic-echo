@@ -1,3 +1,11 @@
+# 1.0.45 P5.1 — 宏动作身份与唯一语义回收
+
+- **修复 P5 实机错误假设**：部分 Retail 宏动作的 `GetActionInfo(actionSlot).id` 为代表技能 SpellID，而不是宏列表 index；反制射击宏现场返回 `147362`，P5 误把它用于 `GetMacroInfo(147362)`，导致宏正文必然不可用。
+- **双路径身份模型**：动作信息值处于当前账号/角色宏索引范围时，继续以同一 numeric index 读取正文；动作信息值不属于有效宏索引时，进入受限的“动作条宏名 + 代表 SpellID + 宏正文语义”唯一匹配。
+- **同名不再盲取第一枚**：仅名称相同不会授权；候选宏必须引用动作条代表技能，且仅有一枚候选时才恢复正文。多个同名且同技能候选记录 `macro_semantic_identity_ambiguous` 并 fail-closed。
+- **诊断扩展**：记录 `actionInfoLooksLikeMacroIndex`、`representedSpellID`、`actionTextCandidateCount`、`semanticCandidateCount`、`semanticCandidateIndexes` 与身份来源；仍不保存宏正文。
+- **不变项**：没有修改宏文本、目标处理、BindingToken、TEAP、TEK 或任何输入门禁；无需重建 TEK.exe。
+
 # 1.0.44 P5 — 宏身份锚定与同名宏防错配
 
 - **取消宏名正文回收**：宏正文只允许通过当前动作条 `GetActionInfo` 返回的数值 `macroIndex` 回收；不再按 `GetMacroInfo(name)` 或账号/角色宏列表中的同名条目取正文。

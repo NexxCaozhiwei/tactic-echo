@@ -1,6 +1,6 @@
 # Tactic Echo 战术回响
 
-当前版本：`1.0.44 P5`  
+当前版本：`1.0.45 P5.1`  
 更新时间：2026-07-04  
 
 Tactic Echo 是一套以游戏内 AddOn 观察与既有动作条键位映射为前提、通过 TEAP 与 TEK 受控交付的战术提示与自动爆发/自动打断项目。
@@ -22,7 +22,7 @@ P4.4 不允许以下信息单独驱动自动输入：`showShield`、`barType`、
 
 P4.5 额外支持一种严格的既有整合宏：`@mouseover → @focus → target`。它只会在 AddOn 确认该宏此刻会命中**同一个读条来源**时进入 reaction；若更高优先级宏分支仍有活敌目标，则保持零按键并输出 `macro_priority_preempted_by_*`。宏自身不能判断“是否正在施法”，因此这不是“焦点未读条就自动回退当前目标”的宏语言能力。
 
-P5 将宏身份锚定为当前动作条 `GetActionInfo` 返回的数值 macro index。即使宏名为中文“打断”且账号/角色宏存在同名项，也不会按名字借用另一枚宏正文；首读正文为空时只重读同一 index。P4.6 的 `/cast` 令牌→SpellID 只读关联继续保留。
+P5.1 修正了 P5 的一个 Retail 实机假设：`GetActionInfo(actionSlot).id` 对部分宏会返回其代表技能的 SpellID（例如反制射击为 `147362`），而不是宏列表索引。解析器现在优先使用可验证的数值宏索引；当动作条返回代表 SpellID 时，才以**动作条宏名 + 代表 SpellID + 宏正文 `/cast` 语义**在当前宏列表中做唯一匹配。多个同名且同技能候选仍 fail-closed，不猜测。P4.6 的 `/cast` 令牌→SpellID 只读关联继续保留。
 
 ## 运行边界
 
@@ -40,8 +40,9 @@ P5 将宏身份锚定为当前动作条 `GetActionInfo` 返回的数值 macro in
 
 ## 文档
 
-- `BASELINE_1.0.44.md`：P5 宏身份锚定与同名宏防错配合同；
-- `docs/P5_MACRO_IDENTITY_TEST.md`：中文同名宏/反制射击实机验收步骤；
+- `BASELINE_1.0.45.md`：P5.1 宏动作身份与唯一语义回收合同；
+- `docs/P5.1_MACRO_ACTION_IDENTITY_TEST.md`：中文同名宏/反制射击实机验收步骤；
+- `BASELINE_1.0.44.md`、`docs/P5_MACRO_IDENTITY_TEST.md`：P5 历史基线与验收记录；
 - `docs/P4.6_COUNTER_SHOT_MACRO_RECOVERY_TEST.md`：P4.6 历史宏恢复验收步骤；
 - `docs/P4.5_PRIORITY_INTERRUPT_MACRO_TEST.md`：整合宏实机验收步骤；
 - `docs/P4.4_NATIVE_SHIELD_REVALIDATION_TEST.md`：钢条判定实机验收步骤；

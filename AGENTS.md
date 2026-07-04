@@ -1,8 +1,8 @@
-# AGENTS.md — Tactic Echo 1.0.44 P5 开发与安全边界
+# AGENTS.md — Tactic Echo 1.0.45 P5.1 开发与安全边界
 
 ## 1. 基线与交付
 
-- 当前唯一开发基线：`1.0.44 P5`。AutoBurst 与输入路径仍以 1.0.35 为冻结基线；HUD 冷却渲染仍以已实测稳定的 1.0.31 实时转盘路径为基础，并由 1.0.38 收口为“DurationObject 只画转盘、HUD 徽标统一纯秒数”。1.0.39 P1–P3 提供设置、动作条/宏映射、只读读条候选与 HUD 高亮；1.0.40 P4.3 已实机证明 reaction 的 BindingToken→TEAP→TEK 动作链与稳定候选交付可用；1.0.41 P4.4 恢复严格钢条/可打断证据；1.0.42 P4.5 在不改输入链的前提下，严格识别并守卫 `@mouseover → @focus → target` 单技能整合打断宏；1.0.43 P4.6 修复多行打断宏的正文回收与 SpellID 关联韧性；1.0.44 P5 将宏身份收紧为动作条 `actionInfoID` 的 numeric macro index，彻底移除按宏名回收正文的路径。此前版本仅保留历史记录。
+- 当前唯一开发基线：`1.0.45 P5.1`。AutoBurst 与输入路径仍以 1.0.35 为冻结基线；HUD 冷却渲染仍以已实测稳定的 1.0.31 实时转盘路径为基础，并由 1.0.38 收口为“DurationObject 只画转盘、HUD 徽标统一纯秒数”。1.0.39 P1–P3 提供设置、动作条/宏映射、只读读条候选与 HUD 高亮；1.0.40 P4.3 已实机证明 reaction 的 BindingToken→TEAP→TEK 动作链与稳定候选交付可用；1.0.41 P4.4 恢复严格钢条/可打断证据；1.0.42 P4.5 在不改输入链的前提下，严格识别并守卫 `@mouseover → @focus → target` 单技能整合打断宏；1.0.43 P4.6 修复多行打断宏的正文回收与 SpellID 关联韧性；1.0.44 P5 的“actionInfoID 恒为宏 index”假设已由 1.0.45 P5.1 修正：非宏 index 的代表 SpellID 使用唯一语义回收，多个同名同技能候选 fail-closed。此前版本仅保留历史记录。
 - 默认交付完整源码包。压缩包只能有一个项目根目录，不得包含 `build/`、`dist/`、`release/`、缓存、日志、SavedVariables、EXE、历史补丁或本机配置。
 - 每次代码修改必须保持根目录 `VERSION`、插件 TOC、`Core/Bootstrap.lua` 版本一致，并运行本文件第 9 节验证。
 - 不得以离线测试、PyInstaller 成功或进程存活作为 Windows Hook、前台判断、SendInput、自动爆发实机成功的证据。
@@ -107,7 +107,7 @@ trinket:13 / trinket:14   -- 固定装备栏身份，计划创建时锁定实际
 - 事件状态帧可能没有 spellID/castGUID；`ReactionInterruptEvents` 必须保留最近一次 START 事件的可读身份，不能被 status 事件的 nil 覆盖。缓存仍受 TTL、目标切换和终止事件约束；读条与缓存都可读 SpellID 且不一致时 fail-closed。
 - 同一活跃读条保持同一个 `reaction` candidate，直到读条消失/身份变化。SignalFrame 必须为这段候选保持稳定 sequence；TEK 仅在该 sequence 第一次成功 SendInput 后抑制重复帧。不得通过缩短候选为单帧或新增第二输入通道来规避跨进程采样竞争。
 - **P4.5 严格整合宏资格**：仅可识别单一 `/cast`、单一技能身份、无 `/castsequence`、无目标管理命令、且条件链精确为 `[@mouseover,exists?,harm,nodead][@focus,exists?,harm,nodead][@target?,exists?,harm,nodead]` 的既有宏。P2 可将其三个来源登记为 `macro_priority_chain`，但 P4 在针对 focus/target 候选派发前必须确认不存在任何更高优先级、仍满足宏 `harm,nodead` 条件的单位；否则记录 `macro_priority_preempted_by_<source>` 并 fail-closed。该宏**不能判断“是否正在施法”**，因此不得把“上游单位未读条”当作宏分支不成立；不符合精确条件链的多条件宏保持手动使用。
-- **P5 宏身份锚定**：对当前可见动作条上的既有宏，`GetActionInfo(actionSlot)` 返回的 numeric `actionInfoID` 是唯一正文身份。`GetMacroInfo(actionInfoID)` 首读仅有名称/无正文时，只能对**同一 numeric index**有界重读；不得调用 `GetMacroInfo(name)`，不得按账号/角色宏名枚举或借用另一枚同名宏正文。当前 index 无正文必须 fail-closed，即使另一同名宏包含请求技能也不得授权。`/cast` token 可只读解析为普通 SpellID 以克服名称 API 临时不可材料化；不得持久化宏正文、不得将未解析 token 作为派发资格；正文、同一技能身份和真实键位仍必须全部确认。
+- **P5.1 宏动作身份**：先判断 `GetActionInfo(actionSlot).id` 是否处于当前账号/角色宏的有效 numeric index 范围；是时仅可对同一 index 有界重读 `GetMacroInfo(index)`。若不在有效宏 index 范围，Retail 可将它作为宏动作的代表 SpellID 返回；此时允许只读枚举当前宏列表，但必须同时满足：动作条 `GetActionText(slot)` 与候选宏名精确一致、候选宏的 `GetMacroSpell(index)` 或解析后的 `/cast` 语义命中该代表 SpellID、且仅存在一枚候选。多个同名同技能候选必须 `macro_semantic_identity_ambiguous` fail-closed；不得调用 `GetMacroInfo(name)`，不得按名称取第一枚，宏名本身不得成为派发资格。`/cast` token 可只读解析为普通 SpellID 以克服名称 API 临时不可材料化；不得持久化宏正文、不得将未解析 token 作为派发资格；正文、同一技能身份和真实键位仍必须全部确认。
 - 活跃 `AutoBurst` plan 或 pre-window capture 具有优先权：只高亮，不自动打断；不得调用 `AutoBurst:Abort`、推进或重置其状态。
 - SignalEncoder 使用 TEAP v3 预留 bit `0x40` 标记 `reaction`，并保持单一 20-byte 传输。TEK 在 `0x20|0x40` 同时存在时拒绝帧。
 - 当确认读条没有 P2 安全路由时，仅可对该读条调用一次 `ReactionBindings:RefreshForAuto()` 重建既有默认动作条缓存。`castSerial` 用于区分外部打断后的下一段读条；P4 状态诊断必须区分 runtime、读条确认、视觉采样与路由阻断。不得将 native true／未知、P3 bridge 或 profile fallback 放宽为自动资格。

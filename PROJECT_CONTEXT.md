@@ -1,3 +1,10 @@
+# P5.1 当前变更
+
+- 1.0.45 P5.1 修正 Retail 宏动作 `GetActionInfo(...).id` 可能是代表 SpellID 而非宏 index 的现实行为。
+- 反制射击现场：动作条槽位 60 返回 `actionType="macro"`、`actionInfoId=147362`；P5 错误调用 `GetMacroInfo(147362)`，因此宏正文不可用。
+- 新回收规则：有效 numeric macro index 优先；否则要求“动作条名 + 代表 SpellID + 宏正文语义”唯一一致。多个同名同技能候选零按键、保留诊断。
+- 未改动 P4.4 钢条资格、P4.5 宏目标优先级、BindingToken、TEAP、TEK 或宏执行顺序。
+
 # Project Context
 
 Current version: `1.0.44 P5`
@@ -43,20 +50,20 @@ HUD 审计确认主、Burst、打断、控制、防御、药水卡全部复用 `
 
 ## 1.0.07 AutoBurst Field Corrections
 
-The previous baseline distinguished explicit own cooldown from protected/ambiguous state, kept strict front-plan window ownership through unknown/revalidation and timeout, persisted one Burst candidate through confirmation, and used `UNIT_SPELLCAST_SUCCEEDED` only as an already-dispatched-step receipt. See `doc/baselines/BASELINE_1.0.07.md` and `docs/AUTOBURST_PHASE1.md` for that contract.
+The previous baseline distinguished explicit own cooldown from protected/ambiguous state, kept strict front-plan window ownership through unknown/revalidation and timeout, persisted one Burst candidate through confirmation, and used `UNIT_SPELLCAST_SUCCEEDED` only as an already-dispatched-step receipt. See `BASELINE_1.0.07.md` and `docs/AUTOBURST_PHASE1.md` for that contract.
 
 ## 1.0.09 AutoBurst Generation Corrections
 
-The active baseline rebases stale official-window observation state when `paused -> armed` resumes without an active plan or departure lock, so the first healthy frame can start the explicit `31884 -> 343527` pre/simple plan even if the official window icon was already visible. A front injection is now skip-eligible only after two independent, identity-matched live own-CD samples. Completed or aborted generations remain consumed until official recommendation departs. See `doc/baselines/BASELINE_1.0.09.md` for the current field-test contract.
+The active baseline rebases stale official-window observation state when `paused -> armed` resumes without an active plan or departure lock, so the first healthy frame can start the explicit `31884 -> 343527` pre/simple plan even if the official window icon was already visible. A front injection is now skip-eligible only after two independent, identity-matched live own-CD samples. Completed or aborted generations remain consumed until official recommendation departs. See `BASELINE_1.0.09.md` for the current field-test contract.
 
 
 ## 1.0.10 Primary HUD Presentation
 
-The main recommendation card no longer treats runtime pause as spell unavailability: it remains saturated and unmasked while showing “暂停”. A normal current-spell cast shows “施法”, while channel locks show the concise label “引导”. This is HUD-only and does not alter TEAP, TEK, bindings or AutoBurst. See `doc/baselines/BASELINE_1.0.10.md`.
+The main recommendation card no longer treats runtime pause as spell unavailability: it remains saturated and unmasked while showing “暂停”. A normal current-spell cast shows “施法”, while channel locks show the concise label “引导”. This is HUD-only and does not alter TEAP, TEK, bindings or AutoBurst. See `BASELINE_1.0.10.md`.
 
 ## 1.0.11 Cooldown / Burst Confirmation
 
-HUD countdown text now defaults to the configurable custom label path for main, burst, interrupt and defense modules; Blizzard DurationObjects remain the timer/swipe authority and show their own digits only in explicit native mode. A confirmed self-cooldown no longer greyscale-desaturates the icon. “校验” is reserved for the active AutoBurst injection/window step. Matching window success accepts declared, requested, matched and equivalent action-bar SpellIDs; a missed queue-window delivery can create one bounded retry after GCDGate reports READY. See `doc/baselines/BASELINE_1.0.11.md`.
+HUD countdown text now defaults to the configurable custom label path for main, burst, interrupt and defense modules; Blizzard DurationObjects remain the timer/swipe authority and show their own digits only in explicit native mode. A confirmed self-cooldown no longer greyscale-desaturates the icon. “校验” is reserved for the active AutoBurst injection/window step. Matching window success accepts declared, requested, matched and equivalent action-bar SpellIDs; a missed queue-window delivery can create one bounded retry after GCDGate reports READY. See `BASELINE_1.0.11.md`.
 
 
 ## 1.0.12 Macro Association

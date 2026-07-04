@@ -92,7 +92,7 @@ def test_counter_shot_macro_recovers_when_name_api_is_unavailable() -> None:
         end
         local candidate = result.candidates and result.candidates[1] or {{}}
         if candidate.macroDiagnostic == nil
-            or candidate.macroDiagnostic.macroIdentitySource ~= "action_info_id"
+            or candidate.macroDiagnostic.macroIdentitySource ~= "action_info_macro_index"
             or candidate.macroDiagnostic.macroIdentityVerified ~= true
             or tonumber(candidate.macroDiagnostic.actionInfoMacroIndex) ~= 121
             or tonumber(candidate.macroDiagnostic.actionInfoIdReadAttempts) ~= 2

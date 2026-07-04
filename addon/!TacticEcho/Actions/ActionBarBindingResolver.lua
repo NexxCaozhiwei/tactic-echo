@@ -266,17 +266,24 @@ local function macroBodyLength(body)
     return type(body) == "string" and #body or 0
 end
 
--- P5 macro identity contract:
--- GetActionInfo(actionSlot) returns the macro's numeric action-info ID. That
--- numeric index, not a user-visible macro name, is the only identity accepted
--- for body recovery. Macro names are mutable, localized and may be duplicated
--- between account and character macros; using a name as a lookup key can read a
--- different macro body from the button the player actually bound.
+-- P5.1 macro identity contract:
+-- Retail can report a macro action's represented SpellID through
+-- GetActionInfo(actionSlot). In that mode the returned numeric value is *not*
+-- a macro-list index; for example, a Counter Shot macro can report 147362.
+-- Treating that spell ID as GetMacroInfo(147362) is invalid and causes the
+-- macro body to disappear from the resolver.
 --
--- Some Retail states expose the correct macro name but with an empty body on
--- the first GetMacroInfo(index) read. Retry the *same numeric index* a small,
--- bounded number of times during the existing event-driven action-bar scan.
--- Never enumerate or query GetMacroInfo(name) as a recovery path.
+-- Numeric macro indexes remain the strongest identity when the action-info
+-- value is within the currently valid account/character macro index ranges.
+-- When it is not a valid macro index, body recovery uses a bounded, read-only
+-- semantic join:
+--   action slot text (the visible macro name)
+--   + exact name candidates in the user's macro list
+--   + the spell represented by the action slot
+--   + parsed /cast spell semantics in the candidate body.
+-- The resolver accepts the fallback only when exactly one candidate survives.
+-- Same-name/same-spell duplicates remain intentionally ambiguous and fail
+-- closed; an AddOn cannot safely infer which identical macro the slot holds.
 local MAX_MACRO_INFO_INDEX_READS = 3
 
 local function normalizeMacroIndex(value)
@@ -289,94 +296,281 @@ local function hasMacroBody(body)
     return type(body) == "string" and body ~= ""
 end
 
-local function resolveMacroByActionInfoIndex(actionInfoID, diag)
+local function macroIndexLayout()
+    if type(GetNumMacros) ~= "function" then return nil end
+    local ok, accountCount, characterCount = safeCall(GetNumMacros)
+    if not ok then return nil end
+    accountCount = math.max(0, math.floor(tonumber(accountCount) or 0))
+    characterCount = math.max(0, math.floor(tonumber(characterCount) or 0))
+    local accountLimit = math.max(accountCount, math.floor(tonumber(MAX_ACCOUNT_MACROS) or 120))
+    return {
+        accountCount = accountCount,
+        characterCount = characterCount,
+        accountLimit = accountLimit,
+        characterStart = accountLimit + 1,
+        characterEnd = accountLimit + characterCount,
+    }
+end
+
+local function isCurrentMacroIndex(value, layout)
+    local numeric = normalizeMacroIndex(value)
+    if not numeric or not layout then return false end
+    if numeric >= 1 and numeric <= layout.accountCount then return true end
+    return numeric >= layout.characterStart and numeric <= layout.characterEnd
+end
+
+local function macroIndexList(layout)
+    local indexes = {}
+    if not layout then return indexes end
+    for index = 1, layout.accountCount do
+        indexes[#indexes + 1] = index
+    end
+    for index = layout.characterStart, layout.characterEnd do
+        indexes[#indexes + 1] = index
+    end
+    return indexes
+end
+
+local function readMacroInfoWithRetries(macroIndex)
+    local snapshot = {
+        macroIndex = macroIndex,
+        readAttempts = 0,
+        successfulReads = 0,
+        firstBodyLength = 0,
+        largestBodyLength = 0,
+    }
+    if type(GetMacroInfo) ~= "function" then
+        snapshot.failureReason = "macro_info_api_unavailable"
+        return snapshot
+    end
+    for attempt = 1, MAX_MACRO_INFO_INDEX_READS do
+        local ok, macroName, icon, body = safeCall(GetMacroInfo, macroIndex)
+        snapshot.readAttempts = attempt
+        if ok then
+            snapshot.successfulReads = snapshot.successfulReads + 1
+            if type(macroName) == "string" and macroName ~= "" then
+                snapshot.firstName = snapshot.firstName or macroName
+                snapshot.lastName = macroName
+            end
+            if icon ~= nil then snapshot.lastIcon = icon end
+            local bodyLength = macroBodyLength(body)
+            if attempt == 1 then snapshot.firstBodyLength = bodyLength end
+            if bodyLength > snapshot.largestBodyLength then snapshot.largestBodyLength = bodyLength end
+            if hasMacroBody(body) then
+                snapshot.macroName = macroName or snapshot.firstName
+                snapshot.icon = icon or snapshot.lastIcon
+                snapshot.body = body
+                return snapshot
+            end
+        end
+    end
+    snapshot.failureReason = "macro_body_unavailable"
+    return snapshot
+end
+
+local function readMacroSpellInfo(macroIndex)
+    local result = { macroIndex = macroIndex, success = false, spellName = nil, spellID = nil }
+    if type(GetMacroSpell) ~= "function" then return result end
+    local ok, spellName, _, spellID = safeCall(GetMacroSpell, macroIndex)
+    result.success = ok
+    result.spellName = type(spellName) == "string" and spellName or nil
+    result.spellID = normalizeSpellID(spellID)
+    return result
+end
+
+local function setResolvedMacro(diag, snapshot, spellInfo, source, identitySource)
+    diag.resolvedMacroIndex = snapshot.macroIndex
+    diag.macroName = snapshot.macroName
+    diag.body = snapshot.body
+    diag.resolvedBodyLength = macroBodyLength(snapshot.body)
+    diag.lookupSource = source
+    diag.macroIdentitySource = identitySource
+    diag.macroIdentityVerified = true
+    diag.getMacroSpellByResolvedIndex = (spellInfo and (spellInfo.spellID or spellInfo.spellName)) or nil
+    diag.getMacroSpellByResolvedIndexSpellID = spellInfo and spellInfo.spellID or nil
+    return {
+        macroIndex = snapshot.macroIndex,
+        macroName = snapshot.macroName,
+        icon = snapshot.icon,
+        body = snapshot.body,
+        readAttempts = snapshot.readAttempts,
+        successfulReads = snapshot.successfulReads,
+        spellInfo = spellInfo,
+    }
+end
+
+local function directMacroIndexResolution(actionInfoID, actionText, layout, diag)
     local macroIndex = normalizeMacroIndex(actionInfoID)
     diag.actionInfoMacroIndex = macroIndex
-    diag.macroIdentitySource = "action_info_id"
-    diag.macroIdentityVerified = false
-    diag.lookupByActionText = false
-    diag.lookupByActionInfoName = false
-    if not macroIndex then
-        diag.failureReason = "macro_action_info_id_invalid"
+    diag.actionInfoLooksLikeMacroIndex = isCurrentMacroIndex(macroIndex, layout)
+    -- A few minimal/test client states do not expose GetNumMacros. Retain a
+    -- constrained direct read only when the action button exposes no macro
+    -- label at all; a named action must use the semantic fallback instead of
+    -- risking a numeric SpellID collision with an unrelated macro index.
+    if layout then
+        if not diag.actionInfoLooksLikeMacroIndex then return nil end
+    elseif type(actionText) == "string" and actionText ~= "" then
+        return nil
+    else
+        diag.actionInfoIndexLayoutUnavailable = true
+    end
+
+    local snapshot = readMacroInfoWithRetries(macroIndex)
+    diag.getMacroInfoByActionInfoIdSuccess = snapshot.successfulReads > 0 and snapshot.firstName ~= nil
+    diag.getMacroInfoByActionInfoIdName = snapshot.firstName or snapshot.lastName
+    diag.getMacroInfoByActionInfoIdBodyLength = snapshot.largestBodyLength
+    diag.actionInfoIdFirstReadBodyLength = snapshot.firstBodyLength
+    diag.actionInfoIdReadAttempts = snapshot.readAttempts
+    diag.actionInfoIdSuccessfulReads = snapshot.successfulReads
+
+    if not hasMacroBody(snapshot.body) then
+        diag.failureReason = "macro_body_unavailable_action_info_id"
         return nil
     end
-    if type(GetMacroInfo) ~= "function" then
-        diag.failureReason = "macro_info_api_unavailable"
+    -- If the action button exposes its macro label, a direct numeric macro
+    -- index must agree with it. This prevents a low SpellID that happens to
+    -- equal a populated macro index from being accepted as the wrong macro.
+    if type(actionText) == "string" and actionText ~= ""
+        and type(snapshot.macroName) == "string" and snapshot.macroName ~= actionText then
+        diag.directIndexNameMismatch = true
+        diag.failureReason = "macro_action_info_index_name_mismatch"
+        return nil
+    end
+    local spellInfo = readMacroSpellInfo(macroIndex)
+    return setResolvedMacro(
+        diag,
+        snapshot,
+        spellInfo,
+        snapshot.readAttempts > 1 and "action_info_macro_index_retry" or "action_info_macro_index",
+        "action_info_macro_index"
+    )
+end
+
+local function actionSpellIdentity(actionInfoID, actionMacroSpellID, actionInfoLooksLikeMacroIndex)
+    local explicit = normalizeSpellID(actionMacroSpellID)
+    if explicit then return explicit, "action_info_macro_spell" end
+    -- When the action-info value is outside every current macro index range,
+    -- Retail is representing the macro by its spell ID. This is the observed
+    -- Counter Shot case (147362), and it is the semantic key for fallback.
+    if not actionInfoLooksLikeMacroIndex then
+        local represented = normalizeSpellID(actionInfoID)
+        if represented then return represented, "action_info_represented_spell" end
+    end
+    return nil, nil
+end
+
+local function semanticMacroResolution(actionText, representedSpellID, layout, diag)
+    diag.lookupByActionText = false
+    diag.lookupByActionInfoName = false
+    diag.actionTextCandidateCount = 0
+    diag.semanticCandidateCount = 0
+    diag.semanticRejectedCount = 0
+    if type(actionText) ~= "string" or actionText == "" then
+        diag.failureReason = diag.failureReason or "macro_action_text_missing"
+        return nil
+    end
+    if not representedSpellID then
+        diag.failureReason = diag.failureReason or "macro_action_spell_identity_missing"
+        return nil
+    end
+    if not layout then
+        diag.failureReason = diag.failureReason or "macro_index_layout_unavailable"
         return nil
     end
 
-    local firstName, lastName, lastIcon = nil, nil, nil
-    local firstBodyLength, largestBodyLength = 0, 0
-    local successfulReads = 0
-    for attempt = 1, MAX_MACRO_INFO_INDEX_READS do
-        local ok, macroName, icon, body = safeCall(GetMacroInfo, macroIndex)
-        if ok then
-            successfulReads = successfulReads + 1
-            if type(macroName) == "string" and macroName ~= "" then
-                firstName = firstName or macroName
-                lastName = macroName
+    local expectedName = getSpellName(representedSpellID)
+    local matches = {}
+    for _, macroIndex in ipairs(macroIndexList(layout)) do
+        local snapshot = readMacroInfoWithRetries(macroIndex)
+        if hasMacroBody(snapshot.body) and snapshot.macroName == actionText then
+            diag.actionTextCandidateCount = diag.actionTextCandidateCount + 1
+            local spellInfo = readMacroSpellInfo(macroIndex)
+            local spellMatches = tonumber(spellInfo.spellID) == tonumber(representedSpellID)
+            local bodyMatches = false
+            if not spellMatches then
+                bodyMatches = macroBodyReferencesSpell(snapshot.body, expectedName, representedSpellID)
+            else
+                -- Retain parsed semantic proof even when GetMacroSpell exposes
+                -- the represented spell, so a wrong same-name macro cannot
+                -- become eligible solely because of a stale display spell.
+                bodyMatches = macroBodyReferencesSpell(snapshot.body, expectedName, representedSpellID)
             end
-            if icon ~= nil then lastIcon = icon end
-            local bodyLength = macroBodyLength(body)
-            if attempt == 1 then firstBodyLength = bodyLength end
-            if bodyLength > largestBodyLength then largestBodyLength = bodyLength end
-            if hasMacroBody(body) then
-                diag.getMacroInfoByActionInfoIdSuccess = true
-                diag.getMacroInfoByActionInfoIdName = firstName or macroName
-                diag.getMacroInfoByActionInfoIdBodyLength = bodyLength
-                diag.actionInfoIdFirstReadBodyLength = firstBodyLength
-                diag.actionInfoIdReadAttempts = attempt
-                diag.actionInfoIdSuccessfulReads = successfulReads
-                diag.resolvedMacroIndex = macroIndex
-                diag.macroName = macroName or firstName
-                diag.body = body
-                diag.lookupSource = attempt == 1 and "action_info_id" or "action_info_id_retry"
-                diag.macroIdentityVerified = true
-                return {
-                    macroIndex = macroIndex,
-                    macroName = macroName or firstName,
-                    icon = icon or lastIcon,
-                    body = body,
-                    readAttempts = attempt,
-                    successfulReads = successfulReads,
+            if spellMatches or bodyMatches then
+                diag.semanticCandidateCount = diag.semanticCandidateCount + 1
+                matches[#matches + 1] = {
+                    snapshot = snapshot,
+                    spellInfo = spellInfo,
+                    spellMatches = spellMatches,
+                    bodyMatches = bodyMatches == true,
                 }
+            else
+                diag.semanticRejectedCount = diag.semanticRejectedCount + 1
             end
         end
     end
 
-    diag.getMacroInfoByActionInfoIdSuccess = successfulReads > 0 and (firstName ~= nil or lastName ~= nil)
-    diag.getMacroInfoByActionInfoIdName = firstName or lastName
-    diag.getMacroInfoByActionInfoIdBodyLength = largestBodyLength
-    diag.actionInfoIdFirstReadBodyLength = firstBodyLength
-    diag.actionInfoIdReadAttempts = MAX_MACRO_INFO_INDEX_READS
-    diag.actionInfoIdSuccessfulReads = successfulReads
-    diag.failureReason = "macro_body_unavailable_action_info_id"
+    if #matches == 1 then
+        local candidate = matches[1]
+        diag.lookupByActionText = true
+        diag.actionTextSemanticMatch = candidate.spellMatches and candidate.bodyMatches and "macro_spell_and_body"
+            or (candidate.spellMatches and "macro_spell" or "macro_body")
+        return setResolvedMacro(
+            diag,
+            candidate.snapshot,
+            candidate.spellInfo,
+            "action_text_unique_spell_semantic",
+            "action_text_unique_spell_semantic"
+        )
+    end
+
+    diag.lookupByActionText = diag.actionTextCandidateCount > 0
+    if #matches > 1 then
+        diag.semanticCandidateIndexes = {}
+        for _, candidate in ipairs(matches) do
+            diag.semanticCandidateIndexes[#diag.semanticCandidateIndexes + 1] = candidate.snapshot.macroIndex
+        end
+        diag.failureReason = "macro_semantic_identity_ambiguous"
+    else
+        diag.failureReason = diag.actionTextCandidateCount > 0
+            and "macro_semantic_identity_no_spell_match"
+            or "macro_action_text_name_not_found"
+    end
     return nil
 end
 
-local function resolveMacroFromActionSlot(actionSlot, actionInfoID)
+local function resolveMacroFromActionSlot(actionSlot, actionInfoID, actionMacroSpellID)
     local diag = {
         actionSlot = actionSlot,
         actionInfoId = actionInfoID,
-        actionInfoMacroIndex = normalizeMacroIndex(actionInfoID),
-        macroIdentitySource = "action_info_id",
+        actionInfoValue = actionInfoID,
+        actionMacroSpellID = normalizeSpellID(actionMacroSpellID),
+        macroIdentitySource = "unresolved",
+        macroIdentityVerified = false,
     }
 
     local okText, actionText = safeCall(GetActionText, actionSlot)
     diag.actionText = okText and actionText or nil
 
-    local okSpellByID, macroSpellByID = safeCall(GetMacroSpell, actionInfoID)
-    diag.getMacroSpellByActionInfoId = okSpellByID and macroSpellByID or nil
-
-    local resolved = resolveMacroByActionInfoIndex(actionInfoID, diag)
-    if resolved then
-        diag.resolvedBodyLength = macroBodyLength(resolved.body)
-        return diag
+    local layout = macroIndexLayout()
+    if layout then
+        diag.accountMacroCount = layout.accountCount
+        diag.characterMacroCount = layout.characterCount
+        diag.characterMacroStart = layout.characterStart
     end
 
-    -- actionText and the macro name are retained solely as diagnostics. They
-    -- must never identify another macro body: duplicate names such as "打断"
-    -- are common across account and character macro scopes.
+    local direct = directMacroIndexResolution(actionInfoID, diag.actionText, layout, diag)
+    if direct then return diag end
+
+    local representedSpellID, representedSource = actionSpellIdentity(
+        actionInfoID,
+        actionMacroSpellID,
+        diag.actionInfoLooksLikeMacroIndex == true
+    )
+    diag.representedSpellID = representedSpellID
+    diag.representedSpellSource = representedSource
+    local semantic = semanticMacroResolution(diag.actionText, representedSpellID, layout, diag)
+    if semantic then return diag end
+
     return diag
 end
 
@@ -511,7 +705,7 @@ end
 
 
 local function buildMacroEntry(base, actionInfoID, subType, actionMacroSpellID)
-    local diag = resolveMacroFromActionSlot(base.actionSlot, actionInfoID)
+    local diag = resolveMacroFromActionSlot(base.actionSlot, actionInfoID, actionMacroSpellID)
     diag.slot = base.actionSlot
     diag.buttonName = base.buttonName
     diag.bindingCommand = base.bindingCommand
@@ -1011,13 +1205,21 @@ function Resolver:ResolveSpell(spellID)
                 bindingCommand = entry.bindingCommand,
                 rawBinding = entry.rawBinding,
                 actionInfoId = entry.actionInfoId,
+                actionInfoValue = diag.actionInfoValue or entry.actionInfoId,
                 actionText = diag.actionText,
-                actionMacroSpellID = entry.macroSpellID,
+                actionMacroSpellID = entry.macroSpellID or diag.actionMacroSpellID,
                 macroName = entry.macroName,
                 resolvedMacroIndex = entry.macroID,
                 macroIdentitySource = diag.macroIdentitySource,
                 macroIdentityVerified = diag.macroIdentityVerified == true,
                 actionInfoMacroIndex = diag.actionInfoMacroIndex,
+                actionInfoLooksLikeMacroIndex = diag.actionInfoLooksLikeMacroIndex == true,
+                representedSpellID = diag.representedSpellID,
+                representedSpellSource = diag.representedSpellSource,
+                actionTextCandidateCount = tonumber(diag.actionTextCandidateCount) or 0,
+                semanticCandidateCount = tonumber(diag.semanticCandidateCount) or 0,
+                semanticRejectedCount = tonumber(diag.semanticRejectedCount) or 0,
+                semanticCandidateIndexes = diag.semanticCandidateIndexes,
                 actionInfoIdReadAttempts = tonumber(diag.actionInfoIdReadAttempts) or 0,
                 actionInfoIdSuccessfulReads = tonumber(diag.actionInfoIdSuccessfulReads) or 0,
                 identityFailureReason = diag.failureReason,
