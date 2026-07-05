@@ -58,29 +58,35 @@ end
 
 local function hideLayerFrame(frame, secure)
     if not frame then return end
-    if secure == true and inCombatLockdown() then
-        if frame.SetAlpha then pcall(frame.SetAlpha, frame, 0) end
+    if inCombatLockdown() then
+        frame.tacticEchoCombatVisibilityPending = "hide"
         return
     end
     if frame.Hide then pcall(frame.Hide, frame) end
     if frame.SetAlpha then pcall(frame.SetAlpha, frame, 1) end
+    frame.tacticEchoCombatVisibilityPending = nil
 end
 
 local function showLayerFrame(frame, secure)
     if not frame then return end
+    if inCombatLockdown() then
+        frame.tacticEchoCombatVisibilityPending = "show"
+        return
+    end
     if frame.SetAlpha then pcall(frame.SetAlpha, frame, 1) end
-    if secure == true and inCombatLockdown() and frame.IsShown and not frame:IsShown() then return end
     if frame.Show then pcall(frame.Show, frame) end
+    frame.tacticEchoCombatVisibilityPending = nil
 end
 
 local function hideInputLayer(layer)
     if not layer then return end
     if inCombatLockdown() then
-        -- SecureActionButtonTemplate visibility is protected in combat. Keep the
-        -- old proxy untouched and cover it with the non-secure blocker so stale
-        -- mappings fail closed until the next out-of-combat refresh can hide it.
+        -- SecureActionButtonTemplate and sibling button visibility can both be
+        -- protected or tainted in combat. Do not call Show/Hide/SetAlpha here;
+        -- mark the layer dirty so the next out-of-combat refresh can hide it.
         hideLayerFrame(layer.proxy, true)
-        showLayerFrame(layer.blocker, false)
+        hideLayerFrame(layer.blocker, false)
+        layer.dirty = true
         return
     end
     hideLayerFrame(layer.proxy, true)
@@ -233,8 +239,8 @@ function HudClickRouter:SetCardVisible(card, visible)
     layer.visible = visible
     if not visible then
         -- Out of combat, hide both sibling layers with the card. In combat,
-        -- protect against stale secure clicks by leaving the blocker over any
-        -- still-shown proxy until secure visibility can be changed safely.
+        -- do not touch proxy/blocker visibility; protected or tainted sibling
+        -- buttons are only marked dirty and reconciled after combat.
         hideInputLayer(layer)
         setCardState(card, false, "hud_card_hidden", nil)
     else
@@ -273,8 +279,8 @@ function HudClickRouter:Configure(card, item, visible)
     local mappedSignature = targetSignature(target)
     if inCombatLockdown() then
         -- Attributes cannot be retargeted in combat. Existing exact mappings
-        -- remain usable; every mismatch is covered by the blocker until the
-        -- player leaves combat, rather than risking a click on a prior button.
+        -- remain usable; every mismatch records a blocked state and defers all
+        -- visibility changes until the player leaves combat.
         if layer.proxy.tacticEchoSignature == mappedSignature and layer.proxy.tacticEchoTarget == target.button then
             layer.proxy.tacticEchoButtonName = target.buttonName
             hideLayerFrame(layer.blocker, false)

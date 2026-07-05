@@ -1,8 +1,8 @@
-# 1.1.4 交接：HUD Button 战斗保护收口
+# 1.1.5 交接：HUD 点击路由战斗保护收口
 
-- 当前版本：`1.1.4`。
-- HUD 卡片 Button 在战斗中不再调用 `SetAlpha`、`EnableMouse`、`Show` 或 `Hide`；可见性变化只记录状态，避免 `ADDON_ACTION_BLOCKED UNKNOWN()`。
-- HUD 卡片在战斗中隐藏时使用透明化和鼠标禁用，不直接调用 `Button:Hide()`；HUD 手动点击 secure proxy 在战斗中由 blocker 覆盖旧映射，脱战后再真实隐藏或重建。
+- 当前版本：`1.1.5`。
+- HUD 卡片 Button 在战斗中继续不调用 `SetAlpha`、`EnableMouse`、`Show` 或 `Hide`；可见性变化只记录状态，避免 `ADDON_ACTION_BLOCKED UNKNOWN()`。
+- `HudClickRouter` 的 secure proxy 和 blocker 在战斗中也不再调用 `SetAlpha`、`Show` 或 `Hide`；只记录 `tacticEchoCombatVisibilityPending` / `dirty`，脱战后再真实隐藏、显示或重建。
 - TEK 连发介入白名单主键继续不让步；非白名单真实键盘输入，包括 `Ctrl`、`Alt`、`Shift`、`Win` 修饰键，按下到抬起期间持续 `manual_input_held`，用于避免物理修饰键叠加自动派发主键。
 - 默认策略“自动启停”在未进战斗或脱战时显示为“待命”；底层 TEAP 仍是非派发 `paused`，进战自动恢复运行。
 - `ActionBarBindingResolver` 是 AutoBurst、P4 Reaction 常规路由、控制、防御、生存 HUD 的唯一常规宏资格入口；已确认的现有宏语义保持兼容，HUD 人工来源固定 `BindingToken=0`。

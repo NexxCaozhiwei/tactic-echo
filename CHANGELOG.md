@@ -1,3 +1,9 @@
+# 1.1.5 — HUD 点击路由战斗保护收口
+
+- **点击层保护调用收口**：`HudClickRouter` 在战斗中不再对 secure proxy 或 blocker 调用 `SetAlpha`、`Show`、`Hide`，避免 `ADDON_ACTION_BLOCKED UNKNOWN()` 从 HUD 点击路由栈触发。
+- **延迟刷新语义固化**：战斗中的 proxy/blocker 可见性变化只记录 `tacticEchoCombatVisibilityPending` 与 `dirty`；脱战后再真实隐藏、显示或重建。
+- **输入边界不变**：不新增输入通道，不修改 TEK 派发逻辑；自动打断继续硬暂停，AutoBurst 脱战硬门控、共享宏资格和 HUD `manual_hold` 规则保持不变。
+
 # 1.1.4 — HUD Button 战斗保护收口
 
 - **保护调用再收口**：战斗中 HUD 卡片可见性变更不再调用卡片 Button 的 `SetAlpha`、`EnableMouse`、`Show` 或 `Hide`，只记录待处理状态，避免 `ADDON_ACTION_BLOCKED UNKNOWN()`。
