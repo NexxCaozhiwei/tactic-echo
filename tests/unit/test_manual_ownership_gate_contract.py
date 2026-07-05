@@ -31,6 +31,7 @@ class ManualOwnershipGateContractTests(unittest.TestCase):
             '"manual_first": {"recovery_seconds": 0.250, "freshness_frames": 2, "replay_guard_seconds": 0.500}',
             "begin_manual_hold",
             "end_manual_hold",
+            "_MODIFIER_HOLD_NAMES",
             "manual_replay_guard",
             "manual_epoch",
             "reset_recovery_gate",

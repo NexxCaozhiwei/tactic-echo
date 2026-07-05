@@ -13,6 +13,8 @@ from tek.src.physical_input import (
     WindowsPhysicalInputMonitor,
     WM_KEYDOWN,
     WM_KEYUP,
+    WM_SYSKEYDOWN,
+    WM_SYSKEYUP,
 )
 from tek.src.profile_resolver import ProfileResolver
 from tek.src.safety_gate import SafetyContext
@@ -85,7 +87,7 @@ class ManualOwnershipTests(unittest.TestCase):
         now[0] += 0.051
         self.assertEqual(guard.dispatch_block_reason(), "manual_wait_freshness")
 
-    def test_local_whitelist_exempts_wasd_space_and_modifier_combinations_of_whitelisted_main_keys(self):
+    def test_local_whitelist_exempts_wasd_space_main_keys(self):
         now = [30.0]
         guard = PhysicalInputPause(clock=lambda: now[0])
         monitor = self.make_monitor(guard)
@@ -93,13 +95,35 @@ class ManualOwnershipTests(unittest.TestCase):
         self.assertFalse(monitor.observe_keyboard_event(vk_code=ord("W"), message=WM_KEYDOWN))
         self.assertFalse(guard.snapshot().active)
         monitor.observe_keyboard_event(vk_code=ord("W"), message=WM_KEYUP)
-        self.assertFalse(monitor.observe_keyboard_event(vk_code=0x10, message=WM_KEYDOWN))  # Shift itself is never manual.
-        self.assertFalse(monitor.observe_keyboard_event(vk_code=ord("W"), message=WM_KEYDOWN))
-        self.assertFalse(guard.snapshot().active)
-        monitor.observe_keyboard_event(vk_code=ord("W"), message=WM_KEYUP)
-        monitor.observe_keyboard_event(vk_code=0x10, message=WM_KEYUP)
         self.assertFalse(monitor.observe_keyboard_event(vk_code=0x20, message=WM_KEYDOWN))
         self.assertFalse(guard.snapshot().active)
+
+    def test_modifier_keys_take_manual_ownership_until_release(self):
+        now = [30.0]
+        guard = PhysicalInputPause(profile="balanced", clock=lambda: now[0])
+        monitor = self.make_monitor(guard)
+
+        self.assertTrue(monitor.observe_keyboard_event(vk_code=0x10, message=WM_KEYDOWN))
+        self.assertEqual(guard.snapshot().held_inputs, ("SHIFT",))
+        self.assertEqual(guard.dispatch_block_reason(), "manual_input_held")
+        # A whitelisted movement key still does not create a new hold, but the
+        # active modifier continues to own manual input until it is released.
+        self.assertFalse(monitor.observe_keyboard_event(vk_code=ord("W"), message=WM_KEYDOWN))
+        self.assertEqual(guard.dispatch_block_reason(), "manual_input_held")
+        monitor.observe_keyboard_event(vk_code=ord("W"), message=WM_KEYUP)
+        self.assertTrue(monitor.observe_keyboard_event(vk_code=0x10, message=WM_KEYUP))
+        self.assertEqual(guard.dispatch_block_reason(), "manual_release_delay")
+
+    def test_alt_syskey_takes_manual_ownership_until_release(self):
+        now = [35.0]
+        guard = PhysicalInputPause(profile="balanced", clock=lambda: now[0])
+        monitor = self.make_monitor(guard)
+
+        self.assertTrue(monitor.observe_keyboard_event(vk_code=0x12, message=WM_SYSKEYDOWN))
+        self.assertEqual(guard.snapshot().held_inputs, ("ALT",))
+        self.assertEqual(guard.dispatch_block_reason(), "manual_input_held")
+        self.assertTrue(monitor.observe_keyboard_event(vk_code=0x12, message=WM_SYSKEYUP))
+        self.assertEqual(guard.dispatch_block_reason(), "manual_release_delay")
 
     def test_default_local_whitelist_exempts_wasd(self):
         now = [40.0]

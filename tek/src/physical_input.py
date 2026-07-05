@@ -73,6 +73,11 @@ _MODIFIER_VKS = {
     VK_CONTROL: "CTRL", VK_LCONTROL: "CTRL", VK_RCONTROL: "CTRL",
     VK_MENU: "ALT", VK_LMENU: "ALT", VK_RMENU: "ALT",
 }
+_MODIFIER_HOLD_NAMES = {
+    VK_SHIFT: "SHIFT", VK_LSHIFT: "LSHIFT", VK_RSHIFT: "RSHIFT",
+    VK_CONTROL: "CTRL", VK_LCONTROL: "LCTRL", VK_RCONTROL: "RCTRL",
+    VK_MENU: "ALT", VK_LMENU: "LALT", VK_RMENU: "RALT",
+}
 
 _SPECIAL_VK_NAMES = {
     0x08: "BACKSPACE", 0x09: "TAB", 0x0D: "ENTER", 0x1B: "ESC",
@@ -613,13 +618,15 @@ class WindowsPhysicalInputMonitor:
             return False
         with self._lock:
             if message in {WM_KEYDOWN, WM_SYSKEYDOWN}:
-                if vk_code in _MODIFIER_VKS:
-                    self._pressed_modifiers.add(_MODIFIER_VKS[vk_code])
-                    return False
                 if vk_code in self._active_keyboard_vks:
                     return False
                 self._active_keyboard_vks.add(vk_code)
-                binding = self._binding_for_vk(vk_code)
+                modifier = _MODIFIER_VKS.get(vk_code)
+                if modifier:
+                    self._pressed_modifiers.add(modifier)
+                    binding = _MODIFIER_HOLD_NAMES.get(vk_code, modifier)
+                else:
+                    binding = self._binding_for_vk(vk_code)
                 self._last_physical_key = binding
                 if self.intervention_whitelist.is_exempt_vk(vk_code):
                     self._last_physical_key_classification = "dispatch_exempt"
@@ -628,14 +635,14 @@ class WindowsPhysicalInputMonitor:
                 self._manual_by_vk[vk_code] = binding
                 return self.pause.begin_manual_hold(binding)
             if message in {WM_KEYUP, WM_SYSKEYUP}:
-                if vk_code in _MODIFIER_VKS:
-                    self._pressed_modifiers.discard(_MODIFIER_VKS[vk_code])
-                    return False
                 self._active_keyboard_vks.discard(vk_code)
                 binding = self._manual_by_vk.pop(vk_code, None)
                 if binding:
                     self._last_physical_key = binding
                     self._last_physical_key_classification = "manual_release"
+                modifier = _MODIFIER_VKS.get(vk_code)
+                if modifier:
+                    self._pressed_modifiers.discard(modifier)
                 # KEYUP only releases an existing hold; it never starts or
                 # extends a new manual-priority window.
                 return self.pause.end_manual_hold(binding) if binding else False

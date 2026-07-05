@@ -1,6 +1,7 @@
-# 1.1.1 交接：自动启停待命状态
+# 1.1.2 交接：TEK 修饰键手动接管
 
-- 当前版本：`1.1.1`。
+- 当前版本：`1.1.2`。
+- TEK 连发介入白名单主键继续不让步；非白名单真实键盘输入，包括 `Ctrl`、`Alt`、`Shift`、`Win` 修饰键，按下到抬起期间持续 `manual_input_held`，用于避免物理修饰键叠加自动派发主键。
 - 默认策略“自动启停”在未进战斗或脱战时显示为“待命”；底层 TEAP 仍是非派发 `paused`，进战自动恢复运行。
 - `ActionBarBindingResolver` 是 AutoBurst、P4 Reaction 常规路由、控制、防御、生存 HUD 的唯一常规宏资格入口；已确认的现有宏语义保持兼容，HUD 人工来源固定 `BindingToken=0`。
 - `action_info_*` 正文不可读形态只保留有真实 BindingToken 的 P4 target-only transport；不进入 HUD 或 AutoBurst。
