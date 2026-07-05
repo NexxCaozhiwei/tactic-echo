@@ -1,0 +1,32 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[2]
+ADDON = ROOT / "addon" / "!TacticEcho"
+
+
+def read(rel: str) -> str:
+    return (ADDON / rel).read_text(encoding="utf-8")
+
+
+def test_tactical_board_defers_container_alpha_and_scale_in_combat() -> None:
+    board = read("UI/TacticalBoard.lua")
+    assert "local function applyContainerPresentation(frame, alpha, scale)" in board
+    assert "if inCombatLockdown() then" in board
+    assert "frame.tacticEchoCombatPresentationPending = { alpha = alpha, scale = scale }" in board
+    assert "applyContainerPresentation(panel, alpha, scale)" in board
+    assert "applyContainerPresentation(defenseFrame, defenseAlpha, defenseScale)" in board
+    assert "applyContainerPresentation(defenseFrame, 1, 1)" in board
+    assert "panel:SetScale(clamp(scale" not in board
+    assert "defenseFrame:SetScale(clamp(defenseScale" not in board
+
+
+def test_tactical_layout_defers_layout_mutations_in_combat() -> None:
+    layout = read("UI/TacticalHudLayout.lua")
+    assert "local function inCombatLockdown()" in layout
+    assert "if inCombatLockdown() then" in layout
+    assert "board.tacticEchoLayoutDirty = true" in layout
+    assert "board.tacticEchoPendingLayoutFingerprint = fingerprint" in layout
+    assert "including SetScale/SetPoint/SetSize/SetShown" in layout
+    assert "board.tacticEchoLayoutDirty = nil" in layout

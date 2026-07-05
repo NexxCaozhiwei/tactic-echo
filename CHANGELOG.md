@@ -1,3 +1,9 @@
+# 1.1.6 — HUD 容器缩放与布局战斗保护收口
+
+- **容器缩放保护**：`TacticalBoard` 在战斗中不再对 `TacticEchoTacticalBoard` 或 defense 容器调用 `SetScale` / `SetAlpha`，避免 HUD 容器进入保护链后触发 `ADDON_ACTION_BLOCKED TacticEchoTacticalBoard:SetScale()`。
+- **布局变更延迟**：`TacticalHudLayout` 在战斗中发现布局指纹变化时只记录 `tacticEchoLayoutDirty` / `tacticEchoPendingLayoutFingerprint`，不执行 `SetScale`、`SetPoint`、`SetSize`、`SetShown` 等布局变更；脱战后再应用。
+- **输入边界不变**：不新增输入通道，不修改 TEK 派发逻辑；自动打断继续硬暂停，AutoBurst 脱战硬门控、共享宏资格和 HUD `manual_hold` 规则保持不变。
+
 # 1.1.5 — HUD 点击路由战斗保护收口
 
 - **点击层保护调用收口**：`HudClickRouter` 在战斗中不再对 secure proxy 或 blocker 调用 `SetAlpha`、`Show`、`Hide`，避免 `ADDON_ACTION_BLOCKED UNKNOWN()` 从 HUD 点击路由栈触发。

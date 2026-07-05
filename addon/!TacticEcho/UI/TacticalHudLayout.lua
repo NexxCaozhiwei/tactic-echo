@@ -15,6 +15,10 @@ local function clamp(value, minimum, maximum)
     return value
 end
 
+local function inCombatLockdown()
+    return type(InCombatLockdown) == "function" and InCombatLockdown() == true
+end
+
 local function clear(frame)
     if frame then frame:ClearAllPoints() end
 end
@@ -297,6 +301,15 @@ function TacticalHudLayout:Apply(board, defenseFrame, nodes, hud)
     -- repeating SetBackdropColor/SetScale/SetShown when no card or layout state
     -- has changed; renderInternal still applies transient combat alpha/scale.
     if board.tacticEchoLayoutFingerprint == fingerprint then return false end
+    if inCombatLockdown() then
+        -- Once HUD manual-click layers have introduced secure siblings, the
+        -- board can be on a protected/tainted path in combat. Defer all layout
+        -- mutations, including SetScale/SetPoint/SetSize/SetShown, until the
+        -- next out-of-combat render.
+        board.tacticEchoLayoutDirty = true
+        board.tacticEchoPendingLayoutFingerprint = fingerprint
+        return false
+    end
     setContainerBackdrop(board, hud.backdropAlpha)
     board:SetScale(clamp(hud.scale, 0.60, 2.00))
     board.handle:SetShown(hud.locked ~= true and hud.showDragHandle ~= false)
@@ -329,6 +342,8 @@ function TacticalHudLayout:Apply(board, defenseFrame, nodes, hud)
         board.statusText:SetPoint("TOPLEFT", board, "BOTTOMLEFT", 0, -4)
     end
     board.tacticEchoLayoutFingerprint = fingerprint
+    board.tacticEchoLayoutDirty = nil
+    board.tacticEchoPendingLayoutFingerprint = nil
     return true
 end
 

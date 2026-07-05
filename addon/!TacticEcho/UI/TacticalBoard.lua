@@ -35,6 +35,23 @@ local function plainBoolean(value)
     return ok and result or nil
 end
 
+local function inCombatLockdown()
+    return type(InCombatLockdown) == "function" and InCombatLockdown() == true
+end
+
+local function applyContainerPresentation(frame, alpha, scale)
+    if not frame then return end
+    alpha = clamp(alpha, 0.20, 1.00)
+    scale = clamp(scale, 0.60, 2.00)
+    if inCombatLockdown() then
+        frame.tacticEchoCombatPresentationPending = { alpha = alpha, scale = scale }
+        return
+    end
+    frame.tacticEchoCombatPresentationPending = nil
+    frame:SetAlpha(alpha)
+    frame:SetScale(scale)
+end
+
 local function db()
     -- Config/Normalize.lua is the sole owner of persisted HUD defaults.  The
     -- fallback intentionally creates only containers so a partial load cannot
@@ -395,14 +412,11 @@ local function renderInternal(self, snapshot)
     -- TacticalHudLayout owns coordinates and base sizing. Apply effective
     -- combat-state presentation afterward so its internal layout cache never
     -- needs to re-anchor cards simply because alpha / scale changed.
-    panel:SetAlpha(clamp(alpha, 0.20, 1.00))
-    panel:SetScale(clamp(scale, 0.60, 2.00))
+    applyContainerPresentation(panel, alpha, scale)
     if hud.defenseDetached == true then
-        defenseFrame:SetAlpha(clamp(defenseAlpha, 0.20, 1.00))
-        defenseFrame:SetScale(clamp(defenseScale, 0.60, 2.00))
+        applyContainerPresentation(defenseFrame, defenseAlpha, defenseScale)
     else
-        defenseFrame:SetAlpha(1)
-        defenseFrame:SetScale(1)
+        applyContainerPresentation(defenseFrame, 1, 1)
     end
 
     local hasDefense = false
