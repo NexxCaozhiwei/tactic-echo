@@ -10,6 +10,7 @@ Start with the root documents:
 - `../DECISIONS.md` for current decisions.
 
 Current baseline documents live in `baselines/`; start with `baselines/BASELINE_1.1.0.md`.
+Patch manifest documents live in `patch-manifests/`; root-level `PATCH_MANIFEST*` files are not canonical.
 
 Topic documents:
 

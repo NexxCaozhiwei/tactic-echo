@@ -28,6 +28,12 @@
 - HUD 不创建按键、不改宏、不改目标、不调用 `Button:Click()`；只可经 static secure proxy 指向已经验证的当前原生按钮。
 - 自动打断继续硬暂停；AutoBurst 任何脱战帧都不得创建或保留 plan/capture、Burst candidate、Burst TEAP 或 TEK 请求。
 
+## 文档归档
+
+- 所有 `BASELINE_<版本>.md` 只允许位于 `docs/baselines/`。
+- 所有 `PATCH_MANIFEST*` 只允许位于 `docs/patch-manifests/`。
+- 根目录、`doc/` 与 `docs/` 根层不得保存 baseline 或 patch manifest 副本。
+
 ## 验收
 
 - `docs/P5.11_SHARED_MACRO_POLICY_TEST.md`

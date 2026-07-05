@@ -3,6 +3,7 @@
 - **基线升级**：将当前开发基线提升为 `1.1.0`，同步 `VERSION`、TOC、`Core/Bootstrap.lua`、`AGENTS.md`、`README.md` 与 `docs/baselines/BASELINE_1.1.0.md`。
 - **代码审计结论固化**：`AutoReaction`、Defaults 与 Normalize 均保持 `auto_interrupt_suspended`，生产运行时不会生成 reaction candidate、BindingToken、TEAP reaction 帧或 TEK 自动打断请求。
 - **共享宏资格继续冻结**：AutoBurst、Reaction、控制、防御与生存继续统一经 `ActionBarBindingResolver:IsVerifiedCurrentMacroSource()`；AutoBurst 额外经 `IsAutoBurstMacroEligible()`。宏名、图标、宏列表存在和未知正文仍不得授权当前动作栏身份。
+- **交付文档归档收口**：所有 `PATCH_MANIFEST*` 统一归档到 `docs/patch-manifests/`，根目录和 `docs/` 根层不再保留重复清单；验证脚本同步阻止新的错位 patch manifest。
 - **运行边界不变**：AutoBurst 脱战硬门控、HUD/原生动作条 `manual_hold` 人工优先、DurationObject 仅视觉转盘、HUD 徽标纯秒数、P4 target-only action-info 例外隔离均保持不变。
 
 # 1.0.56 P5.11 — 宏资格统一、控制诊断收口与 HUD 手动来源一致性

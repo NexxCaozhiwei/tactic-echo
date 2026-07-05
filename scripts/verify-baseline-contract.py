@@ -75,6 +75,23 @@ def verify_repository(root: Path) -> list[str]:
         errors.append("missing canonical baseline directory: docs/baselines")
     elif not (baseline_dir / f"BASELINE_{root_version}.md").is_file():
         errors.append(f"missing current baseline: docs/baselines/BASELINE_{root_version}.md")
+
+    patch_manifest_dir = root / "docs" / "patch-manifests"
+    misplaced_patch_manifests = []
+    for path in sorted(root.rglob("PATCH_MANIFEST*")):
+        if not path.is_file():
+            continue
+        try:
+            path.relative_to(patch_manifest_dir)
+        except ValueError:
+            misplaced_patch_manifests.append(path)
+    if misplaced_patch_manifests:
+        errors.extend(
+            f"patch manifest must live under docs/patch-manifests: {path.relative_to(root)}"
+            for path in misplaced_patch_manifests
+        )
+    if not patch_manifest_dir.is_dir():
+        errors.append("missing canonical patch manifest directory: docs/patch-manifests")
     if not (root / "CHANGELOG.md").is_file():
         errors.append("required file missing: CHANGELOG.md")
 
