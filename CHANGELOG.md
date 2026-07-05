@@ -1,3 +1,9 @@
+# 1.1.3 — HUD 战斗中安全隐藏
+
+- **保护调用修复**：HUD 卡片隐藏路径不再在战斗中直接调用 `Button:Hide()`，改为透明化并禁用卡片鼠标输入，避免 `ADDON_ACTION_BLOCKED`。
+- **secure proxy fail-closed**：HUD 手动点击路由在战斗中不隐藏 `SecureActionButtonTemplate`，而是用非 secure blocker 覆盖旧 proxy，防止旧映射被误点。
+- **输入边界不变**：TEK 白名单与修饰键手动接管规则保持 1.1.2 行为；自动打断继续硬暂停，AutoBurst 脱战硬门控不变。
+
 # 1.1.2 — TEK 修饰键手动接管
 
 - **白名单边界保持**：TEK 本地连发介入白名单继续只豁免配置中的主键，默认 `W/A/S/D/SPACE` 不进入手动让步。

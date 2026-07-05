@@ -21,7 +21,14 @@ class HudIconVisibilityContractTests(unittest.TestCase):
         self.assertIn("local function setVisible(card, visible, alpha)", self.text)
         self.assertIn("local targetAlpha = clamp(alpha, 0.05, 1.00)", self.text)
         self.assertIn("card.fadeAlpha:SetDuration(0.10)", self.text)
-        self.assertIn("card:Hide()", self.text)
+        self.assertIn("hideFrameSafely(card)", self.text)
+        self.assertIn("showFrameSafely(card, targetAlpha)", self.text)
+
+    def test_visibility_avoids_protected_show_hide_during_combat(self) -> None:
+        self.assertIn("local function hideFrameSafely(frame)", self.text)
+        self.assertIn("if inCombatLockdown() then", self.text)
+        self.assertIn("frame.tacticEchoCombatHidden = true", self.text)
+        self.assertIn("if inCombatLockdown() and frame.IsShown and not frame:IsShown() then return end", self.text)
 
     def test_native_mask_is_optional_and_failure_tolerant(self) -> None:
         self.assertIn("local function createRoundedActionIconMask", self.text)

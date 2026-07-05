@@ -47,6 +47,14 @@ def test_hud_manual_click_is_a_secure_proxy_not_an_input_or_macro_writer() -> No
         assert token in resolver
 
 
+def test_hud_click_router_covers_secure_proxy_in_combat_instead_of_hiding_it() -> None:
+    router = source("UI/HudClickRouter.lua")
+    assert "local function hideInputLayer(layer)" in router
+    assert "SecureActionButtonTemplate visibility is protected in combat" in router
+    assert "hideLayerFrame(layer.proxy, true)" in router
+    assert "showLayerFrame(layer.blocker, false)" in router
+
+
 def test_manual_click_preempts_dispatch_through_existing_manual_hold() -> None:
     priority = source("Tactics/ManualActionPriority.lua")
     signal = source("Signal/SignalFrame.lua")

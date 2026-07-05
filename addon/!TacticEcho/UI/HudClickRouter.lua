@@ -56,6 +56,37 @@ local function setCardState(card, ready, reason, source)
     card.manualClickSource = source
 end
 
+local function hideLayerFrame(frame, secure)
+    if not frame then return end
+    if secure == true and inCombatLockdown() then
+        if frame.SetAlpha then pcall(frame.SetAlpha, frame, 0) end
+        return
+    end
+    if frame.Hide then pcall(frame.Hide, frame) end
+    if frame.SetAlpha then pcall(frame.SetAlpha, frame, 1) end
+end
+
+local function showLayerFrame(frame, secure)
+    if not frame then return end
+    if frame.SetAlpha then pcall(frame.SetAlpha, frame, 1) end
+    if secure == true and inCombatLockdown() and frame.IsShown and not frame:IsShown() then return end
+    if frame.Show then pcall(frame.Show, frame) end
+end
+
+local function hideInputLayer(layer)
+    if not layer then return end
+    if inCombatLockdown() then
+        -- SecureActionButtonTemplate visibility is protected in combat. Keep the
+        -- old proxy untouched and cover it with the non-secure blocker so stale
+        -- mappings fail closed until the next out-of-combat refresh can hide it.
+        hideLayerFrame(layer.proxy, true)
+        showLayerFrame(layer.blocker, false)
+        return
+    end
+    hideLayerFrame(layer.proxy, true)
+    hideLayerFrame(layer.blocker, false)
+end
+
 local function reportBlocked(card)
     if not card then return end
     local timestamp = now()
@@ -201,18 +232,16 @@ function HudClickRouter:SetCardVisible(card, visible)
     if layer.visible ~= visible then layer.dirty = true end
     layer.visible = visible
     if not visible then
-        -- Hide both sibling layers with the card. Keeping a stale transparent
-        -- blocker on screen would otherwise consume clicks in an old HUD slot.
-        -- The secure target attributes may remain cached, but a hidden proxy
-        -- cannot receive input and Configure will fail closed on its next show.
-        layer.proxy:Hide()
-        layer.blocker:Hide()
+        -- Out of combat, hide both sibling layers with the card. In combat,
+        -- protect against stale secure clicks by leaving the blocker over any
+        -- still-shown proxy until secure visibility can be changed safely.
+        hideInputLayer(layer)
         setCardState(card, false, "hud_card_hidden", nil)
     else
         -- Until Configure resolves an exact current source, the blocker owns
         -- the visible surface and reports why this HUD icon cannot execute.
-        layer.proxy:Show()
-        layer.blocker:Show()
+        showLayerFrame(layer.proxy, true)
+        showLayerFrame(layer.blocker, false)
     end
 end
 
@@ -224,12 +253,11 @@ function HudClickRouter:Configure(card, item, visible)
     if layer.visible ~= visible then layer.dirty = true end
     layer.visible = visible
     if not visible then
-        layer.proxy:Hide()
-        layer.blocker:Hide()
+        hideInputLayer(layer)
         setCardState(card, false, "hud_card_hidden", nil)
         return
     end
-    layer.proxy:Show()
+    showLayerFrame(layer.proxy, true)
     if layer.dirty ~= true and layer.itemSignature == signature then return end
 
     local target = resolveTarget(item)
@@ -237,7 +265,7 @@ function HudClickRouter:Configure(card, item, visible)
     layer.dirty = false
     if target.status ~= "Ready" then
         if not inCombatLockdown() then clearSecureTarget(layer.proxy) end
-        layer.blocker:Show()
+        showLayerFrame(layer.blocker, false)
         setCardState(card, false, target.reason or "manual_actionbar_source_missing", nil)
         return
     end
@@ -249,10 +277,10 @@ function HudClickRouter:Configure(card, item, visible)
         -- player leaves combat, rather than risking a click on a prior button.
         if layer.proxy.tacticEchoSignature == mappedSignature and layer.proxy.tacticEchoTarget == target.button then
             layer.proxy.tacticEchoButtonName = target.buttonName
-            layer.blocker:Hide()
+            hideLayerFrame(layer.blocker, false)
             setCardState(card, true, nil, target)
         else
-            layer.blocker:Show()
+            showLayerFrame(layer.blocker, false)
             setCardState(card, false, "manual_actionbar_rebind_out_of_combat", nil)
         end
         return
@@ -260,10 +288,10 @@ function HudClickRouter:Configure(card, item, visible)
 
     if configureSecureTarget(layer.proxy, target, mappedSignature) then
         layer.proxy.tacticEchoButtonName = target.buttonName
-        layer.blocker:Hide()
+        hideLayerFrame(layer.blocker, false)
         setCardState(card, true, nil, target)
     else
-        layer.blocker:Show()
+        showLayerFrame(layer.blocker, false)
         setCardState(card, false, "manual_actionbar_source_missing", nil)
     end
 end

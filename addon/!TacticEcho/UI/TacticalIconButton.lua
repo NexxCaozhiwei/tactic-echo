@@ -108,6 +108,30 @@ local function safeShown(frame, shown)
     if frame and frame.SetShown then pcall(frame.SetShown, frame, shown == true) end
 end
 
+local function inCombatLockdown()
+    return type(InCombatLockdown) == "function" and InCombatLockdown() == true
+end
+
+local function hideFrameSafely(frame)
+    if not frame then return end
+    if inCombatLockdown() then
+        if frame.SetAlpha then pcall(frame.SetAlpha, frame, 0) end
+        if frame.EnableMouse then pcall(frame.EnableMouse, frame, false) end
+        frame.tacticEchoCombatHidden = true
+        return
+    end
+    if frame.Hide then pcall(frame.Hide, frame) end
+end
+
+local function showFrameSafely(frame, alpha)
+    if not frame then return end
+    if frame.SetAlpha then pcall(frame.SetAlpha, frame, alpha or 1) end
+    if inCombatLockdown() and frame.IsShown and not frame:IsShown() then return end
+    if frame.EnableMouse then pcall(frame.EnableMouse, frame, true) end
+    if frame.Show then pcall(frame.Show, frame) end
+    frame.tacticEchoCombatHidden = nil
+end
+
 -- Native IconFrame needs a visible rim between the spell art and the outer
 -- action-button contour.  Keep spell art slightly inside the button while the
 -- background, native border, hover/cast overlays and Proc rings remain on the
@@ -186,7 +210,7 @@ end
 local function playVisibilityFade(card, targetAlpha, show)
     if not card or not card.fadeGroup then return false end
     card.fadeTo = clamp(targetAlpha, 0.05, 1)
-    if show then card:Show() end
+    if show then showFrameSafely(card, card:GetAlpha() or targetAlpha or 1) end
     local anim = card.fadeAlpha
     if not anim then return false end
     card.fadeGroup:Stop()
@@ -200,13 +224,14 @@ local function setVisible(card, visible, alpha)
     if not card then return end
     if visible ~= true then
         if card.fadeGroup and card.resolvedAppearance and card.resolvedAppearance.fadeTransitions then
+            if card.EnableMouse then pcall(card.EnableMouse, card, false) end
             card.fadeTo = 0
             card.fadeGroup:Stop()
             card.fadeAlpha:SetFromAlpha(card:GetAlpha() or 1)
             card.fadeAlpha:SetToAlpha(0)
             card.fadeGroup:Play()
         else
-            card:Hide()
+            hideFrameSafely(card)
         end
         return
     end
@@ -214,8 +239,7 @@ local function setVisible(card, visible, alpha)
     if card.resolvedAppearance and card.resolvedAppearance.fadeTransitions and card:IsShown() then
         playVisibilityFade(card, targetAlpha, true)
     else
-        card:SetAlpha(targetAlpha)
-        card:Show()
+        showFrameSafely(card, targetAlpha)
     end
     if card.icon then card.icon:SetAlpha(1); card.icon:Show() end
 end
@@ -1177,7 +1201,7 @@ function TacticalIconButton:Create(parent, name, size, interactionRole)
     card.fadeAlpha:SetDuration(0.10)
     card.fadeAlpha:SetSmoothing("OUT")
     card.fadeGroup:SetScript("OnFinished", function()
-        if card.fadeTo and card.fadeTo <= 0 then card:Hide() else card:SetAlpha(card.fadeTo or 1) end
+        if card.fadeTo and card.fadeTo <= 0 then hideFrameSafely(card) else showFrameSafely(card, card.fadeTo or 1) end
     end)
 
     -- Text uses a dedicated overlay frame rather than the card directly.
