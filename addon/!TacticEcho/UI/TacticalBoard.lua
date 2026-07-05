@@ -90,6 +90,7 @@ local function statusText(primary)
         blocked = "已阻断",
         error = "异常",
         paused = "暂停中",
+        standby = "待命中",
         -- The icon retains the finer “引导 / 引导锁 / 蓄力 / 蓄力锁” label.
         -- The board-level line deliberately uses the shared human status term.
         channeling = "引导中",

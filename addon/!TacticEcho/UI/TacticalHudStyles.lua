@@ -22,6 +22,7 @@ TacticalHudStyles.COLORS = {
     unknown = { 0.60, 0.52, 0.78, 1.00 },
     unbound = { 0.48, 0.52, 0.60, 1.00 },
     paused = { 0.96, 0.72, 0.18, 1.00 },
+    standby = { 0.36, 0.78, 0.70, 1.00 },
     cooldown = { 0.58, 0.68, 0.80, 1.00 },
     resource = { 0.28, 0.62, 1.00, 1.00 },
     range = { 1.00, 0.30, 0.18, 1.00 },
@@ -80,6 +81,9 @@ local function primaryVisual(item)
     -- spell currently being cast, without changing any TEAP or dispatch state.
     if item.castingThisSpell == true then
         return "casting", "正在施放该技能"
+    end
+    if item.displayState == "standby" or item.runtimeReason == "out_of_combat_auto_standby" then
+        return "standby", runtimeReason or "未进战斗，自动启停待命"
     end
     if runtimeState == "paused" or item.paused == true then
         return "paused", runtimeReason or "TE 已暂停"
@@ -244,6 +248,9 @@ function TacticalHudStyles:Resolve(item, kind, meta)
         else
             colorKey, alpha, overlay, label, desaturate = "paused", 0.52, "paused", "暂停", true
         end
+        stateLabel = label
+    elseif visual == "standby" then
+        colorKey, alpha, overlay, label, desaturate = "standby", 1.00, "none", "待命", false
         stateLabel = label
     elseif visual == "resource" then
         colorKey, alpha, overlay, label, desaturate = "resource", 0.92, "none", "资源", false

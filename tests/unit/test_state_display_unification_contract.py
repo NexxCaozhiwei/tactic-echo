@@ -21,6 +21,7 @@ class StateDisplayUnificationContractTests(unittest.TestCase):
             'waiting = "未运行"',
             'armed = "运行中"',
             'paused = "暂停中"',
+            'standby = "待命中"',
             'channeling = "引导中"',
             'empowering = "蓄力中"',
             'blocked = "已阻断"',
@@ -33,6 +34,20 @@ class StateDisplayUnificationContractTests(unittest.TestCase):
         ):
             self.assertIn(token, control)
         self.assertNotIn('"运行状态：" .. tostring(runtimeState)', control)
+
+    def test_auto_start_stop_ooc_pause_is_presented_as_standby(self) -> None:
+        control = CONTROL.read_text(encoding="utf-8")
+        styles = STYLES.read_text(encoding="utf-8")
+        board = BOARD.read_text(encoding="utf-8")
+        for token in (
+            'out_of_combat_auto_standby") and "standby"',
+            '自动启停：未进战斗或脱战时显示待命，进战自动恢复运行。',
+            '{ value = "pause_out_of_combat", label = "自动启停（进战运行，脱战待命，默认）" }',
+        ):
+            self.assertIn(token, control)
+        self.assertIn('return "standby", runtimeReason or "未进战斗，自动启停待命"', styles)
+        self.assertIn('"standby", 1.00, "none", "待命", false', styles)
+        self.assertIn('standby = "待命中"', board)
 
     def test_channel_and_empower_keep_manual_pause_semantics_in_compact_bar(self) -> None:
         control = CONTROL.read_text(encoding="utf-8")

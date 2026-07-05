@@ -23,8 +23,9 @@ local SESSION_POLICIES = {
 local frame
 local blocks = {}
 local elapsedSinceUpdate = 0
--- `state` is the user/session intent.  The encoded state may temporarily be
--- paused by combat policy or a focused text input without altering that intent.
+    -- `state` is the user/session intent. The encoded state may temporarily be
+    -- non-dispatchable by auto start/stop policy or a focused text input without
+    -- altering that intent.
 local state = "waiting"
 local sequence = 0
 local frameFreshnessCounter = 0
@@ -99,7 +100,7 @@ end
 function SignalFrame:GetSessionPolicyLabel()
     local labels = {
         manual_keep = "手动启停（脱战保持运行）",
-        pause_out_of_combat = "脱战暂停（进战自动运行，默认）",
+        pause_out_of_combat = "自动启停（进战运行，脱战待命，默认）",
         close_out_of_combat = "脱战停止（进战需手动运行）",
     }
     return labels[getSessionPolicy()] or getSessionPolicy()
@@ -335,10 +336,10 @@ function SignalFrame:GetEffectiveState()
     local castLock = self:GetCastLockInfo()
     if castLock.active then return castLockState(castLock), castLockReason(castLock) end
     local policy = getSessionPolicy()
-    -- pause_out_of_combat preserves the armed intent and only changes the
-    -- encoded output while out of combat. PLAYER_REGEN_DISABLED therefore
-    -- restores armed automatically without a manual restart.
-    if not inCombat and policy == "pause_out_of_combat" then return "paused", "out_of_combat_policy_pause" end
+    -- pause_out_of_combat is the auto start/stop policy: it preserves the armed
+    -- intent and only encodes a non-dispatchable paused TEAP frame while out of
+    -- combat. Display layers present that reason as standby, not manual pause.
+    if not inCombat and policy == "pause_out_of_combat" then return "paused", "out_of_combat_auto_standby" end
     -- close_out_of_combat is event-driven: PLAYER_REGEN_ENABLED changes the
     -- intent itself to paused. That paused intent remains sticky through the
     -- next PLAYER_REGEN_DISABLED until the user explicitly arms TE again.
@@ -811,7 +812,7 @@ function SignalFrame:BuildMessage(reason)
             runtimeReason = castLockReason(castLock)
         elseif not inCombat and sessionPolicy == "pause_out_of_combat" then
             outputState = "paused"
-            sessionPolicyReason = "out_of_combat_policy_pause"
+            sessionPolicyReason = "out_of_combat_auto_standby"
             runtimeReason = sessionPolicyReason
         end
     end
@@ -1179,10 +1180,10 @@ policyWatcher:SetScript("OnEvent", function(_, event)
         return
     end
     if frame and frame:IsShown() then
-        -- manual_keep stays armed across combat changes; pause_out_of_combat
-        -- encodes paused out of combat and armed in combat without mutating the
-        -- user's intent; close_out_of_combat remains paused after the branch
-        -- above until a manual arm.
+        -- manual_keep stays armed across combat changes; pause_out_of_combat is
+        -- auto start/stop and encodes standby out of combat without mutating the
+        -- user's armed intent; close_out_of_combat remains paused after the
+        -- branch above until a manual arm.
         SignalFrame:Refresh("combat_policy")
     end
 end)

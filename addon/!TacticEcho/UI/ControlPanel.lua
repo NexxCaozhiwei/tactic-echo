@@ -1120,6 +1120,7 @@ local USER_STATE_LABELS = {
     waiting = "未运行",
     armed = "运行中",
     paused = "暂停中",
+    standby = "待命中",
     channeling = "引导中",
     empowering = "蓄力中",
     blocked = "已阻断",
@@ -1332,10 +1333,12 @@ function ControlPanel:GetCompactStatus()
     local reasonText = primary.reasonText or display.reasonText
     local rawIntent = primary.intentState or (TE.SignalFrame and TE.SignalFrame:GetState()) or "waiting"
     local intent = rawIntent == "armed" and "运行中" or (rawIntent == "paused" and "暂停中" or "未运行")
-    local label = USER_STATE_LABELS[rawState] or "状态未知"
+    local displayState = (rawState == "paused" and rawReason == "out_of_combat_auto_standby") and "standby" or rawState
+    local label = USER_STATE_LABELS[displayState] or "状态未知"
     local status = {
         label = label,
-        rawState = rawState,
+        rawState = displayState,
+        transportState = rawState,
         rawReason = nil,
         intent = intent,
         intentState = rawIntent,
@@ -1343,6 +1346,8 @@ function ControlPanel:GetCompactStatus()
     }
     if rawState == "blocked" then
         status.showIntent = true
+        status.rawReason = rawReason
+    elseif displayState == "standby" then
         status.rawReason = rawReason
     elseif rawState == "paused" then
         if not INPUT_PROTECTION_REASONS[rawReason] then status.rawReason = rawReason end
@@ -1385,7 +1390,7 @@ function ControlPanel:UpdateInputStatus()
         and TE.SignalFrame:GetSessionPolicyLabel() or tostring(settings.sessionPolicy)
     setLabel("generalPolicy", "当前策略：" .. policyLabel
         .. "\n手动启停：脱战仍保持运行，直到手动暂停。"
-        .. "\n脱战暂停：脱战显示暂停，进战自动恢复运行。"
+        .. "\n自动启停：未进战斗或脱战时显示待命，进战自动恢复运行。"
         .. "\n脱战停止：脱战显示暂停，进战后仍暂停，需手动启动。"
         .. "\n“运行中”仅代表用户已启动动态链路；实际派发仍受 TEAP、前台与安全门禁约束。")
     setLabel("generalHotkey", settings.toggleHotkey ~= "" and ("TE 快捷键：" .. settings.toggleHotkey) or "TE 快捷键：未设置")
@@ -1599,7 +1604,7 @@ local function buildGeneral(pane)
     y = createSection(pane, "脱战策略", y)
     createChoice(pane, "策略", 14, y, 280, {
         { value = "manual_keep", label = "手动启停（脱战保持运行）" },
-        { value = "pause_out_of_combat", label = "脱战暂停（进战自动运行，默认）" },
+        { value = "pause_out_of_combat", label = "自动启停（进战运行，脱战待命，默认）" },
         { value = "close_out_of_combat", label = "脱战停止（进战需手动运行）" },
     }, function() return ensureSettings().sessionPolicy end, function(value)
         ensureSettings().sessionPolicy = value
@@ -2438,7 +2443,7 @@ local function buildMonitor(pane)
         { "战术快照", "tactics", "/te tactics：查看只读战术快照" },
         { "脱战策略", "policy", "/te policy：显示当前脱战策略" },
         { "脱战保持", "policy keep", "/te policy keep：脱战保持运行" },
-        { "脱战暂停", "policy pause", "/te policy pause：脱战暂停" },
+        { "自动启停", "policy pause", "/te policy pause：自动启停" },
         { "脱战停止", "policy close", "/te policy close：脱战停止" },
         { "单次观察", "once", "/te once：仅发送一帧观察，不派发按键" },
         { "启动运行", "armed", "/te armed：进入自动运行意图" },

@@ -235,7 +235,7 @@ local function eval_out_of_combat(transportTick, spellID)
         inCombat = false,
         intentState = "armed",
         effectiveState = "paused",
-        runtimeReason = "out_of_combat_policy_pause",
+        runtimeReason = "out_of_combat_auto_standby",
         transportHandoffTick = transportTick,
         primary = { spellID = spellID or 343527 },
         context = { class = "PALADIN", specIndex = 3 },

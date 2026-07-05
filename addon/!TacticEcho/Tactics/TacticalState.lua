@@ -33,6 +33,7 @@ local reasonText = {
     player_channeling = "玩家正在引导",
     player_empowering = "玩家正在蓄力",
     out_of_combat_policy_pause = "脱战策略暂停",
+    out_of_combat_auto_standby = "未进战斗，自动启停待命",
     actionbar_spell_not_found = "动作条未找到技能",
     binding_missing = "技能没有现实按键绑定",
     binding_token_invalid = "按键不在支持范围",
@@ -87,6 +88,8 @@ local function snapshotFrom(message, encoded)
         displayState = "channeling_lock"
     elseif state == "empowering" and reason == "player_empowering" and empoweringActive then
         displayState = "empowering_lock"
+    elseif state == "paused" and reason == "out_of_combat_auto_standby" then
+        displayState = "standby"
     end
     return {
         sequence = tonumber(message.sequence) or 0,

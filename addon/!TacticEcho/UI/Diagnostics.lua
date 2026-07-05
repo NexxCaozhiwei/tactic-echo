@@ -266,11 +266,11 @@ end
 SLASH_TACTICECHOPOLICY1 = "/tepolicy"
 SlashCmdList.TACTICECHOPOLICY = function(message)
     local command = string.lower(message or "")
-    local mapping = { keep="manual_keep", manual="manual_keep", pause="pause_out_of_combat", close="close_out_of_combat" }
+    local mapping = { keep="manual_keep", manual="manual_keep", pause="pause_out_of_combat", auto="pause_out_of_combat", close="close_out_of_combat" }
     if command ~= "" then
         local policy = mapping[command]
         if not policy then
-            safePrint("用法：/tepolicy keep|pause|close")
+            safePrint("用法：/tepolicy keep|auto|pause|close")
             return
         end
         local ok, reason = TE.SignalFrame:SetSessionPolicy(policy)

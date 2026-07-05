@@ -16,6 +16,7 @@ class PrimaryRuntimeStatePresentationContractTests(unittest.TestCase):
         icon = ICON.read_text(encoding="utf-8")
         self.assertIn('if kind == "primary" then', styles)
         self.assertIn('"paused", 1.00, "none", "暂停", false', styles)
+        self.assertIn('"standby", 1.00, "none", "待命", false', styles)
         self.assertIn('card.icon:SetDesaturated(visual.desaturate == true)', icon)
         self.assertIn('Only explicit hard states chosen by TacticalHudStyles', icon)
         self.assertNotIn('availabilityDesaturate', icon)

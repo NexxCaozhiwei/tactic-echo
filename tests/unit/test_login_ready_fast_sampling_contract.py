@@ -40,10 +40,11 @@ class LoginReadyFastSamplingContractTests(unittest.TestCase):
         self.assertIn('manual_keep = true', self.signal)
         self.assertIn('pause_out_of_combat = true', self.signal)
         self.assertIn('close_out_of_combat = true', self.signal)
-        self.assertIn('if not inCombat and policy == "pause_out_of_combat" then return "paused", "out_of_combat_policy_pause" end', self.signal)
+        self.assertIn('if not inCombat and policy == "pause_out_of_combat" then return "paused", "out_of_combat_auto_standby" end', self.signal)
         self.assertIn('if event == "PLAYER_REGEN_ENABLED" and state == "armed" and getSessionPolicy() == "close_out_of_combat" then', self.signal)
         self.assertIn('SignalFrame:SetState("paused")', self.signal)
         self.assertIn('if policy == "close_out_of_combat" and state == "armed" and not inCombat then', self.signal)
+        self.assertIn('pause_out_of_combat = "自动启停（进战运行，脱战待命，默认）"', self.signal)
 
         set_state_start = self.signal.index('function SignalFrame:SetState(nextState)')
         set_state_end = self.signal.index('function SignalFrame:GetState()', set_state_start)

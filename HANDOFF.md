@@ -1,6 +1,7 @@
-# 1.1.0 交接：审计基线与共享宏资格冻结
+# 1.1.1 交接：自动启停待命状态
 
-- 当前版本：`1.1.0`。
+- 当前版本：`1.1.1`。
+- 默认策略“自动启停”在未进战斗或脱战时显示为“待命”；底层 TEAP 仍是非派发 `paused`，进战自动恢复运行。
 - `ActionBarBindingResolver` 是 AutoBurst、P4 Reaction 常规路由、控制、防御、生存 HUD 的唯一常规宏资格入口；已确认的现有宏语义保持兼容，HUD 人工来源固定 `BindingToken=0`。
 - `action_info_*` 正文不可读形态只保留有真实 BindingToken 的 P4 target-only transport；不进入 HUD 或 AutoBurst。
 - 控制诊断仅显示与请求技能有关的当前宏失败。无关 `BUTTON3` / “坐骑”等宏不会污染胁迫、冰冻陷阱候选；同一有效 index 的当前文本命名技能时可保留同槽失败诊断。

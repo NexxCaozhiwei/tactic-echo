@@ -1,3 +1,9 @@
+# 1.1.1 — 自动启停待命状态
+
+- **策略命名收口**：默认 `pause_out_of_combat` 策略对外从“脱战暂停”改为“自动启停”，设置页、策略说明与命令入口同步更新。
+- **待命状态展示**：自动启停下因未进战斗或脱战产生的底层 `paused` 安全帧使用 `out_of_combat_auto_standby` 原因码，并在 HUD/紧凑条/设置中心显示为“待命”，区别于手动暂停和脱战停止。
+- **协议边界不变**：TEAP/TEK 仍使用既有 `paused` 非派发状态，不新增输入通道；AutoBurst 脱战硬门控与自动打断硬暂停不变。
+
 # 1.1.0 — 审计基线、自动打断硬暂停与共享宏资格冻结
 
 - **基线升级**：将当前开发基线提升为 `1.1.0`，同步 `VERSION`、TOC、`Core/Bootstrap.lua`、`AGENTS.md`、`README.md` 与 `docs/baselines/BASELINE_1.1.0.md`。
