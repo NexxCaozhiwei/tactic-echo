@@ -22,6 +22,18 @@ def test_tactical_board_defers_container_alpha_and_scale_in_combat() -> None:
     assert "defenseFrame:SetScale(clamp(defenseScale" not in board
 
 
+def test_tactical_board_defers_container_visibility_in_combat() -> None:
+    board = read("UI/TacticalBoard.lua")
+    assert "local function applyFrameShown(frame, shown)" in board
+    assert "frame.tacticEchoCombatShownPending = shown" in board
+    assert "applyFrameShown(defenseFrame, hasDefense)" in board
+    assert "applyFrameShown(panel, true)" in board
+    assert "applyFrameShown(panel, false); applyFrameShown(defenseFrame, false); return" in board
+    assert "defenseFrame:SetShown(hasDefense)" not in board
+    assert "panel:Show()" not in board
+    assert "panel:Hide()" not in board
+
+
 def test_tactical_layout_defers_layout_mutations_in_combat() -> None:
     layout = read("UI/TacticalHudLayout.lua")
     assert "local function inCombatLockdown()" in layout

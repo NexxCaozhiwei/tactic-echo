@@ -2,7 +2,7 @@
 local TE = _G.TacticEcho or {}
 _G.TacticEcho = TE
 
-TE.version = "1.1.6"
+TE.version = "1.1.7"
 TE.interface = 120007
 TE.locale = GetLocale and GetLocale() or "unknown"
 

@@ -52,6 +52,23 @@ local function applyContainerPresentation(frame, alpha, scale)
     frame:SetScale(scale)
 end
 
+local function applyFrameShown(frame, shown)
+    if not frame then return end
+    shown = shown == true
+    if inCombatLockdown() then
+        frame.tacticEchoCombatShownPending = shown
+        return
+    end
+    frame.tacticEchoCombatShownPending = nil
+    if frame.SetShown then
+        frame:SetShown(shown)
+    elseif shown and frame.Show then
+        frame:Show()
+    elseif not shown and frame.Hide then
+        frame:Hide()
+    end
+end
+
 local function db()
     -- Config/Normalize.lua is the sole owner of persisted HUD defaults.  The
     -- fallback intentionally creates only containers so a partial load cannot
@@ -293,7 +310,7 @@ end
 local function renderInternal(self, snapshot)
     local panel = ensureBoard()
     local hud = db()
-    if hud.enabled ~= true then panel:Hide(); defenseFrame:Hide(); return end
+    if hud.enabled ~= true then applyFrameShown(panel, false); applyFrameShown(defenseFrame, false); return end
 
     local modelOK, model = pcall(TacticalHudModel.Build, TacticalHudModel, snapshot or {}, hud)
     if not modelOK or type(model) ~= "table" then
@@ -355,7 +372,7 @@ local function renderInternal(self, snapshot)
     local outOfCombat = (snapshot and snapshot.context and plainBoolean(snapshot.context.inCombat) == false)
         or (snapshot and snapshot.primary and plainBoolean(snapshot.primary.inCombat) == false)
     if outOfCombat and hud.outOfCombatMode == "hide" then
-        panel:Hide(); defenseFrame:Hide(); return
+        applyFrameShown(panel, false); applyFrameShown(defenseFrame, false); return
     end
     local function hasVisibleCard()
         if primary and primary.hidden ~= true and primary.spellID then return true end
@@ -373,10 +390,10 @@ local function renderInternal(self, snapshot)
         return false
     end
     if hud.hideWhenIdle == true and not hasVisibleCard() then
-        panel:Hide(); defenseFrame:Hide(); return
+        applyFrameShown(panel, false); applyFrameShown(defenseFrame, false); return
     end
     if not hasVisibleCard() then
-        panel:Hide(); defenseFrame:Hide(); return
+        applyFrameShown(panel, false); applyFrameShown(defenseFrame, false); return
     end
     -- Global and out-of-combat presentation are separate. "dim" uses the
     -- user-controlled multipliers; "show" leaves the HUD exactly at its
@@ -407,7 +424,7 @@ local function renderInternal(self, snapshot)
     end
 
     board.statusText:SetText(statusText(primary))
-    board.statusText:SetShown(hud.showStatusText ~= false and primary and primary.hidden ~= true)
+    applyFrameShown(board.statusText, hud.showStatusText ~= false and primary and primary.hidden ~= true)
     TacticalHudLayout:Apply(board, defenseFrame, nodes, hud)
     -- TacticalHudLayout owns coordinates and base sizing. Apply effective
     -- combat-state presentation afterward so its internal layout cache never
@@ -421,8 +438,8 @@ local function renderInternal(self, snapshot)
 
     local hasDefense = false
     for _, item in ipairs(model.defense) do if item and item.hidden ~= true then hasDefense = true; break end end
-    defenseFrame:SetShown(hasDefense)
-    panel:Show()
+    applyFrameShown(defenseFrame, hasDefense)
+    applyFrameShown(panel, true)
 end
 
 local function renderSafeFallback(message)
@@ -448,10 +465,10 @@ local function renderSafeFallback(message)
     for _, card in ipairs(nodes.defense or {}) do pcall(TacticalIconButton.SetVisible, TacticalIconButton, card, false) end
     if board.statusText then
         board.statusText:SetText("HUD 安全模式")
-        board.statusText:Show()
+        applyFrameShown(board.statusText, true)
     end
-    defenseFrame:Hide()
-    panel:Show()
+    applyFrameShown(defenseFrame, false)
+    applyFrameShown(panel, true)
 end
 
 function TacticalBoard:Render(snapshot)
@@ -532,8 +549,8 @@ end
 
 function TacticalBoard:Hide()
     db().enabled = false
-    if board then board:Hide() end
-    if defenseFrame then defenseFrame:Hide() end
+    applyFrameShown(board, false)
+    applyFrameShown(defenseFrame, false)
 end
 
 -- No RegisterEvent calls in tactical HUD modules. Field testing found taint

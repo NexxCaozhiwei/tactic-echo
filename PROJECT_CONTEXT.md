@@ -1,6 +1,6 @@
-# Tactic Echo 项目上下文 — 1.1.6
+# Tactic Echo 项目上下文 — 1.1.7
 
-- 当前唯一基线：`1.1.6`；版本基线统一位于 `docs/baselines/`，每次版本化源码改动必须同步更新该目录下对应 baseline、根目录 `CHANGELOG.md`、`VERSION`、TOC 和 `Core/Bootstrap.lua`。
+- 当前唯一基线：`1.1.7`；版本基线统一位于 `docs/baselines/`，每次版本化源码改动必须同步更新该目录下对应 baseline、根目录 `CHANGELOG.md`、`VERSION`、TOC 和 `Core/Bootstrap.lua`。
 - 自动打断设计处于硬暂停：Defaults、Normalize 和 `AutoReaction:Evaluate()` 共同保证旧 SavedVariables 也不能产生 `reaction candidate`、BindingToken、TEAP reaction 帧或 TEK 自动打断请求。
 - `ReactionObservation`、`ReactionInterruptEvents`、P2 动作条/宏识别与 P3 HUD 打断提示仍为只读能力；不应由这些证据重新开启自动派发。
 - AutoBurst 不允许任何脱战例外：`inCombat=false` 时必须清理残留 plan/capture 并返回空结果；`SignalFrame:SetState("armed")`、`Run`、切图和首次进战都不能建立或续接 pre-combat bridge，更不能产生 Burst TEAP/TEK 派发。
@@ -14,5 +14,6 @@
 - 1.1.3 HUD 安全隐藏：战斗中隐藏 HUD 卡片不得直接调用 `Button:Hide()`；secure proxy 的旧映射不得在战斗中被重定向。
 - 1.1.4 HUD Button 保护收口：战斗中不调用卡片 Button 的 `SetAlpha`、`EnableMouse`、`Show` 或 `Hide`；只记录待处理状态，脱战后再真实更新。
 - 1.1.5 HUD 点击路由保护收口：`HudClickRouter` 在战斗中不调用 secure proxy 或 blocker 的 `SetAlpha`、`Show`、`Hide`；只记录 `tacticEchoCombatVisibilityPending` 和 `dirty`，脱战后再真实隐藏、显示或重建。
-- 1.1.6 HUD 容器保护收口：`TacticalBoard` 在战斗中不调用 board/defense 容器的 `SetScale` 或 `SetAlpha`；`TacticalHudLayout` 在战斗中不执行缩放、定位、尺寸或显示状态重排，只标记 pending/dirty，脱战后应用。
+- 1.1.6 HUD 容器缩放与布局保护收口：`TacticalBoard` 在战斗中不调用 board/defense 容器的 `SetScale` 或 `SetAlpha`；`TacticalHudLayout` 在战斗中不执行缩放、定位、尺寸或显示状态重排，只标记 pending/dirty，脱战后应用。
+- 1.1.7 HUD 容器可见性保护收口：`TacticalBoard` 在战斗中不调用 board/defense 容器及状态文本的 `SetShown`、`Show` 或 `Hide`；只记录 `tacticEchoCombatShownPending`，脱战后应用。
 - 主推荐、CD 数字、DurationObject 转盘、标签、技能排序及既有宏兼容策略保持不变。

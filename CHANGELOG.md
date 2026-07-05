@@ -1,3 +1,9 @@
+# 1.1.7 — HUD 容器可见性战斗保护收口
+
+- **容器可见性保护**：`TacticalBoard` 在战斗中不再对 `TacticEchoTacticalBoard`、`TacticEchoDefenseBoard` 或状态文本调用 `SetShown`、`Show`、`Hide`，避免 `ADDON_ACTION_BLOCKED TacticEchoDefenseBoard:SetShown()`。
+- **延迟可见性语义固化**：战斗中的 HUD 容器可见性变化只记录 `tacticEchoCombatShownPending`；脱战后再真实显示或隐藏。
+- **输入边界不变**：不新增输入通道，不修改 TEK 派发逻辑；自动打断继续硬暂停，AutoBurst 脱战硬门控、共享宏资格和 HUD `manual_hold` 规则保持不变。
+
 # 1.1.6 — HUD 容器缩放与布局战斗保护收口
 
 - **容器缩放保护**：`TacticalBoard` 在战斗中不再对 `TacticEchoTacticalBoard` 或 defense 容器调用 `SetScale` / `SetAlpha`，避免 HUD 容器进入保护链后触发 `ADDON_ACTION_BLOCKED TacticEchoTacticalBoard:SetScale()`。

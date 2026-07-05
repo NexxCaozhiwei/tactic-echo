@@ -1,4 +1,4 @@
-# 1.1.6 决策：HUD 容器保护、点击路由保护与 TEK 修饰键手动接管
+# 1.1.7 决策：HUD 容器保护、点击路由保护与 TEK 修饰键手动接管
 
 ## 决策
 
@@ -6,9 +6,9 @@
 
 `HudClickRouter` 的 secure proxy 和 blocker 在战斗中不再调用 `SetAlpha`、`Show` 或 `Hide`。这些 sibling button 在实机中也可能进入保护/污染链，继续用 `pcall` 包裹仍会触发 `ADDON_ACTION_BLOCKED UNKNOWN()`；因此战斗中只能记录 `tacticEchoCombatVisibilityPending` 与 `dirty`，脱战后再真实隐藏、显示或重建。
 
-`TacticEchoTacticalBoard` 本体也可能因 HUD 点击层和 secure sibling 进入保护链。1.1.6 起，`TacticalBoard` 在战斗中不对主容器或 defense 容器调用 `SetScale` / `SetAlpha`；`TacticalHudLayout` 在战斗中不执行缩放、定位、尺寸或显示状态重排，只记录 dirty/pending 并等待脱战刷新。
+`TacticEchoTacticalBoard` 本体也可能因 HUD 点击层和 secure sibling 进入保护链。1.1.6 起，`TacticalBoard` 在战斗中不对主容器或 defense 容器调用 `SetScale` / `SetAlpha`；`TacticalHudLayout` 在战斗中不执行缩放、定位、尺寸或显示状态重排，只记录 dirty/pending 并等待脱战刷新。1.1.7 继续收口 `SetShown` / `Show` / `Hide`：board、defense 容器和状态文本的显示/隐藏同样只记录 `tacticEchoCombatShownPending`，脱战后再真实应用。
 
-1.1.6 不重新开启自动打断。Defaults、Normalize 与 `AutoReaction:Evaluate()` 的 `auto_interrupt_suspended` 是当前生产边界；读条、钢条、事件和冷却证据只服务于只读提示、高亮、诊断与 HUD 人工点击。
+1.1.7 不重新开启自动打断。Defaults、Normalize 与 `AutoReaction:Evaluate()` 的 `auto_interrupt_suspended` 是当前生产边界；读条、钢条、事件和冷却证据只服务于只读提示、高亮、诊断与 HUD 人工点击。
 
 默认 `pause_out_of_combat` 策略对外命名为“自动启停”。它在未进战斗或脱战时仍输出底层 `paused` 安全帧，保证 TEK 不派发；显示层必须把该原因码渲染为“待命”，避免与手动暂停或脱战停止混淆。
 TEK 本地连发介入白名单只豁免配置中的主键；默认 `W/A/S/D/SPACE` 不进入手动让步。`Ctrl`、`Alt`、`Shift`、`Win` 等不能单独加入白名单的修饰键属于非白名单真实键盘输入，必须从按下到抬起持续占用 `manual_input_held`，避免玩家物理按住修饰键时 TEK 派发主键并形成意外组合键。
