@@ -115,8 +115,6 @@ end
 local function hideFrameSafely(frame)
     if not frame then return end
     if inCombatLockdown() then
-        if frame.SetAlpha then pcall(frame.SetAlpha, frame, 0) end
-        if frame.EnableMouse then pcall(frame.EnableMouse, frame, false) end
         frame.tacticEchoCombatHidden = true
         return
     end
@@ -125,8 +123,11 @@ end
 
 local function showFrameSafely(frame, alpha)
     if not frame then return end
+    if inCombatLockdown() then
+        frame.tacticEchoCombatHidden = nil
+        return
+    end
     if frame.SetAlpha then pcall(frame.SetAlpha, frame, alpha or 1) end
-    if inCombatLockdown() and frame.IsShown and not frame:IsShown() then return end
     if frame.EnableMouse then pcall(frame.EnableMouse, frame, true) end
     if frame.Show then pcall(frame.Show, frame) end
     frame.tacticEchoCombatHidden = nil
@@ -209,6 +210,10 @@ end
 
 local function playVisibilityFade(card, targetAlpha, show)
     if not card or not card.fadeGroup then return false end
+    if inCombatLockdown() then
+        if show then showFrameSafely(card, targetAlpha) else hideFrameSafely(card) end
+        return true
+    end
     card.fadeTo = clamp(targetAlpha, 0.05, 1)
     if show then showFrameSafely(card, card:GetAlpha() or targetAlpha or 1) end
     local anim = card.fadeAlpha
@@ -223,6 +228,10 @@ end
 local function setVisible(card, visible, alpha)
     if not card then return end
     if visible ~= true then
+        if inCombatLockdown() then
+            hideFrameSafely(card)
+            return
+        end
         if card.fadeGroup and card.resolvedAppearance and card.resolvedAppearance.fadeTransitions then
             if card.EnableMouse then pcall(card.EnableMouse, card, false) end
             card.fadeTo = 0

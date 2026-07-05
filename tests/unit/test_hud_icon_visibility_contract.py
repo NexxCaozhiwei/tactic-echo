@@ -28,7 +28,8 @@ class HudIconVisibilityContractTests(unittest.TestCase):
         self.assertIn("local function hideFrameSafely(frame)", self.text)
         self.assertIn("if inCombatLockdown() then", self.text)
         self.assertIn("frame.tacticEchoCombatHidden = true", self.text)
-        self.assertIn("if inCombatLockdown() and frame.IsShown and not frame:IsShown() then return end", self.text)
+        self.assertIn("frame.tacticEchoCombatHidden = nil", self.text)
+        self.assertIn("if inCombatLockdown() then\n        frame.tacticEchoCombatHidden = nil\n        return\n    end", self.text)
 
     def test_native_mask_is_optional_and_failure_tolerant(self) -> None:
         self.assertIn("local function createRoundedActionIconMask", self.text)

@@ -1,10 +1,10 @@
-﻿# 1.1.3 决策：TEK 修饰键手动接管
+﻿# 1.1.4 决策：TEK 修饰键手动接管
 
 ## 决策
 
 宏身份判断统一下沉到 `ActionBarBindingResolver`。AutoBurst 使用 `IsAutoBurstMacroEligible()`；P4 Reaction 的已解析宏、控制、防御、生存 HUD 使用 `IsVerifiedCurrentMacroSource()`。因此这些模块只能继承已经证明为“当前可见按钮/槽位 + 当前宏身份 + 正文语义”的既有宏，而不能从宏名、图标、历史缓存、另一个同技能按钮或 action-info 代表 SpellID 单独放宽来源。
 
-1.1.3 不重新开启自动打断。Defaults、Normalize 与 `AutoReaction:Evaluate()` 的 `auto_interrupt_suspended` 是当前生产边界；读条、钢条、事件和冷却证据只服务于只读提示、高亮、诊断与 HUD 人工点击。
+1.1.4 不重新开启自动打断。Defaults、Normalize 与 `AutoReaction:Evaluate()` 的 `auto_interrupt_suspended` 是当前生产边界；读条、钢条、事件和冷却证据只服务于只读提示、高亮、诊断与 HUD 人工点击。
 
 默认 `pause_out_of_combat` 策略对外命名为“自动启停”。它在未进战斗或脱战时仍输出底层 `paused` 安全帧，保证 TEK 不派发；显示层必须把该原因码渲染为“待命”，避免与手动暂停或脱战停止混淆。
 TEK 本地连发介入白名单只豁免配置中的主键；默认 `W/A/S/D/SPACE` 不进入手动让步。`Ctrl`、`Alt`、`Shift`、`Win` 等不能单独加入白名单的修饰键属于非白名单真实键盘输入，必须从按下到抬起持续占用 `manual_input_held`，避免玩家物理按住修饰键时 TEK 派发主键并形成意外组合键。

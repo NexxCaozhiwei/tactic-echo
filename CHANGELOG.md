@@ -1,3 +1,8 @@
+# 1.1.4 — HUD Button 战斗保护收口
+
+- **保护调用再收口**：战斗中 HUD 卡片可见性变更不再调用卡片 Button 的 `SetAlpha`、`EnableMouse`、`Show` 或 `Hide`，只记录待处理状态，避免 `ADDON_ACTION_BLOCKED UNKNOWN()`。
+- **点击层边界不变**：HUD secure proxy 仍由 blocker fail-closed 覆盖；脱战后再真实隐藏或重建。
+
 # 1.1.3 — HUD 战斗中安全隐藏
 
 - **保护调用修复**：HUD 卡片隐藏路径不再在战斗中直接调用 `Button:Hide()`，改为透明化并禁用卡片鼠标输入，避免 `ADDON_ACTION_BLOCKED`。

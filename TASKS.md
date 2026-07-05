@@ -1,4 +1,4 @@
-# 1.1.3 实机验收
+# 1.1.4 实机验收
 
 先执行 `docs/P5.11_SHARED_MACRO_POLICY_TEST.md`，并保留 P5.10 当前动作栏身份、P5.8 脱战 Burst、自动打断暂停与 HUD 基础点击验证。
 
@@ -11,4 +11,4 @@
 7. 按键按下即施放开启、关闭均测试；HUD 与原生默认动作条左键均应写入 `manual_hold`，动作码/BindingToken 为 0，优先于后续派发。
 8. 回归 P5.8：自动打断仍为 `auto_interrupt_suspended`；任何脱战帧不得产生 Burst plan/capture/TEAP/TEK；主键启停、CD 数字、DurationObject 转盘、状态/来源标签、爆发顺序和 HUD 排序不得变化。
 
-当前版本：`1.1.3`
+当前版本：`1.1.4`

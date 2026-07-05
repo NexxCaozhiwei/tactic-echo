@@ -1,6 +1,6 @@
 # Documentation Index
 
-Current version: `1.1.3`
+Current version: `1.1.4`
 
 Start with the root documents:
 
@@ -9,7 +9,7 @@ Start with the root documents:
 - `../TASKS.md` for active validation.
 - `../DECISIONS.md` for current decisions.
 
-Current baseline documents live in `baselines/`; start with `baselines/BASELINE_1.1.3.md`.
+Current baseline documents live in `baselines/`; start with `baselines/BASELINE_1.1.4.md`.
 Patch manifest documents live in `patch-manifests/`; root-level `PATCH_MANIFEST*` files are not canonical.
 
 Topic documents:

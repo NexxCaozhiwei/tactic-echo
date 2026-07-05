@@ -1,6 +1,6 @@
-# Tactic Echo 项目上下文 — 1.1.3
+# Tactic Echo 项目上下文 — 1.1.4
 
-- 当前唯一基线：`1.1.3`；版本基线统一位于 `docs/baselines/`，每次版本化源码改动必须同步更新该目录下对应 baseline、根目录 `CHANGELOG.md`、`VERSION`、TOC 和 `Core/Bootstrap.lua`。
+- 当前唯一基线：`1.1.4`；版本基线统一位于 `docs/baselines/`，每次版本化源码改动必须同步更新该目录下对应 baseline、根目录 `CHANGELOG.md`、`VERSION`、TOC 和 `Core/Bootstrap.lua`。
 - 自动打断设计处于硬暂停：Defaults、Normalize 和 `AutoReaction:Evaluate()` 共同保证旧 SavedVariables 也不能产生 `reaction candidate`、BindingToken、TEAP reaction 帧或 TEK 自动打断请求。
 - `ReactionObservation`、`ReactionInterruptEvents`、P2 动作条/宏识别与 P3 HUD 打断提示仍为只读能力；不应由这些证据重新开启自动派发。
 - AutoBurst 不允许任何脱战例外：`inCombat=false` 时必须清理残留 plan/capture 并返回空结果；`SignalFrame:SetState("armed")`、`Run`、切图和首次进战都不能建立或续接 pre-combat bridge，更不能产生 Burst TEAP/TEK 派发。
@@ -12,4 +12,5 @@
 - 1.1.1 诊断请求作用域化：无关 `BUTTON3` / “坐骑”宏不得显示为胁迫、冰冻陷阱等控制技能候选；若同一有效 index 的当前按钮正文暂不可读且动作条文本命名请求技能，仅显示该同一按钮失败记录，不授权扫描或替代。
 - 1.1.2 TEK 手动接管：连发介入白名单主键保持豁免，默认 `W/A/S/D/SPACE` 不触发让步；非白名单真实键盘输入，包括 `Ctrl`、`Alt`、`Shift`、`Win` 修饰键，按下到抬起期间必须持续阻断自动派发。
 - 1.1.3 HUD 安全隐藏：战斗中隐藏 HUD 卡片不得直接调用 `Button:Hide()`；secure proxy 不在战斗中隐藏，必须由 blocker 覆盖旧映射并 fail-closed。
+- 1.1.4 HUD Button 保护收口：战斗中不调用卡片 Button 的 `SetAlpha`、`EnableMouse`、`Show` 或 `Hide`；只记录待处理状态，脱战后再真实更新。
 - 主推荐、CD 数字、DurationObject 转盘、标签、技能排序及既有宏兼容策略保持不变。
