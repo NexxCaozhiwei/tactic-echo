@@ -42,24 +42,60 @@ local function spellInfo(spellID)
     return nil, nil
 end
 
+local function verifiedManualPresentationSource(info)
+    if type(info) ~= "table" or info.source ~= "macro" then return true end
+    local resolver = TE.ActionBarBindingResolver
+    if resolver and type(resolver.IsVerifiedCurrentMacroSource) == "function" then
+        local verified = resolver:IsVerifiedCurrentMacroSource(info, info.macroAssociation)
+        return verified == true
+    end
+    -- Conservative load-order fallback: this is intentionally narrower than
+    -- the resolver contract and never admits opaque action-info compatibility.
+    local diagnostic = type(info.macroDiagnostic) == "table" and info.macroDiagnostic or {}
+    local association = tostring(info.macroAssociation or "")
+    return diagnostic.macroIdentityVerified == true
+        and type(info.macroSemantics) == "table"
+        and (association:find("macro_body_", 1, true) == 1
+            or association:find("macro_item_", 1, true) == 1
+            or association:find("macro_inventory_", 1, true) == 1)
+end
+
+local function actionbarPresentationSource(info)
+    info = type(info) == "table" and info or nil
+    if not info or type(info.buttonName) ~= "string" or info.buttonName == "" then return nil end
+    if verifiedManualPresentationSource(info) ~= true then return nil end
+    -- A visible default button / verified macro remains a legitimate HUD manual
+    -- source even when it has no keyboard binding or an unsupported BindingToken.
+    -- It remains bindingToken=0 and cannot authorize TEAP/TEK dispatch.
+    return {
+        binding = info.binding or info.rawBinding,
+        bindingToken = 0,
+        source = info.source,
+        bindingSourceIndex = info.bindingSourceIndex,
+        actionSlot = info.actionSlot or info.slot,
+        slot = info.actionSlot or info.slot,
+        buttonName = info.buttonName,
+        directActionSlot = info.directActionSlot == true,
+        actionBarStateTrusted = info.actionBarStateTrusted == true,
+        requestedSpellID = info.requestedSpellID,
+        matchedSpellID = info.matchedSpellID,
+        equivalentSpellIDs = info.equivalentSpellIDs,
+        macroID = info.macroID,
+        macroAssociation = info.macroAssociation,
+        macroDiagnostic = info.macroDiagnostic,
+        macroSemantics = info.macroSemantics,
+        manualActionSource = true,
+        advisoryOnlyBinding = true,
+        reason = info.reason,
+    }
+end
+
 local function bindingFor(spellID)
     if not TE.ActionBarBindingResolver or type(TE.ActionBarBindingResolver.ResolveSpell) ~= "function" then return nil end
     local info = TE.ActionBarBindingResolver:ResolveSpell(spellID)
     if not info then return nil end
-    if info.status == "Ready" and info.binding then return info end
-    if info.rawBinding then
-        return {
-            binding = info.rawBinding, bindingToken = 0, source = info.source,
-            bindingSourceIndex = info.bindingSourceIndex,
-            actionSlot = info.actionSlot or info.slot,
-            directActionSlot = info.directActionSlot == true,
-            requestedSpellID = info.requestedSpellID,
-            matchedSpellID = info.matchedSpellID,
-            equivalentSpellIDs = info.equivalentSpellIDs,
-            advisoryOnlyBinding = true, reason = info.reason,
-        }
-    end
-    return nil
+    if info.status == "Ready" and info.binding and verifiedManualPresentationSource(info) == true then return info end
+    return actionbarPresentationSource(info)
 end
 
 local function firstBound(spellIDs)
@@ -79,10 +115,11 @@ local function firstBound(spellIDs)
             bindingToken = binding and binding.bindingToken or 0,
             bindingSource = binding and binding.source or nil,
             bindingSourceIndex = binding and binding.bindingSourceIndex or nil,
+            buttonName = binding and binding.buttonName or nil,
             actionSlot = binding and (binding.actionSlot or binding.slot) or nil,
             slot = binding and (binding.actionSlot or binding.slot) or nil,
             directActionSlot = binding and binding.directActionSlot == true or false,
-            actionBarStateTrusted = binding and binding.directActionSlot == true or false,
+            actionBarStateTrusted = binding and binding.actionBarStateTrusted == true or false,
             requestedSpellID = binding and (binding.requestedSpellID or spellID) or spellID,
             matchedSpellID = binding and binding.matchedSpellID or nil,
             equivalentSpellIDs = binding and binding.equivalentSpellIDs or nil,
@@ -219,6 +256,25 @@ local function reactionRoute(snapshot, group, role, routeName, requireSafeRoute)
     return nil, nil
 end
 
+-- A cursor/conditional control macro may be executable by its own existing
+-- button but cannot truthfully be recast as a target/focus/mouseover route.
+-- Use this only as a read-only manual-source fallback after the source-specific
+-- route lookup fails. It never carries a dispatch token or a safe-auto flag.
+local function reactionManualSource(snapshot, group, role)
+    snapshot = type(snapshot) == "table" and snapshot or {}
+    for _, entry in ipairs(snapshot[group] or {}) do
+        if role == nil or entry.role == role then
+            local source = type(entry.manualSource) == "table" and entry.manualSource or nil
+            if source and source.manualActionSource == true
+                and type(source.buttonName) == "string" and source.buttonName ~= ""
+                and tonumber(source.actionSlot) then
+                return entry, source
+            end
+        end
+    end
+    return nil, nil
+end
+
 local function reactionItem(entry, route, candidate, reactionKind)
     entry = type(entry) == "table" and entry or {}
     route = type(route) == "table" and route or {}
@@ -232,6 +288,12 @@ local function reactionItem(entry, route, candidate, reactionKind)
         -- Advisory HUD cards stay incapable of dispatch, even when the
         -- underlying P2 mapping parsed a real action-bar binding.
         bindingToken = 0,
+        -- Preserve the exact current visible source so HUD click verification
+        -- cannot replace a user-authored macro (e.g. CTRL+1 cursor trap) with
+        -- another same-spell action-bar copy.
+        buttonName = route.buttonName,
+        bindingSource = route.source,
+        bindingSourceIndex = route.bindingSourceIndex,
         actionSlot = route.actionSlot,
         slot = route.actionSlot,
         directActionSlot = route.directActionSlot == true,
@@ -251,7 +313,8 @@ local function reactionItem(entry, route, candidate, reactionKind)
         reactionAoe = aoe,
         reactionRouteSafe = route.safeForFutureAuto == true,
         reactionRouteMode = route.autoRouteMode or route.routeKind,
-        reactionRouteAvailable = true,
+        reactionRouteAvailable = route.manualActionSource ~= true,
+        reactionManualActionSource = route.manualActionSource == true,
         reactionMappingRequired = true,
         reactionQualifyingCount = aoe and tonumber(candidate.qualifyingCount) or nil,
         reactionAoeThreshold = aoe and tonumber(candidate.threshold) or nil,
@@ -348,13 +411,26 @@ local function unitReactionCandidate(observation, settings, classFile, configNam
                 elseif reactionKind == "single_control" and cast.interruptibleKnown == true
                     and cast.interruptible == false and unit.controlEligible == true then
                     local entry, route = reactionRoute(bindingSnapshot, "control", "single", source, false)
+                    local manualSource = false
+                    if not entry or not route then
+                        entry, route = reactionManualSource(bindingSnapshot, "control", "single")
+                        manualSource = entry ~= nil and route ~= nil
+                    end
                     local item = entry and route and reactionItem(entry, route, { source = source }, "single_control")
                         or reactionFallbackItem(classFile, "single_control", { source = source })
                     if item then
+                        if manualSource then
+                            item.reactionManualActionSource = true
+                            item.reactionRouteAvailable = false
+                            item.reactionRouteSafe = false
+                            item.reactionRouteMode = "manual_existing_macro"
+                            item.unusableReason = "已识别当前可见控制宏；仅可点击 HUD 或原生动作条执行，保留宏的原目标/落点语义，不参与派发"
+                        end
                         return {
                             kind = "single_control", source = source, castKind = cast.kind,
                             castSpellID = cast.spellID, item = item,
-                            routeAvailable = entry ~= nil and route ~= nil,
+                            routeAvailable = entry ~= nil and route ~= nil and manualSource ~= true,
+                            manualSource = manualSource,
                             verification = "confirmed",
                         }
                     end
@@ -689,7 +765,7 @@ local function normalizeCooldownIdentity(item)
         local slot = binding.actionSlot or binding.slot
         if slot then item.actionSlot, item.slot = slot, slot end
         item.directActionSlot = binding.directActionSlot == true
-        item.actionBarStateTrusted = binding.directActionSlot == true
+        item.actionBarStateTrusted = binding.actionBarStateTrusted == true
         item.requestedSpellID = binding.requestedSpellID or item.requestedSpellID or item.spellID
         item.matchedSpellID = binding.matchedSpellID or item.matchedSpellID
         item.equivalentSpellIDs = binding.equivalentSpellIDs or item.equivalentSpellIDs

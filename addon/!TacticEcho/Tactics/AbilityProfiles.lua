@@ -334,7 +334,10 @@ AbilityProfiles.bursts = {
 AbilityProfiles.controls = {
     DEATHKNIGHT = { 108194, 47476 }, DEMONHUNTER = { 179057, 207684 },
     DRUID = { 5211, 99 }, EVOKER = { 360806, 351338 },
-    HUNTER = { 24394, 187650 }, MAGE = { 118, 122 },
+    -- Current live action-bar identity for 胁迫 is 19577; the reaction
+    -- catalog must query the spell exposed by the visible button, not the
+    -- historic 24394 entry.
+    HUNTER = { 19577, 187650 }, MAGE = { 118, 122 },
     MONK = { 119381, 115078 }, PALADIN = { 853, 105421 },
     PRIEST = { 8122, 605 }, ROGUE = { 2094, 1776 },
     SHAMAN = { 51514, 192058 }, WARLOCK = { 5782, 710 },
@@ -363,7 +366,7 @@ AbilityProfiles.reactionControls = {
         { spellID = 351338, role = "single", roleLabel = "单体控制" },
     },
     HUNTER = {
-        { spellID = 24394, role = "single", roleLabel = "单体控制" },
+        { spellID = 19577, role = "single", roleLabel = "单体控制" },
         { spellID = 187650, role = "single", roleLabel = "单体控制" },
     },
     MAGE = {

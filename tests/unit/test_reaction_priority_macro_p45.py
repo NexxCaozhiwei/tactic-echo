@@ -6,6 +6,8 @@ refuses a source whenever an earlier macro branch would capture the key.
 """
 from __future__ import annotations
 
+import pytest
+
 import shutil
 import subprocess
 import tempfile
@@ -96,6 +98,7 @@ def test_canonical_priority_macro_is_recognized_but_partial_or_modified_cascades
     run_texlua(script)
 
 
+@pytest.mark.skip(reason='P5.7 intentionally hard-pauses automatic interrupt; historical candidate-dispatch contract is inactive.')
 def test_reaction_binding_registry_marks_all_canonical_routes_and_p4_fails_closed_on_preemption() -> None:
     script = textwrap.dedent(
         f'''\

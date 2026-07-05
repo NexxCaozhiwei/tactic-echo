@@ -1,6 +1,6 @@
 # Documentation Index
 
-Current version: `0.9.51`
+Current version: `1.1.0`
 
 Start with the root documents:
 
@@ -8,6 +8,8 @@ Start with the root documents:
 - `../HANDOFF.md` for current handoff notes.
 - `../TASKS.md` for active validation.
 - `../DECISIONS.md` for current decisions.
+
+Current baseline documents live in `baselines/`; start with `baselines/BASELINE_1.1.0.md`.
 
 Topic documents:
 

@@ -1,8 +1,9 @@
 -- Tactic Echo tactical HUD icon component.
 --
--- Display-only presentation component. It never changes recommendations,
--- bindings, Token/TEAP data, or TEK input. Native action-bar presentation is
--- optional and failure-tolerant: atlas/mask errors fall back to a visible icon.
+-- Presentation component with a narrow P5.8 manual-click bridge. It never
+-- changes recommendations, bindings, Token/TEAP data, macros, targets, or TEK
+-- input. Only a verified existing action-bar button may be clicked through a
+-- static secure proxy created by HudClickRouter.
 local TE = _G.TacticEcho
 -- Dynamic effect ownership: TacticalIconEffects.lua
 local TacticalIconEffects = TE.TacticalIconEffects
@@ -996,7 +997,7 @@ local function tooltipLines(item, visual, card)
     end
     if item.procHighlight == true then lines[#lines + 1] = "触发效果：已高亮" end
     if item.reactionKind then
-        local kindLabels = { interrupt = "自动打断候选", single_control = "自动单体控制候选", aoe_control = "自动群控候选" }
+        local kindLabels = { interrupt = "打断提示", single_control = "单体控制提示", aoe_control = "群控提示" }
         lines[#lines + 1] = "P3 反应候选：" .. (kindLabels[item.reactionKind] or safeText(item.reactionKind, "候选"))
         if item.reactionSourceLabel then lines[#lines + 1] = "读条来源：" .. safeText(item.reactionSourceLabel, "目标") end
         if item.reactionAoe == true and item.reactionQualifyingCount then
@@ -1031,6 +1032,16 @@ local function tooltipLines(item, visual, card)
         local labels = { primary = "暴雪风格跑马边框", proc = "Proc 光效", interrupt = "打断光效", burst = "爆发光效", mobility = "突进光效" }
         lines[#lines + 1] = "视觉提示：" .. (labels[card.tacticEchoEffectSummary] or card.tacticEchoEffectSummary)
     end
+    if card and card.hudInteractionRole == "main_toggle" then
+        lines[#lines + 1] = "HUD 单击：启动 / 暂停"
+    elseif card and card.hudInteractionRole == "manual_action" then
+        if card.manualClickReady == true then
+            local source = type(card.manualClickSource) == "table" and card.manualClickSource or {}
+            lines[#lines + 1] = "HUD 手动点击：可用（复用 " .. safeText(source.buttonName, "当前动作条") .. "）"
+        else
+            lines[#lines + 1] = "HUD 手动点击：不可用（" .. safeText(card.manualClickReasonText, "无可靠动作条来源") .. "）"
+        end
+    end
     lines[#lines + 1] = "状态源：" .. safeText(state.source or item.source, "战术快照")
     return lines
 end
@@ -1044,13 +1055,14 @@ local function showTooltip(card)
     GameTooltip:Show()
 end
 
-function TacticalIconButton:Create(parent, name, size)
+function TacticalIconButton:Create(parent, name, size, interactionRole)
     -- This construction intentionally mirrors UIFrameFactory.CreateBaseIcon:
     -- background + icon + masked icon plane + clipped cooldowns + one Atlas
     -- border frame.  The old card border system is retained only for minimal
     -- mode and is never part of the native rendering path.
     local card = CreateFrame("Button", name, parent, "BackdropTemplate")
     card.size = size or 42
+    card.hudInteractionRole = interactionRole or "none"
     card:SetSize(card.size, card.size)
     card:EnableMouse(true)
     card:SetFrameStrata("MEDIUM")
@@ -1223,6 +1235,19 @@ function TacticalIconButton:Create(parent, name, size)
             TE.ControlPanel:Show(self.settingsPage or "general")
         end
     end)
+    card:SetScript("OnClick", function(self, button)
+        if button ~= "LeftButton" or self.hudInteractionRole ~= "main_toggle" then return end
+        local timestamp = type(GetTime) == "function" and GetTime() or 0
+        if self.tacticEchoDragging == true or timestamp < (tonumber(self.tacticEchoSuppressClickUntil) or 0) then return end
+        if TE.ControlPanel and type(TE.ControlPanel.ToggleRun) == "function" then
+            -- Reuse the existing start/pause control rather than introducing a
+            -- binding, token or alternative runtime state.
+            TE.ControlPanel:ToggleRun()
+        end
+    end)
+    if card.hudInteractionRole == "manual_action" and TE.HudClickRouter and type(TE.HudClickRouter.Attach) == "function" then
+        TE.HudClickRouter:Attach(card)
+    end
     card:Hide()
     return card
 end
@@ -1303,6 +1328,9 @@ function TacticalIconButton:Apply(card, item, hud, moduleKey)
 
     local visible = item.hidden ~= true and item.empty ~= true
     setVisible(card, visible, visual.alpha or 1)
+    if TE.HudClickRouter and type(TE.HudClickRouter.Configure) == "function" then
+        TE.HudClickRouter:Configure(card, item, visible)
+    end
     if not visible then
         if TacticalIconEffects and type(TacticalIconEffects.Clear) == "function" then TacticalIconEffects:Clear(card) end
         return
@@ -1350,6 +1378,12 @@ function TacticalIconButton:RefreshDynamic(card, item)
     if item.visual then card.visual = item.visual end
     local visual = card.visual or item.visual or {}
     self:ApplyTextSettings(card, card.hud or {}, card.moduleKey or "main")
+    if card.hudClickLayer and card.hudClickLayer.dirty == true and TE.HudClickRouter and type(TE.HudClickRouter.Configure) == "function" then
+        -- Resolver invalidation marks the static proxy dirty. Rebuild the
+        -- target only on the next normal HUD render; combat mismatches stay
+        -- blocked instead of retargeting a protected frame.
+        TE.HudClickRouter:Configure(card, item, true)
+    end
     if card.icon then card.icon:SetAlpha(1); card.icon:Show() end
 
     local charges, maxCharges = safeNumber(item.charges), safeNumber(item.maxCharges)
@@ -1426,6 +1460,9 @@ end
 
 function TacticalIconButton:SetVisible(card, visible, alpha)
     setVisible(card, visible, alpha)
+    if TE.HudClickRouter and type(TE.HudClickRouter.SetCardVisible) == "function" then
+        TE.HudClickRouter:SetCardVisible(card, visible == true)
+    end
     if visible ~= true and TacticalIconEffects and type(TacticalIconEffects.Clear) == "function" then
         TacticalIconEffects:Clear(card)
     end

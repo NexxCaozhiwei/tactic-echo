@@ -81,9 +81,18 @@ local Defaults = {
         -- Keeping these values under one dedicated branch avoids changing the
         -- existing display-only interrupt/control settings or Burst state.
         autoReaction = {
-            schema = 1,
+            schema = 2,
             interrupt = {
+                -- P5.8 freezes the automatic-interrupt design. This branch
+                -- remains visible for diagnostics, but it cannot be selected
+                -- or dispatched from SavedVariables or the settings UI.
                 enabled = false,
+                suspended = true,
+                suspensionReason = "auto_interrupt_suspended",
+                -- P5.6: unknown/opaque interruptibility never authorizes input.
+                -- Retained only for SavedVariables schema compatibility; the
+                -- runtime requires direct API false or a positive unit event.
+                compatibilityActiveCast = false,
                 targetOrder = { "target", "focus", "mouseover" },
                 targetEnabled = { target = true, focus = false, mouseover = false },
             },

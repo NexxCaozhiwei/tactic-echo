@@ -171,11 +171,20 @@ end
 local function normalizeAutoReaction(tactics, defaults)
     local defaultReaction = type(defaults.autoReaction) == "table" and defaults.autoReaction or {}
     local reaction = type(tactics.autoReaction) == "table" and tactics.autoReaction or {}
-    reaction.schema = 1
+    reaction.schema = 2
 
     local defaultInterrupt = type(defaultReaction.interrupt) == "table" and defaultReaction.interrupt or {}
     local interrupt = type(reaction.interrupt) == "table" and reaction.interrupt or {}
-    interrupt.enabled = boolean(interrupt.enabled, defaultInterrupt.enabled == true)
+    -- P5.8: automatic interrupt is deliberately unavailable. Force this on
+    -- every normalization pass so an older SavedVariables value cannot revive
+    -- the retired reaction -> TEAP -> TEK candidate path.
+    interrupt.enabled = false
+    interrupt.suspended = true
+    interrupt.suspensionReason = "auto_interrupt_suspended"
+    -- P5.6 migration: old SavedVariables may retain this key as true, but an
+    -- opaque `notInterruptible` value is never dispatch authority. Preserve the
+    -- key for schema compatibility while normalizing its active value to false.
+    interrupt.compatibilityActiveCast = false
     interrupt.targetOrder = normalizeReactionTargetOrder(interrupt.targetOrder, defaultInterrupt.targetOrder)
     interrupt.targetEnabled = normalizeReactionTargetEnabled(interrupt.targetEnabled, defaultInterrupt.targetEnabled)
     reaction.interrupt = interrupt

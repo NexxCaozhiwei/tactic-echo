@@ -1,95 +1,55 @@
-# 1.0.44 P5 决策：宏名不是宏身份
+# 1.1.0 决策：审计基线、共享宏资格与自动打断硬暂停
 
-- 动作条宏以 `GetActionInfo(actionSlot)` 返回的 numeric macro index 作为唯一身份锚点；宏名只能用于展示/诊断，绝不能回收正文或决定派发资格。
-- 为处理首读正文空窗，只对同一 numeric index 有界重读；不调用 `GetMacroInfo(name)`，不按名称枚举账号/角色宏。
-- 当前 macro index 无正文时必须 fail-closed。另一枚同名宏的任何正文、技能名、图标或绑定都不能补足自动打断资格。
-- 这项变更只加强 P2 宏发现的一致性，不改变 P4 可打断资格或 TEK 输入链。
+## 决策
 
-# 1.0.43 P4.6 决策：多行打断宏发现与 SpellID 关联
+宏身份判断统一下沉到 `ActionBarBindingResolver`。AutoBurst 使用 `IsAutoBurstMacroEligible()`；P4 Reaction 的已解析宏、控制、防御、生存 HUD 使用 `IsVerifiedCurrentMacroSource()`。因此这些模块只能继承已经证明为“当前可见按钮/槽位 + 当前宏身份 + 正文语义”的既有宏，而不能从宏名、图标、历史缓存、另一个同技能按钮或 action-info 代表 SpellID 单独放宽来源。
 
-- 宏动作条发现以 `GetMacroInfo(actionInfoID)` 为第一依据；当该调用首读只有宏名时，可使用同一索引名称在既有账号/角色宏列表回收正文，避免把“无 `GetActionText`”误判为宏不存在。
-- 宏内 `/cast` 令牌可只读解析为 SpellID，用于克服请求技能本地化名称暂不可材料化的关联空窗；不得以宏名、图标或不完整正文推断技能。
-- 只缓存正向 token→SpellID 结果，临时读取失败必须在下一次动作条重建后重试；宏正文仍不保存到任何导出或传输数据。
-- 这只修复映射发现，不改变 P4.4 可打断资格、P4.5 宏优先链守卫、BindingToken、TEAP 或 TEK 输入链。
+1.1.0 不重新开启自动打断。Defaults、Normalize 与 `AutoReaction:Evaluate()` 的 `auto_interrupt_suspended` 是当前生产边界；读条、钢条、事件和冷却证据只服务于只读提示、高亮、诊断与 HUD 人工点击。
 
-# 1.0.42 P4.5 决策：严格整合打断宏
+确认身份后，玩家既有 `/cast`、`/use`、条件、`@focus`、`@mouseover`、`@cursor`、目标管理和 `/castsequence` 语义保持不变。控制、防御、生存只通过 HUD 真实左键复用原按钮，固定 `BindingToken=0`；P4 opaque action-info 仍只用于已有真实 BindingToken 的 target-only transport；AutoBurst 不接受该例外。
 
-- 标准 `[@mouseover,harm,nodead][@focus,harm,nodead][harm,nodead]` 被视为一个 Blizzard 宏内优先链，不是三个可独立随意复用的来源按钮。
-- 自动化只在 AddOn 证明同一按键会命中候选来源时使用该宏；上游活敌会阻断下游 focus/target candidate。
-- 不将“未读条”解释成宏条件不成立；这是 WoW 宏语言没有提供的判定。
+宏诊断改为请求作用域化。无关 `BUTTON3` / “坐骑”宏不再被渲染为胁迫或冰冻陷阱的未匹配候选；同一有效 macro index 的当前按钮在动作条文本明确命名请求技能时，可显示正文暂不可读的同槽失败记录，但没有任何恢复、替代或派发权限。
 
-# Tactic Echo 技术决策
+## 理由
 
-当前版本：`1.0.44 P5`
+现场控制面板把槽位 72 的“坐骑”宏同时报告为胁迫与冰冻陷阱的未匹配候选，说明各模块虽开始收紧身份确认，但诊断和资格判定仍存在分散逻辑。统一入口可保留已验证玩家宏的宽松语义兼容，同时避免单个模块以误匹配诊断或 action-info 代表 SpellID扩大来源。
 
-## D1. 主派发路径
+## 不变边界
 
-常规路径唯一且不可替代：
+不创建按键、不改写/替换宏、不评估分支、不改目标、不调用程序化点击。自动打断继续硬暂停；脱战 AutoBurst 硬门控、主键启停、manual_hold 人工优先、CD/转盘、标签和排序均不变。
 
-```text
-官方推荐（不可变）
-→ 可见 Blizzard 默认动作条绑定
-→ BindingToken
-→ TEAP v3
-→ TEK 安全门禁
-→ SendInput
-```
+# 1.0.54 P5.9 决策：控制、防御与生存宏兼容统一
 
-HUD、提示、防御、打断、控制、位移和爆发展示层均为只读。只有 AutoBurst Phase 1 可以在限定条件下产生独立的 `DispatchCandidate`，但它不改写官方推荐，也不建立旁路输入。
+## 决策
 
-## D2. 动作条范围
+控制、防御与生存 HUD 统一采用 Burst/Interrupt 已有的“当前可见默认动作条 + 已读取宏正文 + 宽松语义关联”规则。宏的 `/cast`、`/use`、条件分支、`@focus`、`@mouseover`、`@cursor`、目标管理辅助命令和 `/castsequence` 均保持可发现；HUD 只通过现有 secure proxy 真实左键复用对应原按钮。
 
-只接受 Blizzard 默认可见动作按钮。载具、控制单位、覆盖动作条和宠物对战 fail-closed；ExtraActionBar 仅诊断观察。自定义动作条插件不在当前派发来源范围。
+无标准快捷键、或其键位不能产生合法 BindingToken 的已识别宏，仍是可靠的人工 HUD 点击来源，但其 `BindingToken` 固定为 `0`。它们不得新增控制、防御、生存自动化，也不得进入 TEAP 或 TEK。生存物品宏只接受当前宏正文中与请求物品精确一致的 ItemID、`item:ID` 或本地化名称语义；不从宏名、图标或宏列表猜测来源。
 
-## D3. 宏范围
+## 理由
 
-Tactic Echo 不解释或执行宏分支。当前自动爆发第一阶段仅接受一个明确预期技能的单一用途宏，文本关联回退仅支持无条件单行 `/cast <spell>`。条件、mouseover、目标修饰、分号分支、`/use`、`/castsequence` 和多动作宏不进入自动爆发。
+此前底层 Resolver 已能宽松识别多数控制和防御技能宏，但上层展示逻辑把宏来源降级为“没有可信动作条来源”；生存 `ResolveItem()` 又只识别直接物品按钮，遗漏了玩家常用的 `/use` 宏。这与此前已确认的爆发/打断宏兼容策略不一致，并使 HUD 手动入口不必要地失效。
 
-## D4. TEAP v3 自动定位与派发来源
+## 不变边界
 
-TEK 自动定位只在当前 WoW 客户区左上有界区域搜索 `T / E / 3` 头部；完整帧 CRC、Commit、会话和新鲜度通过后才可派发。自动定位不回退固定桌面坐标。
+不创建按键、不改写或替换宏、不改目标、不评估宏分支、不调用程序化点击。自动打断继续硬暂停；脱战 AutoBurst 硬门控、主键启停、manual_hold 人工优先、CD/转盘、标签和排序均不变。
 
-TEAP v3 保持 20 字节。flags bit 5 固定为 `dispatchOrigin=burst`；常规帧为 `official`。该标记只用于审计和 TEK burst 候选去重，不改变 BindingToken、CRC 或输入门禁。
+# 1.0.53 P5.8 决策：HUD 真实点击兼容与脱战爆发硬门控
 
-## D5. Secret 值
+## 决策
 
-受保护/secret 值不得进入模型、策略、Tooltip、TEAP 或 TEK。不能被安全转换为普通 Lua 标量的观测一律降级为未知。
+自动打断继续处于硬暂停。即使旧 SavedVariables 仍保存启用状态，Normalize 与 `AutoReaction:Evaluate()` 也必须强制返回 `auto_interrupt_suspended`，不生成 reaction candidate、BindingToken、TEAP reaction 帧或 TEK 请求。
 
-## D6. 冷却、充能与 GCD
+AutoBurst 不保留脱战例外。只要 `inCombat=false`，`AutoBurst:Evaluate()` 必须在任何规则读取、capture 恢复、计划延续、计划创建和候选材料化之前清除残留 plan/capture，并返回空结果。`SignalFrame:SetState("armed")`、`Run`、切图或随后进战均不能授权或续接 pre-combat bridge。
 
-冷却主要用于 HUD 展示。AutoBurst Phase 1 的唯一例外是 `CollectCooldownOnly()`：它只读取技能自身 CD、充能和共享 GCD 快照。`GCDGate` 将原始时序归一化为状态标签，原始剩余毫秒不进入 AutoBurst、TEAP 或 TEK。
+主 HUD 左键复用既有 `ToggleRun()`。爆发、打断、控制、防御/生存 HUD 卡只作为真实人工鼠标左键入口：经 static secure proxy 转交给可靠、当前可见的 Blizzard 默认动作条按钮或已识别的现有宏。proxy 同时注册 `LeftButtonDown` 与 `LeftButtonUp`，兼容“按键按下即施放（ActionButtonUseKeyDown）”；13/14 槽物品卡优先解析同一装备槽位的来源。HUD 不新建按键、不写宏、不替换宏、不构造 spell/item 动作，也不改变目标。
 
-Buff、资源、目标、距离、范围、Proc、敌人数量、团队状态和首领机制不参与 Phase 1 自动爆发。
+HUD 与原生默认动作条的真实左键优先于后续派发：短暂 `manual_hold` 以动作码 0、BindingToken 0 覆盖当前 TEAP 输出。战斗中映射变化不能重新绑定 secure proxy，必须 fail-closed。
 
-## D7. AutoBurst Phase 1
+## 理由
 
-一次只运行一条人工声明的窗口技能 + 注入技能规则，支持 `pre/post` 和 `simple/focused`，默认关闭。窗口由官方推荐边沿触发；每次仍只经原 BindingToken → TEAP → TEK 链发送一步。
+运行日志已证明旧的 pre-combat bridge 会在脱战建立爆发计划并向 TEAP/TEK 交付饰品或窗口技能，这与“只在战斗中自动爆发”的边界冲突。因此删除该授权路径，而不是在 TEK 末端补救。HUD 非主键卡无法在部分客户端输入设置下收到鼠标事件，则通过双点击沿注册解决，同时仍完全复用玩家原有动作条语义。
 
-确认仅接受该技能自身 CD/充能变化。窗口技能最多受控重试一次；注入技能不重试。AddOn 没有 Windows SendInput 回执，只能以状态变化或超时间接判断步骤结果。
+## 兼容性边界
 
-## D8. 验证声明
-
-离线单元测试、Python 编译、PyInstaller 构建成功均不证明 Windows 真实行为。Hook、前台、DPI、多显示器、WoW 采样、SpellQueueWindow、真实 SendInput 和自动爆发顺序必须以人工实机测试证据为准。
-
-## 1.0.03：AutoBurst 触发锚点与诊断可观测性
-
-- 实机诊断包仅出现 `dispatch_origin=official`；用户上传的 SavedVariables 中没有 `TacticEcho.lua`，只有历史 `!WR.lua`。因此不能把“未出现 burst 帧”误判为 TEK 端拒绝。
-- AutoBurst Phase 1 增加显式 `autoBurstWindowSpellID` 与 `autoBurstInjectionSpellID`。窗口 SpellID 的语义是“官方推荐锚点”，不是“HUD 爆发卡首项”。
-- 保留 Profile 首项作为兼容回退，但在状态、`/teab status`、MappingExport 与 TEK 诊断摘要中公开规则来源和最近拒绝原因。
-- SignalFrame 捕获 AutoBurst evaluator 错误后必须写入 AddOn 审计，不得静默退回官方派发。
-
-## 1.0.07：前置未知、候选持续与施法成功回执
-
-- 受保护的冷却数值、`active=true` 但 `isOnGCD` 来源缺失、GCD 读取未知均不是自身冷却。它们必须进入有界重采样，不能触发前置简易的“跳过注入”。
-- 前置简易仅允许在窗口边沿已明确确认注入自身 CD 时跳过注入。窗口已经被计划接管后，任何 `UNKNOWN`、确认失败或超时都不允许窗口回落到官方派发。
-- Burst 候选保持相同 TEAP sequence，直到确认、明确失效或有界超时；TEK 对该 sequence 仅尝试一次真实输入。
-- `UNIT_SPELLCAST_SUCCEEDED` 只作为当前已派发且同 SpellID 的步骤成功确认回执；不读取 Buff，不决定是否创建计划，也不作为策略输入。
-- 所有已创建计划的中止/超时均保持窗口离开锁，只有官方推荐离开窗口并再次进入才可建立下一计划。
-
-## 1.0.06：AutoBurst 实机前置修订
-
-- 内部等待（GCD 锁、确认等待、短暂重校验和窗口离开锁）使用 `armed + observationOnly + dispatchOrigin=burst`，不是用户暂停；TEK 只观察，不输入。
-- 当技能 API 短冷却与全局 GCD 的开始、持续和剩余时间严格对齐时，`IconState` 将其归类为共享 GCD。AutoBurst 等待 `QUEUE_WINDOW`，不得把准备就绪的注入技能误跳过为自身 CD。
-- 观察帧的真实 BindingToken 保持为 0，但 SignalFrame 必须带只读官方展示绑定；HUD 不能因此显示“未绑定”。
-- 已候选派发/确认的窗口技能在官方推荐仍短暂显示时必须保持观察，直到推荐离开，以避免重复窗口键；从未派发窗口的计划中止后才可立刻归还普通官方派发。
-- `PLAYER_REGEN_DISABLED` 开始新的 combat epoch，清理上一战斗的窗口边沿与离开锁。
+本决定不修改玩家宏文本、动作栏绑定、宏发现、主推荐、CD 数字、DurationObject 转盘、标签、爆发排序或既有宏兼容策略。含目标处理的既有宏在 HUD 手动复用时仍完全按宏自身语义执行，HUD 本身不插入目标命令。

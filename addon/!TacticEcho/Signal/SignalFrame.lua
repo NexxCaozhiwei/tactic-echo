@@ -279,13 +279,9 @@ function SignalFrame:SetState(nextState)
     if state ~= previousState and STATE_SOUND_FILES[state] and type(PlaySoundFile) == "function" then
         pcall(PlaySoundFile, STATE_SOUND_FILES[state], "SFX")
     end
-    -- Existing user-facing Run controls call SetState("armed").  After a
-    -- world transition that explicit action reauthorizes only AutoBurst's
-    -- narrow pre-combat opener bridge; normal out-of-combat recommendations
-    -- remain paused by the unchanged session policy.
-    if state == "armed" and TE.AutoBurst and type(TE.AutoBurst.AuthorizePreCombatBridge) == "function" then
-        TE.AutoBurst:AuthorizePreCombatBridge("signal_state_armed")
-    end
+    -- P5.8: SetState("armed") does not authorize any out-of-combat Burst
+    -- path. AutoBurst itself enforces the in-combat boundary before it can
+    -- create a capture, plan or candidate.
     self:Refresh("state")
 end
 
@@ -797,9 +793,17 @@ function SignalFrame:BuildMessage(reason)
     local empowering = castLock.active == true and castLock.kind == "empower" and castLock or { active = false }
     local monitor = TE.ProtocolMonitor and TE.ProtocolMonitor:Sample() or nil
     local runtimeReason = nil
+    local manualPriority = TE.ManualActionPriority and type(TE.ManualActionPriority.GetActive) == "function"
+        and TE.ManualActionPriority:GetActive() or { active = false }
 
     if state == "armed" then
-        if inputFocusActive then
+        if manualPriority.active == true then
+            -- A physical HUD/default-actionbar mouse click always wins over a
+            -- queued TEAP/TEK candidate. This does not synthesize input; it
+            -- exposes the existing manual_hold protocol state with no token.
+            outputState = "manual_hold"
+            runtimeReason = manualPriority.reason or "manual_click_priority"
+        elseif inputFocusActive then
             outputState = "manual_hold"
             runtimeReason = inputFocusReason
         elseif castLock.active then
@@ -896,20 +900,10 @@ function SignalFrame:BuildMessage(reason)
         end
     end
 
-    -- The default session policy still suppresses ordinary out-of-combat
-    -- recommendations.  A decision carrying this marker is the one narrow
-    -- exception: it is an already-qualified AutoBurst front-injection bridge.
-    -- Keep TEAP armed so TEK can apply its normal gates to that candidate/hold;
-    -- retain inCombat=false in the protocol and never elevate manual/cast/text
-    -- pauses into a bridge.
-    local preCombatBurstBridgeFrame = autoDecision and autoDecision.preCombatBridge == true
-        and not inCombat
-        and (outputState == "armed"
-            or (outputState == "paused" and sessionPolicyReason == "out_of_combat_policy_pause"))
-    if preCombatBurstBridgeFrame then
-        outputState = "armed"
-        runtimeReason = "precombat_burst_bridge"
-    end
+    -- P5.8 has no out-of-combat Burst transport exception. Session policy
+    -- remains authoritative until combat begins; therefore no AutoBurst result
+    -- may elevate the protocol envelope while `inCombat` is false.
+    local preCombatBurstBridgeFrame = false
 
     local explicitObservationOnly = reason == "observe_once"
     -- AutoBurst uses a hold only to suppress the ordinary recommendation while
@@ -921,7 +915,8 @@ function SignalFrame:BuildMessage(reason)
         and autoDecision.observationOnly == true
     local reactionHoldObservation = reactionDecision and reactionDecision.kind == "hold"
         and reactionDecision.observationOnly == true
-    local observationOnly = explicitObservationOnly or burstHoldObservation or reactionHoldObservation
+    local manualPriorityObservation = manualPriority and manualPriority.active == true
+    local observationOnly = explicitObservationOnly or burstHoldObservation or reactionHoldObservation or manualPriorityObservation
 
     local dispatchOrigin = "official"
     local dispatchSpellID = officialSpellID
@@ -965,6 +960,20 @@ function SignalFrame:BuildMessage(reason)
         dispatchSpellID = nil
         dispatchActionKind = "hold"
         runtimeReason = reactionDecision.reason or runtimeReason or "reaction_interrupt_hold"
+    end
+
+    if manualPriorityObservation then
+        -- Do this after both candidate selectors so even a previously queued
+        -- Burst/Reaction decision cannot retain a live token during a direct
+        -- click. `official` is used as the protocol metadata fallback; the
+        -- manual_hold state + actionCode=0 + BindingToken=0 are the hard gate.
+        dispatchOrigin = "official"
+        dispatchSpellID = nil
+        dispatchActionKind = "manual_hold"
+        dispatchInventorySlot = nil
+        dispatchItemID = nil
+        bindingInfo = nil
+        runtimeReason = manualPriority.reason or "manual_click_priority"
     end
 
     if dispatchSpellID and not bindingInfo then
@@ -1017,6 +1026,7 @@ function SignalFrame:BuildMessage(reason)
         tostring(autoDecision and autoDecision.dispatchAttempt or 0), tostring(observationOnly),
         tostring(reactionDecision and reactionDecision.reactionKind or "none"), tostring(reactionDecision and reactionDecision.source or "none"),
         tostring(reactionDecision and reactionDecision.castKey or "none"), tostring(reactionDecision and reactionDecision.routeMode or "none"),
+        tostring(manualPriorityObservation), tostring(manualPriority and manualPriority.kind or "none"), tostring(manualPriority and manualPriority.source or "none"),
     }, ":")
     -- P4.4 reaction candidates intentionally retain one stable sequence while
     -- the observed cast remains active. TEK records a successful reaction
@@ -1083,6 +1093,8 @@ function SignalFrame:BuildMessage(reason)
         inputFocusActive = inputFocusActive,
         inputFocusReason = inputFocusReason,
         manualHoldActive = outputState == "manual_hold",
+        manualPriority = manualPriority,
+        manualPriorityActive = manualPriorityObservation == true,
         channelingActive = channeling.active or false,
         channelingName = channeling.name,
         channelingSpellID = channeling.spellID,

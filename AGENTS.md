@@ -1,8 +1,13 @@
-# AGENTS.md — Tactic Echo 1.0.45 P5.1 开发与安全边界
+# AGENTS.md — Tactic Echo 1.1.0 开发与安全边界
 
 ## 1. 基线与交付
 
-- 当前唯一开发基线：`1.0.45 P5.1`。AutoBurst 与输入路径仍以 1.0.35 为冻结基线；HUD 冷却渲染仍以已实测稳定的 1.0.31 实时转盘路径为基础，并由 1.0.38 收口为“DurationObject 只画转盘、HUD 徽标统一纯秒数”。1.0.39 P1–P3 提供设置、动作条/宏映射、只读读条候选与 HUD 高亮；1.0.40 P4.3 已实机证明 reaction 的 BindingToken→TEAP→TEK 动作链与稳定候选交付可用；1.0.41 P4.4 恢复严格钢条/可打断证据；1.0.42 P4.5 在不改输入链的前提下，严格识别并守卫 `@mouseover → @focus → target` 单技能整合打断宏；1.0.43 P4.6 修复多行打断宏的正文回收与 SpellID 关联韧性；1.0.44 P5 的“actionInfoID 恒为宏 index”假设已由 1.0.45 P5.1 修正：非宏 index 的代表 SpellID 使用唯一语义回收，多个同名同技能候选 fail-closed。此前版本仅保留历史记录。
+- 当前唯一开发基线：`1.1.0`。该基线由 `1.0.56 P5.11` 审计收口而来：AutoBurst 与输入路径仍以 1.0.35 为冻结基线；HUD 冷却渲染仍以已实测稳定的 1.0.31 实时转盘路径为基础，并由 1.0.38 收口为“DurationObject 只画转盘、HUD 徽标统一纯秒数”。自动打断生产运行继续硬暂停，AutoBurst 保持脱战硬门控，并统一控制/防御/生存宏兼容：无论 Defaults、旧 SavedVariables、规则、官方窗口、已有 plan/capture 或既有 bridge 字段为何，只要 `inCombat=false`，不得创建/保留 Burst capture 或 plan，不得生成 Burst candidate、TEAP Burst 帧或 TEK 请求。HUD 手动点击只能静态 secure proxy 复用可靠当前可见默认动作条按钮/已识别宏，且 HUD/原生默认动作条真实左键必须以 `manual_hold`、动作码 0、BindingToken 0 优先于后续派发。宏列表存在、宏名、图标及未知宏正文均不得作为当前动作栏身份或钢条判断依据。此前版本仅保留历史记录。
+- **基线归档是强制仓库规范**：所有 `BASELINE_<版本>.md` 只允许置于 `docs/baselines/`，根目录不得保存重复 baseline。每次版本化源码改动必须同步：① `docs/baselines/BASELINE_<VERSION>.md`；② 根目录 `CHANGELOG.md` 同版本条目；③ `VERSION`、TOC 与 `Core/Bootstrap.lua`。不得以临时根目录 baseline、仅更新 CHANGELOG 或仅更新版本号交付。
+- **P5.9 控制/防御/生存宏兼容**：控制、防御与生存 HUD 必须沿用 Burst/Interrupt 的既有宽松、只读宏关联原则。当前可见 Blizzard 默认动作条宏的 `/cast`、`/use`、条件分支、`@focus`、`@mouseover`、`@cursor`、目标管理辅助命令与 `/castsequence` 不得因缺少可解析 BindingToken 而从 HUD 手动入口移除；无键位或白名单外键位只能作为 `bindingToken=0` 的人工 HUD 点击来源，绝不授权 TEAP/TEK、自动控制、自动防御或自动生存。物品宏只能由已读取正文与精确 ItemID/`item:ID`/本地化物品名语义关联，宏名、图标、宏列表存在和猜测的宏分支均不得作为来源。
+
+- **P5.10 当前栏位宏身份与 HUD 精确复用**：控制、防御、生存 HUD 的宏来源必须由当前可见 `buttonName + actionSlot` 以及当前 API 实时确认。若 `GetActionInfo(actionSlot).id` 是有效 numeric macro index，只能对该 index 有界读取，失败不得扫描其它宏。若不是 index，只能以 `GetActionText` 与/或 action-info handle 的只读名称、代表 SpellID、唯一正文语义共同恢复；`GetMacroSpell`/代表 SpellID 不能单独授权。HUD 卡必须同时复核来源类型、macroID 和只读语义身份；原槽位改成同技能直放、其他同技能宏或 `CTRL+2` 的同技能来源均不得接管。`macro_semantic_identity_ambiguous`、正文失配和 identity 未验证一律 fail-closed。P4 action-info opaque 兼容仅可用于有真实 BindingToken 的 reaction target-only transport，不能成为 HUD/控制/防御/生存来源，不能推断 focus/mouseover/cursor，不得授权 AutoBurst。
+- **1.1.0 共享宏资格（最高优先级）**：不得让 AutoBurst、Reaction、控制、防御或生存各自实现、放宽或回退宏身份规则。常规来源必须统一经 `ActionBarBindingResolver:IsVerifiedCurrentMacroSource()`：当前按钮/槽位身份已验证、正文语义已解析、关联为 `macro_body_*`、`macro_item_*` 或 `macro_inventory_*`。在此前提下，继续兼容 `/cast`、`/use`、条件分支、`@focus`、`@mouseover`、`@cursor`、目标管理辅助命令与 `/castsequence`，并保留原宏行为；控制、防御、生存只能作 `bindingToken=0` 的 HUD 手动来源。AutoBurst 还必须统一经 `IsAutoBurstMacroEligible()`，仅正文关联且语义允许的宏可进入 burst step。`action_info_*` 正文不可读兼容只保留给 P4 target-only transport，且须有真实 BindingToken；永不成为 HUD 或 AutoBurst 来源。所有宏失败诊断必须请求作用域化：不得把无关“坐骑”等宏显示为胁迫、冰冻陷阱等技能的候选；同一有效 numeric index 的当前按钮仅在动作条文本明确命名请求技能时可保留同槽位读取失败诊断，仍不授权恢复/扫描/替代。
 - 默认交付完整源码包。压缩包只能有一个项目根目录，不得包含 `build/`、`dist/`、`release/`、缓存、日志、SavedVariables、EXE、历史补丁或本机配置。
 - 每次代码修改必须保持根目录 `VERSION`、插件 TOC、`Core/Bootstrap.lua` 版本一致，并运行本文件第 9 节验证。
 - 不得以离线测试、PyInstaller 成功或进程存活作为 Windows Hook、前台判断、SendInput、自动爆发实机成功的证据。
@@ -68,17 +73,12 @@ trinket:13 / trinket:14   -- 固定装备栏身份，计划创建时锁定实际
 - UNKNOWN、图标灰度、泛 GCD、失败事件、Buff、资源/目标状态不得作为跳过或成功证据。
 - 已确认窗口后需观察官方窗口离开，避免重复派发；已创建计划内官方推荐旋转仅记录诊断，不取消完成中的步骤。
 
-### 3.4 Handoff 与起手 bridge
+### 3.4 Handoff、脱战硬门控与切图
 
-只有实际筛选后的第一步骤位于窗口之前时，AutoBurst 才创建 `PreWindowCapture`；真实 paused→armed 需先输出 4 张正常 transport tick 的 `observationOnly + BindingToken=0` hold，第 5 张新鲜帧才可输出第一可选步骤。事件/状态刷新不得消耗该预算。
-
-已 arm 的前置序列可通过既有 bridge 跨越脱战→`PLAYER_REGEN_DISABLED`，且 bridge 计划不得被进战事件清空。窗口第一的顺序不启动 bridge；普通脱战官方推荐始终没有普通派发资格。
-
-### 3.4 切图安全围栏
-
-- `PLAYER_LEAVING_WORLD`、`PLAYER_ENTERING_WORLD`、`ZONE_CHANGED_NEW_AREA` 必须撤销仅用于脱战起手的隐式 bridge 授权，清除旧 plan/capture/window ownership，且不得建立 departure lock。
-- 围栏期间，脱战窗口只能观察，不能创建或派发 Burst plan；普通进战自动运行不受影响。真实 `PLAYER_REGEN_DISABLED` 可解除围栏。
-- 切图后需要脱战起手时，只能经已有“运行”动作重新授权；不得新增用户可见模式、标签或普通脱战派发权限。重新授权后的前置序列必须重新执行四帧 handoff。
+- `PreWindowCapture` 仅可在 **已进入战斗** 后、官方窗口已观察到且第一实际步骤位于窗口之前时创建。paused→armed 的四帧 `observationOnly + BindingToken=0` handoff 仍只适用于已进入战斗后的 transport ownership 交接；事件/状态刷新不得消耗该预算。
+- **绝对脱战门控**：任何 `inCombat=false` 帧必须在规则预检、capture 恢复、计划创建、候选材料化之前返回 `none`。该帧必须清除遗留 `plan`/`preWindowCapture`；不得因 `Run`、`intentState=armed`、`effectiveState=paused`、官方窗口、切图、旧 bridge 字段、已有 handoff 或任何 SavedVariables 产生 Burst candidate、TEAP Burst 帧或 TEK 请求。
+- `SignalFrame:SetState("armed")` 不得调用或间接授权任何脱战爆发路径。`AuthorizePreCombatBridge` 只可作为向后兼容的 no-op 诊断接口；不得恢复其授权语义。
+- `PLAYER_REGEN_DISABLED` 必须从干净 encounter epoch 开始，不能接续脱战 plan/capture。切图事件仍需清除临时状态；它们不得引入新的脱战例外。
 
 ### 3.5 UI 与诊断
 
@@ -98,19 +98,24 @@ trinket:13 / trinket:14   -- 固定装备栏身份，计划创建时锁定实际
 - HUD CD 展示数据不得改变 AutoBurst 预检、步骤跳过、成功确认、TEAP、TEK 或任何输入派发权限。
 
 
-## 3.8 P4 自动打断
+## 3.8 P5.3–P5.6 自动打断历史契约（P5.8 继续暂停）
 
-- P4 仅允许 `AutoReaction` 生成自动**打断**候选；不得实现单体控制、群控、HUD 点击、自动选目标或宏改写。
-- **P4.4 严格可打断资格**：候选必须同时满足战斗内、intent/effective state 均为 `armed`、敌对存活、P3 证明为真实活跃读条（非 `transient_gap_hold`）、以及已有 P2 `safeForFutureAuto=true` 的真实 BindingToken 路由。
-- 可打断证据的固定优先级：① `UnitCastingInfo`/`UnitChannelInfo` 可材料化的 `notInterruptible=false`；② 当前真实原生盾组件明确**可见**时硬性否决；③ 同源、未过期的 `UNIT_SPELLCAST_NOT_INTERRUPTIBLE` 硬性否决，`UNIT_SPELLCAST_INTERRUPTIBLE` 正向确认；④ 当前真实盾组件连续两次 P3 采样均明确隐藏，或连续两次明确的原生 `interruptible/notInterruptible=false`。直接 API 与单位事件不需要原生两次采样。
-- `showShield`、`barType`、原生 scalar-only `true`、P3 bridge、profile fallback、无法材料化的未知值均仅可诊断，绝不能授权自动派发。P4.3 的 `probe_active_cast_ignore_steel` 例外已移除。
+> **P5.8 优先级覆盖：**本节其余内容仅保留既有观察/路由安全历史与未来恢复设计参考；生产运行时不得根据其任何条件创建自动打断候选。不得添加隐式测试开关或 SavedVariables 旁路。自动打断设置必须可见但禁用；只有只读提示、高亮、诊断和 HUD 对现有动作条/宏的真实人工点击可继续存在。
+
+- 仅允许 `AutoReaction` 生成自动**打断**候选；不得实现单体控制、群控、HUD 点击、自动选目标或宏改写。
+- 候选必须同时满足：战斗内、intent/effective state 均为 `armed`、敌对存活、P3 证明为真实活跃读条（非 `transient_gap_hold`）、以及已有 P2 `safeForFutureAuto=true` 的真实 BindingToken 路由。
+- **P5.6 API/事件确认路径**：可打断资格只接受：① 当前 `UnitCastingInfo` 或 `UnitChannelInfo` 可材料化的 `notInterruptible=false`；② 同源、未过期 `UNIT_SPELLCAST_INTERRUPTIBLE`。`notInterruptible=true`、当前真实原生盾组件可见、同源 `UNIT_SPELLCAST_NOT_INTERRUPTIBLE` 均硬否决。`notInterruptible=nil`、Secret/opaque 值、pending/stale 事件、`showShield`、`barType`、P3 bridge、profile fallback 与原生无盾提示均只能诊断，绝不得授权 reaction。直接 API 的 `false` 必须通过显式赋值保留，禁止使用会把 false 折为 nil 的 Lua `and/or` 习惯写法。
+- `ReactionObservation` 必须优先读取真实盾组件的 `IsShown()` / `IsVisible()`：直接字段、常见全局子组件、以及名称/atlas/texture 明确包含 shield/uninterruptible/notinterruptible 的当前子组件或 region。不得以 generic decoration、`showShield` 配置位或 `barType` 伪造钢条结论。
+- **打断冷却门控**：候选路由建立后，`AutoReaction` 必须用 `IconState:CollectCooldownOnly()` 对将被 TEK 实际按下的 action slot 做只读实时采样。该打断动作存在已知、非 GCD、自身 CD 且无可用 charges 时，记录 `interrupt_action_cooldown`、`bindingToken=0`，不得产生 reaction candidate 或占用主键；只读宏按钮的 ready 不能据此授权候选。CD UNKNOWN / sampler unavailable 只能诊断，不能伪造冷却或失去 P4.3 兼容能力。
 - 事件状态帧可能没有 spellID/castGUID；`ReactionInterruptEvents` 必须保留最近一次 START 事件的可读身份，不能被 status 事件的 nil 覆盖。缓存仍受 TTL、目标切换和终止事件约束；读条与缓存都可读 SpellID 且不一致时 fail-closed。
-- 同一活跃读条保持同一个 `reaction` candidate，直到读条消失/身份变化。SignalFrame 必须为这段候选保持稳定 sequence；TEK 仅在该 sequence 第一次成功 SendInput 后抑制重复帧。不得通过缩短候选为单帧或新增第二输入通道来规避跨进程采样竞争。
-- **P4.5 严格整合宏资格**：仅可识别单一 `/cast`、单一技能身份、无 `/castsequence`、无目标管理命令、且条件链精确为 `[@mouseover,exists?,harm,nodead][@focus,exists?,harm,nodead][@target?,exists?,harm,nodead]` 的既有宏。P2 可将其三个来源登记为 `macro_priority_chain`，但 P4 在针对 focus/target 候选派发前必须确认不存在任何更高优先级、仍满足宏 `harm,nodead` 条件的单位；否则记录 `macro_priority_preempted_by_<source>` 并 fail-closed。该宏**不能判断“是否正在施法”**，因此不得把“上游单位未读条”当作宏分支不成立；不符合精确条件链的多条件宏保持手动使用。
-- **P5.1 宏动作身份**：先判断 `GetActionInfo(actionSlot).id` 是否处于当前账号/角色宏的有效 numeric index 范围；是时仅可对同一 index 有界重读 `GetMacroInfo(index)`。若不在有效宏 index 范围，Retail 可将它作为宏动作的代表 SpellID 返回；此时允许只读枚举当前宏列表，但必须同时满足：动作条 `GetActionText(slot)` 与候选宏名精确一致、候选宏的 `GetMacroSpell(index)` 或解析后的 `/cast` 语义命中该代表 SpellID、且仅存在一枚候选。多个同名同技能候选必须 `macro_semantic_identity_ambiguous` fail-closed；不得调用 `GetMacroInfo(name)`，不得按名称取第一枚，宏名本身不得成为派发资格。`/cast` token 可只读解析为普通 SpellID 以克服名称 API 临时不可材料化；不得持久化宏正文、不得将未解析 token 作为派发资格；正文、同一技能身份和真实键位仍必须全部确认。
+- 同一活跃读条保持同一个 `reaction` candidate，直到读条消失/身份变化。SignalFrame 必须为这段候选保持稳定 sequence；TEK 仅在该 sequence 第一次成功 SendInput 后抑制重复帧。不得通过缩短候选为单帧或新增第二输入通道规避跨进程采样竞争。
+- **宏兼容性默认原则（用户明确要求）**：未得到用户明确要求时，必须尽量保留现有玩家自定义宏的兼容性、发现、绑定与既有自动路由能力；不得仅因理论歧义而收紧、移除或改变已经支持的宏形态。确需收紧、移除或改变既有宏兼容性时，必须先说明具体运行证据、影响范围和原因，并取得用户确认后才能改动。该原则同样适用于后续 P4/P5 自动打断与 P2 宏解析变更。
+- **整合宏资格**：严格 `[@mouseover,exists?,harm,nodead][@focus,exists?,harm,nodead][@target?,exists?,harm,nodead]` 单技能宏可登记为 `macro_priority_chain`，但针对 focus/target 候选派发前必须确认不存在更高优先级、仍满足宏 `harm,nodead` 的单位；否则 `macro_priority_preempted_by_<source>` fail-closed。该宏不能判断“是否正在施法”。
+- **目标管理宏**：保持对既有同技能目标管理宏的宽松发现与绑定，不因含 `/cleartarget`、`/targetenemy`、`/targetlasttarget` 而从 P2 移除。P4 自动打断可使用精确 `focus → target` legacy fallback：只有 `macroManagedTargetFallback=true`、顺序为 `{focus,target}`、当前来源为 `target` 且不存在存活敌对 `focus` 抢占第一分支时，记录 `macro_managed_target_target_compat` 并允许派发；focus 分支照常支持。其他无法精确归属的目标管理 target/mouseover 路由仍只在自动派发层 fail-closed，且任何扩大或收紧既有形态的兼容性必须先按上述原则征得用户确认。当前目标优先普通技能按钮或无目标管理命令的严格 target 宏。
+- **P5.5/P5.6 宏身份与当前动作栏兼容**：先判断 `GetActionInfo(actionSlot).id` 是否处于当前账号/角色宏的有效 numeric index 范围；是时仅可对同一 index 有界重读 `GetMacroInfo(index)`。若不在范围，Retail 可通过 action-info `id` 或 macro-spell 返回代表 SpellID；常规正文恢复仍必须以动作条 `GetActionText` 或 action-info handle 只读名称、代表 SpellID 与唯一宏正文语义共同确认，多个同名同技能候选必须 `macro_semantic_identity_ambiguous` fail-closed；不得调用 `GetMacroInfo(name)`，不得按名称取第一枚，宏正文不得持久化。**例外仅用于 P4 reaction target transport**：当当前可见默认动作条宏按钮以 `action_info_represented_spell` 或 `action_info_macro_spell` 明确暴露所请求打断技能、已有真实 BindingToken、但正文/索引不可读时，可登记对应 `action_info_*_compat` 的 target-only 路由，以保留 P4.3 已实机成功链路；不得从宏名、图标、宏列表或此路由推断 focus/mouseover 分支，也不得授权 AutoBurst。
 - 活跃 `AutoBurst` plan 或 pre-window capture 具有优先权：只高亮，不自动打断；不得调用 `AutoBurst:Abort`、推进或重置其状态。
 - SignalEncoder 使用 TEAP v3 预留 bit `0x40` 标记 `reaction`，并保持单一 20-byte 传输。TEK 在 `0x20|0x40` 同时存在时拒绝帧。
-- 当确认读条没有 P2 安全路由时，仅可对该读条调用一次 `ReactionBindings:RefreshForAuto()` 重建既有默认动作条缓存。`castSerial` 用于区分外部打断后的下一段读条；P4 状态诊断必须区分 runtime、读条确认、视觉采样与路由阻断。不得将 native true／未知、P3 bridge 或 profile fallback 放宽为自动资格。
+- 当 eligible 读条没有 P2 安全路由时，仅可对该读条调用一次 `ReactionBindings:RefreshForAuto()` 重建既有默认动作条缓存。`castSerial` 用于区分外部打断后的下一段读条；状态诊断必须区分 runtime、确认、兼容资格、兼容采样、视觉采样、动作 CD 与路由阻断。
 
 ## 3.7 P3 只读打断/控制候选与 HUD 高亮
 
@@ -122,13 +127,20 @@ trinket:13 / trinket:14   -- 固定装备栏身份，计划创建时锁定实际
 - 反应高亮固定只选择一个优先项：`打断 > 群控 > 单体控制`。高亮读取 `autoReaction` 的来源勾选和排序，但不受自动开关影响，以便关闭自动化时仍能手动观察。
 - P3 只能设置 `bindingToken=0`、`readOnly=true`、`dispatchAllowed=false` 的 HUD 数据；不得调用 `SignalFrame`、`SignalEncoder`、TEK、SendInput，亦不得影响 AutoBurst、官方推荐、HUD 冷却、标签或现有输入门禁。
 
+### 3.9 P5.8 HUD 真实点击入口
+
+- 主键继续只调用既有 `ControlPanel:ToggleRun()`。爆发、打断、控制、防御/生存 HUD 卡只可代理一个当前可见、已验证的 Blizzard 默认动作条按钮或 Resolver 已识别宏。
+- secure proxy 必须是 `UIParent` sibling，使用 `SecureActionButtonTemplate` 的 `type="click"` / `clickbutton` 指向原始按钮；不得调用 `Button:Click()`，不得创建 spell/item 属性、按键或宏。代理必须同时注册 `LeftButtonDown` 与 `LeftButtonUp`，并位于 card 之上的输入层，以兼容 `ActionButtonUseKeyDown`。
+- HUD proxy 与原生默认动作条的真实左键都必须先写入既有 `manual_hold`。在该短暂让权窗口中 SignalFrame 必须输出动作码 0、BindingToken 0；HUD 手动点击及原生动作条手动点击优先于 TEAP/TEK 的后续派发。
+- 13/14 槽物品卡必须优先按装备槽位解析真实来源；找不到安全来源、特殊动作条、按钮不可见或战斗中映射变化时，HUD 卡保持显示但 blocker 必须 fail-closed 并给出原因。
+
 ## 4. 宏与动作条
 
 - 只支持 Blizzard 默认可见动作条。载具、控制单位、覆盖动作条、宠物战斗 fail-closed；ExtraActionBar 仅观察。
 - Phase 1.5 允许用户已经放在**可见 Blizzard 默认动作条**上的宏按钮。宏关联可读取 `/cast`、`/use`、条件/分号分支、目标修饰（包括 `@cursor`）、多行辅助命令与 `/castsequence` 中的明确 SpellID/本地化技能名；饰品宏可关联明确的 `/use 13` 或 `/use 14`；TE 只按玩家现有绑定，不写入、改造或执行宏分支。
 - 解析器优先采用 Blizzard `GetActionInfo` / `GetMacroSpell` 的当前宏技能；文本宽松关联用于 API 未提供关联时。它不判断哪一个条件分支会成立，派发后仍必须通过**当前步骤的精确施法事件、技能自身非 GCD CD 或充能变化**确认，否则按现有受控超时/窗口锁规则失败关闭。
-- 宏正文回收只能使用动作条返回的 numeric macro index；当该索引首读仅有名称或正文缺失时，可对同一 index 有界重读，不得使用 `GetActionText` 或宏名查找账号/角色宏列表。宏内 `/cast` 技能名称可只读解析为 SpellID 作为名称 API 临时不可用时的关联后备；不得依据宏名称、图标、动作条文本或部分文本猜测技能身份。
-- 包含 `/cleartarget`、`/targetenemy`、`/targetlasttarget`、`/target`、`/focus`、`/assist` 等目标管理命令的宏，仍只可宽松关联到玩家现有可见按钮；TE 不会拆分、重排或执行其目标管理命令。若宏只包含一个被请求技能身份、无 `/castsequence`、且所有可执行施法动作均为该技能，则可标为 `macroManagedTargetAuto`：后续打断/控制自动化只按该已有宏键位一次，宏自身负责焦点优先、选敌回退、目标恢复等行为。多技能宏、`/castsequence`、无真实绑定或无法确认同一技能身份的宏仍 fail-closed。
+- 宏正文优先使用动作条返回的有效 numeric macro index；当该索引首读仅有名称或正文缺失时，只可对同一 index 有界重读。若 `GetActionInfo(...).id` 不属于当前有效宏 index 范围，Retail 可能返回代表 SpellID；此时必须以动作条 `GetActionText`、代表 SpellID 与解析后的宏正文语义做**唯一**匹配，才能恢复正文。不得调用 `GetMacroInfo(name)`，不得按名称取第一枚，多个同名同技能候选必须 fail-closed。宏内 `/cast` 技能名称可只读解析为 SpellID 作为名称 API 临时不可用时的关联后备；不得依据宏名称、图标、动作条文本或部分文本猜测技能身份。
+- 包含 `/cleartarget`、`/targetenemy`、`/targetlasttarget`、`/target`、`/focus`、`/assist` 等目标管理命令的宏，继续宽松关联到玩家现有可见按钮；TE 不会拆分、重排或执行其目标管理命令。若宏只包含一个被请求技能身份、无 `/castsequence`、且所有可执行施法动作均为该技能，可标为 `macroManagedTargetAuto`。特别是精确 `@focus → /targetenemy → /targetlasttarget` fallback 在当前目标来源、无存活敌对 focus 抢占时，可自动承担 current-target 候选；其它无法精确归属的 target/mouseover mutation 分支仍只在自动派发层 fail-closed。不得因理论歧义将玩家既有宏从发现、绑定或手动可用性中移除；任何收紧既有宏兼容性的改动必须先向用户说明并取得确认。
 - 多技能条件宏和 `/castsequence` 可以作为已关联宏按钮进入 Phase 1.5；诊断必须保留宏关联方式与宏形态摘要，但不得保存宏正文。一个宏同时包含 `/use 13` 与 `/use 14` 必须拒绝关联，双饰品必须建模为两个显式步骤；无法关联到规则 ActionRef、没有真实绑定、装备已变更或无法取得确认信号的宏仍 fail-closed。
 
 ## 5. 协议、审计与状态展示
@@ -172,3 +184,7 @@ python -m compileall -q tek/src tek/app tek/runtime
 ```
 
 如系统存在 `luac` 或 `texluac`，还必须检查全部 AddOn Lua 语法。交付前验证完整 ZIP 只有一个顶层根目录且内容干净。
+
+## P5.3.1 补充：legacy 目标管理宏
+- 当前目标可使用的唯一目标管理宏形态是已解析为 `focus → target` 的 strict fallback，且没有存活敌对 focus 抢占首分支；其他 target mutation macro 与 mouseover 仍不得自动路由。
+- action-info 代表 SpellID 的 `GetMacroInfo(handle)` 名称仅可作为唯一语义 join key；正文仍必须来自当前真实宏 index。

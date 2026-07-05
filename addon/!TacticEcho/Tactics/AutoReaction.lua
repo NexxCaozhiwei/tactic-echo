@@ -1,6 +1,10 @@
--- P4.5 automatic interrupt coordinator: strict confirmed interrupt dispatch with guarded priority macros.
+-- P5.8 suspended automatic-interrupt coordinator: retained only for read-only diagnostics and strict fail-closed runtime state.
 --
 -- Boundary:
+-- * P5.8 returns the hard suspended state before observation, route selection,
+--   candidate construction, TEAP token materialization, or TEK dispatch can run.
+--   The retained legacy logic below is intentionally unreachable while the
+--   automatic-interrupt design is paused.
 -- * It consumes the P3 scalar observation snapshot and P2 existing
 --   action-bar/macro routes only.
 -- * It never parses/re-writes macros, issues protected WoW actions, creates
@@ -8,16 +12,17 @@
 -- * A successful candidate is fed back to SignalFrame, which uses the same
 --   existing BindingToken -> TEAP v3 -> TEK safety path as the official
 --   recommendation and AutoBurst.
--- * P4.4 remains automatic-interrupt-only. It dispatches only when a current
---   cast is positively confirmed interruptible. Actual native shield visibility
---   is the visual fallback; the cast-bar `showShield` configuration flag is not
---   accepted as evidence. Single control and AOE control remain P5 work.
+-- * P5.6 remains automatic-interrupt-only. The P4.3-proven stable delivery
+--   path is available only after current UnitCastingInfo/UnitChannelInfo
+--   `notInterruptible=false` or UNIT_SPELLCAST_INTERRUPTIBLE confirmation.
+--   Steel/unknown casts remain observation-only; `showShield` is never evidence.
+--   Single control and AOE control remain display-only.
 local TE = _G.TacticEcho
 
 local AutoReaction = {}
 TE.AutoReaction = AutoReaction
 
-AutoReaction.schemaVersion = 7
+AutoReaction.schemaVersion = 13
 
 local SOURCE_ORDER = { "target", "focus", "mouseover" }
 local SOURCE_LABELS = {
@@ -104,7 +109,18 @@ local function interruptConfig(tactics)
     local branch = type(auto) == "table" and auto.interrupt or nil
     branch = type(branch) == "table" and branch or {}
     return {
-        enabled = branch.enabled == true,
+        -- P5.8 hard-freezes auto interrupt. This is intentionally not derived
+        -- from the persisted checkbox: old SavedVariables must not reactivate
+        -- a candidate path while the design is paused.
+        enabled = false,
+        suspended = true,
+        suspensionReason = "auto_interrupt_suspended",
+        -- P5.6 retires unknown-cast compatibility dispatch.  Keep the scalar
+        -- only as a migration diagnostic for old SavedVariables; it never
+        -- grants reaction eligibility.  A candidate now requires the current
+        -- UnitCastingInfo/UnitChannelInfo `notInterruptible=false` value or a
+        -- same-source UNIT_SPELLCAST_INTERRUPTIBLE event.
+        compatibilityActiveCast = false,
         targetEnabled = type(branch.targetEnabled) == "table" and branch.targetEnabled or {},
         targetOrder = normalizedOrder(branch.targetOrder),
     }
@@ -124,8 +140,8 @@ local function getBindings(force)
     return ok and type(snapshot) == "table" and snapshot or nil
 end
 
--- Only called after P3 has already confirmed a live interruptible cast and P2
--- has no route.  The implementation in ReactionBindings rebuilds the existing
+-- Only called after P3 has already produced an eligible live interrupt candidate
+-- and P2 has no route. The implementation in ReactionBindings rebuilds the existing
 -- Blizzard-default action-bar cache once, or reports a binding-settlement
 -- window.  No macro/action-bar mutation and no new input path are involved.
 local function refreshBindingsForAuto()
@@ -177,6 +193,71 @@ local function priorityMacroRouteAllowed(route, source, observation)
     return true, "macro_priority_route_match"
 end
 
+-- A focus-first /targetenemy fallback macro has two materially different
+-- branches. The @focus branch is attributable to focus. The later
+-- /cleartarget + /targetenemy branch is normally opaque because Blizzard picks
+-- its target only when the player-authored macro is pressed.
+--
+-- P5.3 made every target-source use fail closed. Field verification showed this
+-- was over-broad for the exact legacy two-step form that P5.2 had already
+-- delivered successfully. Restore that compatibility route only under a narrow
+-- contract:
+--   * parser metadata must describe exactly focus -> target fallback;
+--   * no eligible hostile living focus may preempt the later branch;
+--   * only the current-target observation may use the opaque target fallback;
+--   * mouseover never uses it.
+--
+-- The final /targetenemy selection remains the user's existing macro behavior;
+-- TE still never evaluates target commands, changes target, or rewrites the
+-- macro. A direct target button remains higher priority in ReactionBindings.
+local function managedTargetFallbackRouteAllowed(route, source, observation)
+    if type(route) ~= "table" or route.macroManagedTarget ~= true then return true, nil end
+
+    local order = type(route.managedTargetRouteOrder) == "table" and route.managedTargetRouteOrder or {}
+    local exactFocusTargetFallback = route.macroManagedTargetFallback == true
+        and #order >= 2
+        and order[1] == "focus"
+        and order[2] == "target"
+
+    if source == "focus" then
+        local unit = type(observation) == "table" and type(observation.sources) == "table"
+            and observation.sources.focus or nil
+        if type(unit) ~= "table" or unit.exists ~= true or unit.alive ~= true or unit.hostile ~= true then
+            return false, "macro_managed_target_focus_branch_invalid"
+        end
+        if #order >= 2 and exactFocusTargetFallback ~= true then
+            return false, "macro_managed_target_metadata_invalid"
+        end
+        -- For legacy/opaque parser shapes, a mapped focus route combined with
+        -- the live focus unit is sufficient to attribute only the first branch.
+        return true, "macro_managed_target_focus_branch_match"
+    end
+
+    if source == "target" then
+        -- Never generalize arbitrary target-mutating macros. Only the strict
+        -- legacy focus -> target fallback shape is eligible for this measured
+        -- compatibility path.
+        if exactFocusTargetFallback ~= true then
+            return false, "macro_managed_target_target_unverifiable"
+        end
+        -- The macro's first /cast is [@focus,nodead]. When focus is a live
+        -- hostile unit, it would receive the key before the target fallback;
+        -- do not let a target candidate preempt that branch.
+        if macroBranchUnitEligible(observation, "focus") then
+            return false, "macro_managed_target_target_preempted_by_focus"
+        end
+        return true, "macro_managed_target_target_compat"
+    end
+
+    return false, "macro_managed_target_" .. tostring(source) .. "_unverifiable"
+end
+
+local function macroRouteAllowed(route, source, observation)
+    local allowed, reason = priorityMacroRouteAllowed(route, source, observation)
+    if allowed ~= true then return false, reason end
+    return managedTargetFallbackRouteAllowed(route, source, observation)
+end
+
 local function findInterruptRoute(snapshot, source, observation)
     snapshot = type(snapshot) == "table" and snapshot or {}
     local routeGateReason = nil
@@ -184,7 +265,7 @@ local function findInterruptRoute(snapshot, source, observation)
         if type(entry) == "table" and entry.role == "interrupt" then
             local route = type(entry.routes) == "table" and entry.routes[source] or nil
             if isReadySafeRoute(route) then
-                local routeAllowed, gateReason = priorityMacroRouteAllowed(route, source, observation)
+                local routeAllowed, gateReason = macroRouteAllowed(route, source, observation)
                 if routeAllowed then return entry, route, nil end
                 routeGateReason = routeGateReason or gateReason
             end
@@ -228,13 +309,21 @@ local function eventInterruptibility(source, cast)
     return evidence
 end
 
--- P4.4 strict evidence ranking.
+-- P5.6 authoritative interruptibility policy.
 --
--- Direct UnitCastingInfo/UnitChannelInfo booleans are authoritative. When the
--- Retail value is opaque, the bounded UNIT_SPELLCAST event cache may confirm or
--- veto the current read. Native UI is only a final fallback: actual shield
--- widget visibility, a current native false, or an explicit native
--- interruptible method. The `showShield` template flag is never evidence.
+-- The P4.3 candidate/TEAP/TEK delivery mechanism remains unchanged, but it is
+-- no longer allowed to turn an opaque `notInterruptible` value into a dispatch
+-- permission.  `UnitCastingInfo` / `UnitChannelInfo` are the primary source:
+--
+--   * direct `notInterruptible=true`  -> steel bar, never dispatch;
+--   * direct `notInterruptible=false` -> interruptible, eligible;
+--   * direct nil/opaque               -> unknown, wait for a unit event.
+--
+-- UNIT_SPELLCAST_NOT_INTERRUPTIBLE remains a same-cast hard veto, and
+-- UNIT_SPELLCAST_INTERRUPTIBLE is the only event-backed positive confirmation.
+-- A currently visible native shield remains an additional hard veto.  Native
+-- scalar/widget hints may remain in diagnostics but never create a positive
+-- dispatch right.  The `showShield` template flag is never evidence.
 local function confirmedInterruptible(cast, source)
     cast = type(cast) == "table" and cast or {}
     if cast.active ~= true then return false, "cast_not_active", "unit_event_not_checked" end
@@ -243,18 +332,14 @@ local function confirmedInterruptible(cast, source)
     local directKnown = cast.directInterruptibilityKnown == true
         or cast.interruptibilitySource == "unit_api"
         or (cast.interruptibilityEvidence == "unit_api" and cast.interruptibleKnown == true)
-    if directKnown then
-        if cast.interruptible == true then
-            return true, "unit_api_confirmed", "unit_event_not_needed"
-        end
+    -- A current API `notInterruptible=true` is authoritative.  Treat any
+    -- non-true interruptible projection in this known branch as steel.
+    if directKnown and cast.interruptible ~= true then
         return false, "unit_api_not_interruptible", "unit_event_not_needed"
     end
 
     local nativeEvidence = type(cast.nativeInterruptibilityEvidence) == "string"
         and cast.nativeInterruptibilityEvidence or ""
-    -- A current visible shield is a direct visual steel-bar conclusion. Check
-    -- it before a short-lived positive event cache so a stale interruptible
-    -- event can never override a presently uninterruptible cast.
     if cast.nativeSteelConfirmed == true or string.find(nativeEvidence, "native_visible_shield:", 1, true) then
         return false, "native_visible_shield", "unit_event_not_checked"
     end
@@ -262,36 +347,34 @@ local function confirmedInterruptible(cast, source)
     local eventEvidence = eventInterruptibility(source, cast)
     local eventStatus = type(eventEvidence.status) == "string" and eventEvidence.status or "unavailable"
     local eventReason = type(eventEvidence.reason) == "string" and eventEvidence.reason or ("unit_event_" .. eventStatus)
+    -- The negative event may arrive before the unit API refreshes, so it must
+    -- veto before an otherwise stale direct-false observation can offer input.
     if eventEvidence.active == true and eventStatus == "not_interruptible" then
         return false, "unit_event_not_interruptible", eventReason
+    end
+
+    if directKnown and cast.interruptible == true then
+        return true, "unit_api_confirmed", eventReason
     end
     if eventEvidence.active == true and eventStatus == "interruptible" then
         return true, "unit_event_interruptible_confirmed", eventReason
     end
 
-    local nativeKnown = cast.nativeInterruptibilityKnown == true
-        or (cast.interruptibilitySource == "native" and cast.interruptibleKnown == true)
-    if nativeKnown then
-        if cast.interruptible == true then
-            if cast.nativeShieldKnown == true then
-                return true, "visible_no_shield_confirmed", eventReason
-            end
-            return true, "native_explicit_interruptible_confirmed", eventReason
-        end
-        return false, "native_not_interruptible", eventReason
-    end
+    return false, "interruptibility_unknown", eventReason
+end
 
-    if cast.nativeCastbar == true then
-        if string.find(nativeEvidence, "native_visible_no_shield:", 1, true) then
-            return true, "visible_no_shield_confirmed", eventReason
-        end
-        if string.find(nativeEvidence, "native_scalar_false:", 1, true)
-            or string.find(nativeEvidence, "native_scalar_interruptible:", 1, true)
-            or string.find(nativeEvidence, "native_method_interruptible:", 1, true) then
-            return true, "native_explicit_interruptible_confirmed", eventReason
-        end
+local HARD_INTERRUPTIBILITY_VETO = {
+    unit_api_not_interruptible = true,
+    native_visible_shield = true,
+    unit_event_not_interruptible = true,
+}
+
+local function eligibleInterrupt(cast, source)
+    local confirmed, confirmationReason, eventEvidence = confirmedInterruptible(cast, source)
+    if confirmed == true then
+        return true, confirmationReason, eventEvidence, nil, false
     end
-    return false, "interruptibility_unconfirmed", eventReason
+    return false, confirmationReason, eventEvidence, nil, HARD_INTERRUPTIBILITY_VETO[confirmationReason] == true
 end
 
 local NATIVE_VISUAL_MIN_SAMPLES = 2
@@ -358,9 +441,87 @@ local function bindingInfo(entry, route)
         cacheGeneration = entry and entry.cacheGeneration or nil,
         reactionRouteMode = route.autoRouteMode or route.routeKind,
         macroManagedTarget = route.macroManagedTarget == true,
+        macroManagedTargetFallback = route.macroManagedTargetFallback == true,
+        managedTargetRouteOrder = route.managedTargetRouteOrder,
         macroPriorityChain = route.macroPriorityChain == true,
         priorityRouteOrder = route.priorityRouteOrder,
+        macroOpaqueRepresentedSpell = route.macroOpaqueRepresentedSpell == true,
     }
+end
+
+-- P5.6 reaction readiness gate. AutoReaction previously only checked whether a
+-- safe binding existed. That let a long-CD interrupt macro keep owning the
+-- reaction primary icon and repeatedly offer an input that WoW could not cast.
+-- Reuse IconState's read-only live cooldown sampler, but bind it to the exact
+-- current action slot (including a verified macro button), because that is what
+-- TEK would physically press. A positive non-GCD own-CD observation vetoes
+-- reaction delivery; an opaque/unknown read remains non-authoritative and
+-- preserves the P4.3 compatibility path.
+local function reactionCooldownGate(entry, route)
+    local diagnostics = {
+        cooldownKnown = false,
+        cooldownActive = nil,
+        cooldownOnGCD = nil,
+        cooldownSource = nil,
+        cooldownReason = nil,
+        cooldownActionSlot = tonumber(type(route) == "table" and route.actionSlot or nil),
+    }
+    local iconState = TE.IconState
+    if not (iconState and type(iconState.CollectCooldownOnly) == "function") then
+        diagnostics.cooldownReason = "interrupt_cooldown_sampler_unavailable"
+        return true, "interrupt_cooldown_unconfirmed", diagnostics
+    end
+    local spellID = tonumber(type(entry) == "table" and entry.spellID or nil)
+    if not spellID or spellID <= 0 then
+        diagnostics.cooldownReason = "interrupt_spell_missing"
+        return true, "interrupt_cooldown_unconfirmed", diagnostics
+    end
+
+    local exactActionSlot = diagnostics.cooldownActionSlot
+    local options = {
+        liveCooldown = true,
+        actionSlot = exactActionSlot,
+        slot = exactActionSlot,
+        -- For a verified macro route the actual default action button is still
+        -- the exact key TEK will press. Treat it as a direct actionbar sample
+        -- for cooldown authority without changing its target-route semantics.
+        directActionSlot = exactActionSlot ~= nil,
+        actionBarStateTrusted = type(route) == "table" and route.actionBarStateTrusted == true,
+        -- Route safety was already established by P2. For cooldown gating only,
+        -- permit the exact visible macro button to veto a reaction when it shows
+        -- a non-GCD own CD. It cannot certify a ready macro or create a route.
+        exactActionCooldownVeto = type(route) == "table"
+            and (route.routeKind == "macro" or type(route.macroName) == "string")
+            and exactActionSlot ~= nil,
+        matchedSpellID = type(route) == "table" and route.matchedSpellID or spellID,
+        requestedSpellID = spellID,
+    }
+    local ok, state = safeCall(iconState.CollectCooldownOnly, iconState, spellID, options)
+    if not ok or type(state) ~= "table" then
+        diagnostics.cooldownReason = "interrupt_cooldown_read_failed"
+        return true, "interrupt_cooldown_unconfirmed", diagnostics
+    end
+
+    diagnostics.cooldownKnown = state.cooldownKnown == true
+    diagnostics.cooldownActive = state.cooldownActive == true
+    diagnostics.cooldownOnGCD = state.cooldownOnGCD == true
+    diagnostics.cooldownSource = state.cooldownSource
+    diagnostics.cooldownReason = state.cooldownUnknownReason
+    diagnostics.cooldownDirectActionBarEvidence = state.cooldownDirectActionBarEvidence == true
+        or state.cooldownActionBarNumericOwnEvidence == true
+        or state.cooldownActionBarDurationOwnEvidence == true
+    diagnostics.cooldownExactActionVetoEvidence = state.cooldownExactActionVetoEvidence == true
+    diagnostics.charges = plainNumber(state.charges)
+
+    local usableCharge = diagnostics.charges and diagnostics.charges > 0
+    local personalCooldown = state.cooldownActive == true
+        and state.cooldownOnGCD ~= true
+        and state.cooldownGcdAlias ~= true
+        and usableCharge ~= true
+    if personalCooldown then
+        return false, "interrupt_action_cooldown", diagnostics
+    end
+    return true, "interrupt_action_ready", diagnostics
 end
 
 local function burstOwnsPriority(snapshot, decision)
@@ -400,8 +561,23 @@ local function audit(event, fields)
         routeRefresh = fields.routeRefresh,
         nativeEvidence = fields.nativeEvidence,
         nativeVisualSamples = tonumber(fields.nativeVisualSamples) or 0,
+        compatibilityFallback = fields.compatibilityFallback == true,
+        compatibilityFallbackReason = fields.compatibilityFallbackReason,
+        macroManagedTargetFallback = fields.macroManagedTargetFallback == true,
         castKey = fields.castKey,
         bindingToken = tonumber(fields.bindingToken) or 0,
+        compatibilityEvidenceSamples = tonumber(fields.compatibilityEvidenceSamples) or 0,
+        compatibilityEvidenceAge = plainNumber(fields.compatibilityEvidenceAge) or 0,
+        compatibilityEventStatus = fields.compatibilityEventStatus,
+        compatibilityEventAge = plainNumber(fields.compatibilityEventAge),
+        macroOpaqueRepresentedSpell = fields.macroOpaqueRepresentedSpell == true,
+        cooldownKnown = fields.cooldownKnown == true,
+        cooldownActive = fields.cooldownActive == true,
+        cooldownOnGCD = fields.cooldownOnGCD == true,
+        cooldownSource = fields.cooldownSource,
+        cooldownReason = fields.cooldownReason,
+        cooldownActionSlot = tonumber(fields.cooldownActionSlot) or nil,
+        cooldownExactActionVetoEvidence = fields.cooldownExactActionVetoEvidence == true,
     }
     store.last = record
     store.events[#store.events + 1] = record
@@ -423,6 +599,7 @@ local function setLast(values)
         state = values.state or "idle",
         reason = values.reason or "unknown",
         enabled = values.enabled == true,
+        suspended = values.suspended == true,
         active = values.active == true,
         source = values.source,
         spellID = tonumber(values.spellID) or nil,
@@ -437,8 +614,23 @@ local function setLast(values)
         routeRefresh = values.routeRefresh,
         nativeEvidence = values.nativeEvidence,
         nativeVisualSamples = tonumber(values.nativeVisualSamples) or 0,
+        compatibilityFallback = values.compatibilityFallback == true,
+        compatibilityFallbackReason = values.compatibilityFallbackReason,
+        macroManagedTargetFallback = values.macroManagedTargetFallback == true,
         castKey = values.castKey,
         bindingToken = tonumber(values.bindingToken) or 0,
+        compatibilityEvidenceSamples = tonumber(values.compatibilityEvidenceSamples) or 0,
+        compatibilityEvidenceAge = plainNumber(values.compatibilityEvidenceAge) or 0,
+        compatibilityEventStatus = values.compatibilityEventStatus,
+        compatibilityEventAge = plainNumber(values.compatibilityEventAge),
+        macroOpaqueRepresentedSpell = values.macroOpaqueRepresentedSpell == true,
+        cooldownKnown = values.cooldownKnown == true,
+        cooldownActive = values.cooldownActive == true,
+        cooldownOnGCD = values.cooldownOnGCD == true,
+        cooldownSource = values.cooldownSource,
+        cooldownReason = values.cooldownReason,
+        cooldownActionSlot = tonumber(values.cooldownActionSlot) or nil,
+        cooldownExactActionVetoEvidence = values.cooldownExactActionVetoEvidence == true,
     }
     runtime.last = out
 
@@ -458,8 +650,23 @@ local function setLast(values)
         tostring(out.routeRefresh or "none"),
         tostring(out.nativeEvidence or "none"),
         tostring(out.nativeVisualSamples or 0),
+        tostring(out.compatibilityFallback == true),
+        tostring(out.compatibilityFallbackReason or "none"),
+        tostring(out.macroManagedTargetFallback == true),
         tostring(out.castKey or "none"),
         tostring(out.bindingToken or 0),
+        tostring(out.compatibilityEvidenceSamples or 0),
+        tostring(out.compatibilityEvidenceAge or 0),
+        tostring(out.compatibilityEventStatus or "none"),
+        tostring(out.compatibilityEventAge or 0),
+        tostring(out.macroOpaqueRepresentedSpell == true),
+        tostring(out.cooldownKnown == true),
+        tostring(out.cooldownActive == true),
+        tostring(out.cooldownOnGCD == true),
+        tostring(out.cooldownSource or "none"),
+        tostring(out.cooldownReason or "none"),
+        tostring(out.cooldownActionSlot or 0),
+        tostring(out.cooldownExactActionVetoEvidence == true),
         tostring(out.macroPriorityChain == true),
         tostring(out.burstBlocked == true),
     }, ":")
@@ -479,8 +686,23 @@ local function setLast(values)
             routeRefresh = out.routeRefresh,
             nativeEvidence = out.nativeEvidence,
             nativeVisualSamples = out.nativeVisualSamples,
+            compatibilityFallback = out.compatibilityFallback,
+            compatibilityFallbackReason = out.compatibilityFallbackReason,
+            macroManagedTargetFallback = out.macroManagedTargetFallback,
             castKey = out.castKey,
             bindingToken = out.bindingToken,
+            compatibilityEvidenceSamples = out.compatibilityEvidenceSamples,
+            compatibilityEvidenceAge = out.compatibilityEvidenceAge,
+            compatibilityEventStatus = out.compatibilityEventStatus,
+            compatibilityEventAge = out.compatibilityEventAge,
+            macroOpaqueRepresentedSpell = out.macroOpaqueRepresentedSpell,
+            cooldownKnown = out.cooldownKnown,
+            cooldownActive = out.cooldownActive,
+            cooldownOnGCD = out.cooldownOnGCD,
+            cooldownSource = out.cooldownSource,
+            cooldownReason = out.cooldownReason,
+            cooldownActionSlot = out.cooldownActionSlot,
+            cooldownExactActionVetoEvidence = out.cooldownExactActionVetoEvidence,
         })
     end
     return out
@@ -493,6 +715,7 @@ function AutoReaction:GetSnapshot()
         state = value.state,
         reason = value.reason,
         enabled = value.enabled == true,
+        suspended = value.suspended == true,
         active = value.active == true,
         source = value.source,
         spellID = value.spellID,
@@ -507,8 +730,23 @@ function AutoReaction:GetSnapshot()
         routeRefresh = value.routeRefresh,
         nativeEvidence = value.nativeEvidence,
         nativeVisualSamples = value.nativeVisualSamples,
+        compatibilityFallback = value.compatibilityFallback == true,
+        compatibilityFallbackReason = value.compatibilityFallbackReason,
+        macroManagedTargetFallback = value.macroManagedTargetFallback == true,
         castKey = value.castKey,
         bindingToken = value.bindingToken,
+        compatibilityEvidenceSamples = tonumber(value.compatibilityEvidenceSamples) or 0,
+        compatibilityEvidenceAge = plainNumber(value.compatibilityEvidenceAge) or 0,
+        compatibilityEventStatus = value.compatibilityEventStatus,
+        compatibilityEventAge = plainNumber(value.compatibilityEventAge),
+        macroOpaqueRepresentedSpell = value.macroOpaqueRepresentedSpell == true,
+        cooldownKnown = value.cooldownKnown == true,
+        cooldownActive = value.cooldownActive == true,
+        cooldownOnGCD = value.cooldownOnGCD == true,
+        cooldownSource = value.cooldownSource,
+        cooldownReason = value.cooldownReason,
+        cooldownActionSlot = value.cooldownActionSlot,
+        cooldownExactActionVetoEvidence = value.cooldownExactActionVetoEvidence == true,
     }
 end
 
@@ -523,6 +761,16 @@ function AutoReaction:Evaluate(runtimeInput)
     local config = interruptConfig(tactics)
     local burstBlocked = burstOwnsPriority(runtimeInput.autoBurstSnapshot, runtimeInput.autoBurstDecision)
 
+    -- P5.8 design pause: preserve P3 observation/highlight separately, but do
+    -- not evaluate routes, cooldowns or candidate sequence delivery here.
+    -- This executes before any target/cast iteration and therefore cannot
+    -- produce a reaction BindingToken, TEAP dispatch origin, or TEK request.
+    if config.suspended == true then
+        runtime.activeCastKey, runtime.offeredCastKey, runtime.routeRefreshCastKey = nil, nil, nil
+        resetNativeVisualStability()
+        setLast({ state = "suspended", reason = config.suspensionReason or "auto_interrupt_suspended", enabled = false, suspended = true, burstBlocked = burstBlocked })
+        return { kind = "none", reason = config.suspensionReason or "auto_interrupt_suspended", suspended = true }
+    end
     if config.enabled ~= true then
         runtime.activeCastKey, runtime.offeredCastKey, runtime.routeRefreshCastKey = nil, nil, nil
         resetNativeVisualStability()
@@ -553,11 +801,18 @@ function AutoReaction:Evaluate(runtimeInput)
             local castActive = type(cast) == "table" and cast.active == true
             if isUnitEligible and castActive then
                 sawActiveCast = true
-                local eligible, confirmationReason, eventEvidence = confirmedInterruptible(cast, source)
+                local eligible, confirmationReason, eventEvidence, compatibilityFallbackReason = eligibleInterrupt(cast, source)
+                local compatibilityFallback = compatibilityFallbackReason ~= nil
                 local key = castKey(source, cast)
                 local nativeEvidence = type(cast.nativeInterruptibilityEvidence) == "string" and cast.nativeInterruptibilityEvidence or nil
                 if eligible then
                     local visualReady, visualSamples = nativeVisualStabilized(key, observation, cast, confirmationReason)
+                    -- P5.6 never turns an unknown cast into eligibility.  The
+                    -- fields remain in the exported schema as false/nil so older
+                    -- diagnostics can distinguish a strict block from a route/CD
+                    -- block without retaining the retired compatibility path.
+                    local compatibilitySamples = 0
+                    local compatibilityEvidenceAge, compatibilityEventStatus, compatibilityEventAge = 0, nil, nil
                     if visualReady ~= true then
                         blocker = blocker or {
                             reason = "native_visual_settling",
@@ -568,6 +823,12 @@ function AutoReaction:Evaluate(runtimeInput)
                             routeReason = "not_evaluated_until_native_visual_stable",
                             nativeEvidence = nativeEvidence,
                             nativeVisualSamples = visualSamples,
+                            compatibilityFallback = compatibilityFallback,
+                            compatibilityFallbackReason = compatibilityFallbackReason,
+                            compatibilityEvidenceSamples = compatibilitySamples,
+                            compatibilityEvidenceAge = compatibilityEvidenceAge,
+                            compatibilityEventStatus = compatibilityEventStatus,
+                            compatibilityEventAge = compatibilityEventAge,
                             castKey = key,
                         }
                     else
@@ -587,32 +848,74 @@ function AutoReaction:Evaluate(runtimeInput)
                             end
                         end
                         if entry and route then
-                            candidate = {
+                            local cooldownReady, cooldownGateReason, cooldown = reactionCooldownGate(entry, route)
+                            if cooldownReady then
+                                candidate = {
+                                    source = source,
+                                    cast = cast,
+                                    castKey = key,
+                                    entry = entry,
+                                    route = route,
+                                    confirmationReason = confirmationReason,
+                                    eventEvidence = eventEvidence,
+                                    routeRefresh = refreshReason,
+                                    nativeEvidence = nativeEvidence,
+                                    nativeVisualSamples = visualSamples,
+                                    compatibilityFallback = compatibilityFallback,
+                                    compatibilityFallbackReason = compatibilityFallbackReason,
+                                    compatibilityEvidenceSamples = compatibilitySamples,
+                                    compatibilityEvidenceAge = compatibilityEvidenceAge,
+                                    compatibilityEventStatus = compatibilityEventStatus,
+                                    compatibilityEventAge = compatibilityEventAge,
+                                    cooldown = cooldown,
+                                }
+                                break
+                            end
+                            blocker = blocker or {
+                                reason = cooldownGateReason or "interrupt_action_cooldown",
                                 source = source,
-                                cast = cast,
-                                castKey = key,
-                                entry = entry,
-                                route = route,
+                                spellID = tonumber(cast.spellID) or nil,
                                 confirmationReason = confirmationReason,
                                 eventEvidence = eventEvidence,
+                                routeReason = "p2_route_ready_but_action_cooldown",
                                 routeRefresh = refreshReason,
                                 nativeEvidence = nativeEvidence,
                                 nativeVisualSamples = visualSamples,
+                                compatibilityFallback = compatibilityFallback,
+                                compatibilityFallbackReason = compatibilityFallbackReason,
+                                compatibilityEvidenceSamples = compatibilitySamples,
+                                compatibilityEvidenceAge = compatibilityEvidenceAge,
+                                compatibilityEventStatus = compatibilityEventStatus,
+                                compatibilityEventAge = compatibilityEventAge,
+                                cooldownKnown = cooldown and cooldown.cooldownKnown,
+                                cooldownActive = cooldown and cooldown.cooldownActive,
+                                cooldownOnGCD = cooldown and cooldown.cooldownOnGCD,
+                                cooldownSource = cooldown and cooldown.cooldownSource,
+                                cooldownReason = cooldown and cooldown.cooldownReason,
+                                cooldownActionSlot = cooldown and cooldown.cooldownActionSlot,
+                                cooldownExactActionVetoEvidence = cooldown and cooldown.cooldownExactActionVetoEvidence,
+                                castKey = key,
                             }
-                            break
+                        else
+                            blocker = blocker or {
+                                reason = routeGateReason or "interrupt_binding_route_missing",
+                                source = source,
+                                spellID = tonumber(cast.spellID) or nil,
+                                confirmationReason = confirmationReason,
+                                eventEvidence = eventEvidence,
+                                routeReason = routeGateReason or refreshReason or "p2_safe_route_unavailable",
+                                routeRefresh = refreshReason,
+                                nativeEvidence = nativeEvidence,
+                                nativeVisualSamples = visualSamples,
+                                compatibilityFallback = compatibilityFallback,
+                                compatibilityFallbackReason = compatibilityFallbackReason,
+                                compatibilityEvidenceSamples = compatibilitySamples,
+                                compatibilityEvidenceAge = compatibilityEvidenceAge,
+                                compatibilityEventStatus = compatibilityEventStatus,
+                                compatibilityEventAge = compatibilityEventAge,
+                                castKey = key,
+                            }
                         end
-                        blocker = blocker or {
-                            reason = routeGateReason or "interrupt_binding_route_missing",
-                            source = source,
-                            spellID = tonumber(cast.spellID) or nil,
-                            confirmationReason = confirmationReason,
-                            eventEvidence = eventEvidence,
-                            routeReason = routeGateReason or refreshReason or "p2_safe_route_unavailable",
-                            routeRefresh = refreshReason,
-                            nativeEvidence = nativeEvidence,
-                            nativeVisualSamples = visualSamples,
-                            castKey = key,
-                        }
                     end
                 else
                     blocker = blocker or {
@@ -651,6 +954,19 @@ function AutoReaction:Evaluate(runtimeInput)
             routeRefresh = blocker and blocker.routeRefresh,
             nativeEvidence = blocker and blocker.nativeEvidence,
             nativeVisualSamples = blocker and blocker.nativeVisualSamples,
+            compatibilityFallback = blocker and blocker.compatibilityFallback,
+            compatibilityFallbackReason = blocker and blocker.compatibilityFallbackReason,
+            compatibilityEvidenceSamples = blocker and blocker.compatibilityEvidenceSamples,
+            compatibilityEvidenceAge = blocker and blocker.compatibilityEvidenceAge,
+            compatibilityEventStatus = blocker and blocker.compatibilityEventStatus,
+            compatibilityEventAge = blocker and blocker.compatibilityEventAge,
+            cooldownKnown = blocker and blocker.cooldownKnown,
+            cooldownActive = blocker and blocker.cooldownActive,
+            cooldownOnGCD = blocker and blocker.cooldownOnGCD,
+            cooldownSource = blocker and blocker.cooldownSource,
+            cooldownReason = blocker and blocker.cooldownReason,
+            cooldownActionSlot = blocker and blocker.cooldownActionSlot,
+            cooldownExactActionVetoEvidence = blocker and blocker.cooldownExactActionVetoEvidence,
             castKey = blocker and blocker.castKey,
         })
         return {
@@ -664,6 +980,19 @@ function AutoReaction:Evaluate(runtimeInput)
             routeRefresh = blocker and blocker.routeRefresh,
             nativeEvidence = blocker and blocker.nativeEvidence,
             nativeVisualSamples = blocker and blocker.nativeVisualSamples,
+            compatibilityFallback = blocker and blocker.compatibilityFallback,
+            compatibilityFallbackReason = blocker and blocker.compatibilityFallbackReason,
+            compatibilityEvidenceSamples = blocker and blocker.compatibilityEvidenceSamples,
+            compatibilityEvidenceAge = blocker and blocker.compatibilityEvidenceAge,
+            compatibilityEventStatus = blocker and blocker.compatibilityEventStatus,
+            compatibilityEventAge = blocker and blocker.compatibilityEventAge,
+            cooldownKnown = blocker and blocker.cooldownKnown,
+            cooldownActive = blocker and blocker.cooldownActive,
+            cooldownOnGCD = blocker and blocker.cooldownOnGCD,
+            cooldownSource = blocker and blocker.cooldownSource,
+            cooldownReason = blocker and blocker.cooldownReason,
+            cooldownActionSlot = blocker and blocker.cooldownActionSlot,
+            cooldownExactActionVetoEvidence = blocker and blocker.cooldownExactActionVetoEvidence,
             castKey = blocker and blocker.castKey,
         }
     end
@@ -676,7 +1005,9 @@ function AutoReaction:Evaluate(runtimeInput)
         spellID = candidate.entry.spellID,
         routeMode = candidate.route.autoRouteMode or candidate.route.routeKind,
         macroManagedTarget = candidate.route.macroManagedTarget == true,
+        macroManagedTargetFallback = candidate.route.macroManagedTargetFallback == true,
         macroPriorityChain = candidate.route.macroPriorityChain == true,
+        macroOpaqueRepresentedSpell = candidate.route.macroOpaqueRepresentedSpell == true,
         burstBlocked = burstBlocked,
         confirmationReason = candidate.confirmationReason,
         eventEvidence = candidate.eventEvidence,
@@ -684,6 +1015,19 @@ function AutoReaction:Evaluate(runtimeInput)
         routeRefresh = candidate.routeRefresh,
         nativeEvidence = candidate.nativeEvidence,
         nativeVisualSamples = candidate.nativeVisualSamples,
+        compatibilityFallback = candidate.compatibilityFallback == true,
+        compatibilityFallbackReason = candidate.compatibilityFallbackReason,
+        compatibilityEvidenceSamples = candidate.compatibilityEvidenceSamples,
+        compatibilityEvidenceAge = candidate.compatibilityEvidenceAge,
+        compatibilityEventStatus = candidate.compatibilityEventStatus,
+        compatibilityEventAge = candidate.compatibilityEventAge,
+        cooldownKnown = candidate.cooldown and candidate.cooldown.cooldownKnown,
+        cooldownActive = candidate.cooldown and candidate.cooldown.cooldownActive,
+        cooldownOnGCD = candidate.cooldown and candidate.cooldown.cooldownOnGCD,
+        cooldownSource = candidate.cooldown and candidate.cooldown.cooldownSource,
+        cooldownReason = candidate.cooldown and candidate.cooldown.cooldownReason,
+        cooldownActionSlot = candidate.cooldown and candidate.cooldown.cooldownActionSlot,
+        cooldownExactActionVetoEvidence = candidate.cooldown and candidate.cooldown.cooldownExactActionVetoEvidence,
         castKey = candidate.castKey,
         bindingToken = info.bindingToken,
     }
@@ -711,6 +1055,7 @@ function AutoReaction:Evaluate(runtimeInput)
             reason = candidateReason,
             routeMode = values.routeMode,
             macroManagedTarget = values.macroManagedTarget,
+            macroManagedTargetFallback = values.macroManagedTargetFallback,
             macroPriorityChain = values.macroPriorityChain,
             confirmationReason = values.confirmationReason,
             eventEvidence = values.eventEvidence,
@@ -718,6 +1063,20 @@ function AutoReaction:Evaluate(runtimeInput)
             routeRefresh = values.routeRefresh,
             nativeEvidence = values.nativeEvidence,
             nativeVisualSamples = values.nativeVisualSamples,
+            compatibilityFallback = values.compatibilityFallback,
+            compatibilityFallbackReason = values.compatibilityFallbackReason,
+            compatibilityEvidenceSamples = values.compatibilityEvidenceSamples,
+            compatibilityEvidenceAge = values.compatibilityEvidenceAge,
+            compatibilityEventStatus = values.compatibilityEventStatus,
+            compatibilityEventAge = values.compatibilityEventAge,
+            macroOpaqueRepresentedSpell = values.macroOpaqueRepresentedSpell,
+            cooldownKnown = values.cooldownKnown,
+            cooldownActive = values.cooldownActive,
+            cooldownOnGCD = values.cooldownOnGCD,
+            cooldownSource = values.cooldownSource,
+            cooldownReason = values.cooldownReason,
+            cooldownActionSlot = values.cooldownActionSlot,
+            cooldownExactActionVetoEvidence = values.cooldownExactActionVetoEvidence,
             castKey = candidate.castKey,
             bindingToken = info.bindingToken,
         })
@@ -734,7 +1093,9 @@ function AutoReaction:Evaluate(runtimeInput)
         castKey = candidate.castKey,
         routeMode = values.routeMode,
         macroManagedTarget = values.macroManagedTarget,
+        macroManagedTargetFallback = values.macroManagedTargetFallback,
         macroPriorityChain = values.macroPriorityChain,
+        macroOpaqueRepresentedSpell = values.macroOpaqueRepresentedSpell,
         reason = candidateReason,
         confirmationReason = candidate.confirmationReason,
         eventEvidence = candidate.eventEvidence,
@@ -742,6 +1103,19 @@ function AutoReaction:Evaluate(runtimeInput)
         routeRefresh = candidate.routeRefresh,
         nativeEvidence = candidate.nativeEvidence,
         nativeVisualSamples = candidate.nativeVisualSamples,
+        compatibilityFallback = candidate.compatibilityFallback == true,
+        compatibilityFallbackReason = candidate.compatibilityFallbackReason,
+        compatibilityEvidenceSamples = candidate.compatibilityEvidenceSamples,
+        compatibilityEvidenceAge = candidate.compatibilityEvidenceAge,
+        compatibilityEventStatus = candidate.compatibilityEventStatus,
+        compatibilityEventAge = candidate.compatibilityEventAge,
+        cooldownKnown = candidate.cooldown and candidate.cooldown.cooldownKnown,
+        cooldownActive = candidate.cooldown and candidate.cooldown.cooldownActive,
+        cooldownOnGCD = candidate.cooldown and candidate.cooldown.cooldownOnGCD,
+        cooldownSource = candidate.cooldown and candidate.cooldown.cooldownSource,
+        cooldownReason = candidate.cooldown and candidate.cooldown.cooldownReason,
+        cooldownActionSlot = candidate.cooldown and candidate.cooldown.cooldownActionSlot,
+        cooldownExactActionVetoEvidence = candidate.cooldown and candidate.cooldown.cooldownExactActionVetoEvidence,
         deliveryStable = true,
     }
 end

@@ -85,6 +85,47 @@ end
 -- changes the macro; it only removes locale/name-materialization dependence
 -- from association of an already-visible macro button.
 local spellTokenIDCache = {}
+local itemTokenIDCache = {}
+
+local function positiveItemID(value)
+    if type(value) == "table" then
+        value = value.itemID or value.itemId or value.id
+    end
+    value = tonumber(value)
+    return value and value > 0 and math.floor(value) or nil
+end
+
+-- Mirrors resolveSpellTokenID for `/use` item references. It is intentionally
+-- read-only and caches only positive scalar IDs. A transient item-info gap is
+-- retried on the next normal action-bar rebuild instead of becoming a negative
+-- compatibility cache entry.
+local function resolveItemTokenID(token)
+    token = normalizeActionToken(token)
+    if not token then return nil end
+
+    local linkID = token:match("^item:(%d+)") or token:match("^|Hitem:(%d+)")
+    local numeric = positiveItemID(linkID or token)
+    if numeric then return numeric end
+
+    local cached = itemTokenIDCache[token]
+    if cached ~= nil then return cached end
+
+    local resolved = nil
+    local function probe(fn)
+        if type(fn) ~= "function" or resolved then return end
+        local ok, first = pcall(fn, token)
+        if ok then resolved = positiveItemID(first) end
+    end
+    if C_Item and type(C_Item.GetItemInfoInstant) == "function" then probe(C_Item.GetItemInfoInstant) end
+    if not resolved and type(GetItemInfoInstant) == "function" then probe(GetItemInfoInstant) end
+
+    if resolved and resolved > 0 then
+        itemTokenIDCache[token] = resolved
+        return resolved
+    end
+    return nil
+end
+
 local function resolveSpellTokenID(token)
     token = normalizeActionToken(token)
     if not token then return nil end
@@ -189,6 +230,10 @@ local function appendAction(result, command, rawArg, branchArg, branchIndex)
         -- It is intentionally not a dispatch credential and is never persisted
         -- with macro text.
         resolvedSpellID = kind == "spell" and resolveSpellTokenID(token) or nil,
+        -- `/use` can reference either an ItemID/link/name or a spell. Preserve
+        -- a read-only best-effort ItemID association for survival cards; exact
+        -- item-name matching below remains available when an ID is not exposed.
+        resolvedItemID = kind == "spell_or_item" and resolveItemTokenID(token) or nil,
         kind = kind,
         hasConditions = hasConditions,
         -- Preserve all leading condition blocks.  A single Blizzard /cast line
@@ -312,6 +357,52 @@ end
 -- user-authored macro, including common conditional/target branches and
 -- castsequences. It does not choose or execute a branch; the later state
 -- machine still requires a confirmed cast/CD transition for the exact step.
+local function itemTokenMatches(token, itemID, itemName, resolvedItemID)
+    token = normalizeActionToken(token)
+    if not token then return false end
+    local wanted = positiveItemID(itemID)
+    if wanted and positiveItemID(resolvedItemID) == wanted then return true end
+    local tokenID = resolveItemTokenID(token)
+    if wanted and tokenID == wanted then return true end
+    if type(itemName) ~= "string" or itemName == "" then return false end
+    return token == itemName or token:lower() == itemName:lower()
+end
+
+-- Item association is the `/use` counterpart of MatchSpell. Broad mode keeps
+-- the project-wide macro policy: an existing visible macro may contain common
+-- conditionals, helper commands, multi-item branches or castsequences. TE only
+-- associates that button for display/manual secure-click reuse; it never picks
+-- a branch, substitutes an item, or turns this into a TEAP/TEK input path.
+function MacroSemantics:MatchItem(semantics, itemID, itemName, policy)
+    semantics = type(semantics) == "table" and semantics or {}
+    policy = policy == "strict" and "strict" or "broad"
+    local matchedActions, otherItemActions, matchedSequence = 0, 0, 0
+    for _, action in ipairs(semantics.actions or {}) do
+        if action.command == "/use" and action.kind == "spell_or_item" then
+            if itemTokenMatches(action.token, itemID, itemName, action.resolvedItemID) then
+                matchedActions = matchedActions + 1
+            else
+                otherItemActions = otherItemActions + 1
+            end
+        end
+    end
+    for _, token in ipairs(semantics.castsequenceTokens or {}) do
+        if itemTokenMatches(token, itemID, itemName, nil) then matchedSequence = matchedSequence + 1 end
+    end
+
+    if matchedActions > 0 and otherItemActions == 0 and semantics.hasCastsequence ~= true then
+        return true, "macro_item_single"
+    end
+    if policy == "broad" and (matchedActions > 0 or matchedSequence > 0) then
+        if semantics.hasCastsequence == true then return true, "macro_item_broad_castsequence" end
+        if otherItemActions > 0 then return true, "macro_item_broad_multi_item" end
+        return true, "macro_item_broad_reference"
+    end
+    if matchedSequence > 0 then return false, "macro_item_castsequence_requires_broad_policy" end
+    if matchedActions > 0 and otherItemActions > 0 then return false, "macro_item_ambiguous_branch" end
+    return false, "macro_item_not_referenced"
+end
+
 function MacroSemantics:MatchSpell(semantics, spellID, spellName, policy)
     semantics = type(semantics) == "table" and semantics or {}
     policy = policy == "strict" and "strict" or "broad"
@@ -427,6 +518,64 @@ local function hasConditionalCascade(actions)
     return false
 end
 
+-- The legacy focus-first fallback interrupt macro is common in the field:
+--
+--   /cast [@focus,nodead] Spell
+--   /cleartarget
+--   /targetenemy
+--   /cast Spell
+--   /targetlasttarget
+--
+-- It can be mapped as one existing button, but P4 must understand that its
+-- target fallback is reachable only if the earlier focus predicate is false.
+-- Accept a deliberately narrow description of this shape; target commands
+-- remain Blizzard-owned and are never evaluated or replayed here.
+local function focusTargetManagedFallbackOrder(semantics, spellID, spellName)
+    if type(semantics) ~= "table" or semantics.hasCastsequence == true
+        or semantics.hasTargetMutation ~= true then
+        return nil
+    end
+    local actions = type(semantics.actions) == "table" and semantics.actions or {}
+    if #actions ~= 2 then return nil end
+    local first, second = actions[1], actions[2]
+    if type(first) ~= "table" or type(second) ~= "table"
+        or first.kind ~= "spell" or second.kind ~= "spell"
+        or first.command ~= "/cast" or second.command ~= "/cast"
+        or tokenMatchesSpell(first.token, spellID, spellName) ~= true
+        or tokenMatchesSpell(second.token, spellID, spellName) ~= true
+        or first.target ~= "focus" or second.target ~= "target"
+        or type(first.conditionBlocks) ~= "table" or #first.conditionBlocks ~= 1
+        or type(second.conditionBlocks) ~= "table" or #second.conditionBlocks ~= 0 then
+        return nil
+    end
+
+    local sawFocus, sawNodead, seen = false, false, {}
+    local clause = first.conditionBlocks[1]
+    if type(clause) ~= "string" or clause:sub(1, 1) ~= "[" or clause:sub(-1) ~= "]" then
+        return nil
+    end
+    for rawToken in trim(clause:sub(2, -2)):gmatch("[^,]+") do
+        local token = trim(rawToken):lower()
+        if token == "" or seen[token] then return nil end
+        seen[token] = true
+        if token == "@focus" then
+            sawFocus = true
+        elseif token == "nodead" or token == "harm" or token == "exists" then
+            if token == "nodead" then sawNodead = true end
+        else
+            return nil
+        end
+    end
+    if sawFocus ~= true or sawNodead ~= true then return nil end
+
+    local mutations, mutationSet = semantics.targetMutationCommands or {}, {}
+    for _, command in ipairs(mutations) do mutationSet[command] = true end
+    if mutationSet["/targetenemy"] ~= true or mutationSet["/targetlasttarget"] ~= true then
+        return nil
+    end
+    return { "focus", "target" }
+end
+
 -- Returns the target routes used by executable actions that reference one
 -- requested spell. This stays descriptive: it never decides which conditional
 -- branch is currently true and never executes a macro. P2 interrupt/control
@@ -448,6 +597,8 @@ function MacroSemantics:DescribeSpellRoutes(semantics, spellID, spellName)
         singleSpellTargetSwitchFallback = false,
         singleSpellTargetMutation = false,
         macroManagedTargetAuto = false,
+        macroManagedTargetFallbackAuto = false,
+        managedTargetRouteOrder = {},
         macroPriorityChainAuto = false,
         priorityRouteOrder = {},
         conditionalCascadeOpaque = false,
@@ -494,6 +645,12 @@ function MacroSemantics:DescribeSpellRoutes(semantics, spellID, spellName)
         out.conditionalCascadeOpaque = true
     end
 
+    local managedFallbackOrder = focusTargetManagedFallbackOrder(semantics, spellID, spellName)
+    if managedFallbackOrder then
+        out.macroManagedTargetFallbackAuto = true
+        out.managedTargetRouteOrder = managedFallbackOrder
+    end
+
     out.singleRoute = #out.routes == 1 and out.castsequenceMatched ~= true
         and out.conditionalCascadeOpaque ~= true
     -- A common interrupt/control pattern is: cast @focus when available,
@@ -521,6 +678,9 @@ function MacroSemantics:DescribeSpellRoutes(semantics, spellID, spellName)
     if out.macroPriorityChainAuto then
         out.autoRouteMode = "macro_priority_chain"
     elseif out.macroManagedTargetAuto then
+        -- Keep the established route mode string for existing consumers; the
+        -- supplemental managedTargetRouteOrder tells P4 when its target
+        -- fallback branch is actually reachable.
         out.autoRouteMode = "macro_managed_target"
     elseif out.singleRoute and out.otherSpellActionCount == 0 and out.hasCastsequence ~= true then
         out.autoRouteMode = "explicit_route"
@@ -612,6 +772,13 @@ function MacroSemantics:Summary(semantics)
             local total = 0
             for _, action in ipairs(semantics.actions or {}) do
                 if tonumber(action.resolvedSpellID) then total = total + 1 end
+            end
+            return total
+        end)(),
+        resolvedItemTokenCount = (function()
+            local total = 0
+            for _, action in ipairs(semantics.actions or {}) do
+                if tonumber(action.resolvedItemID) then total = total + 1 end
             end
             return total
         end)(),

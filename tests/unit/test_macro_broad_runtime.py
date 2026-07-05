@@ -115,6 +115,10 @@ class ReactionBindingTargetSwitchRuntimeTests(unittest.TestCase):
                 GetReactionControls = function() return {{}} end,
             }}
             _G.TacticEcho.ActionBarBindingResolver = {{
+                -- This fixture supplies a resolver-confirmed current macro.
+                -- Route semantics are tested here; identity policy is covered
+                -- by the resolver/P5.11 tests.
+                IsVerifiedCurrentMacroSource = function() return true end,
                 GetButtonCache = function() return {{ generation = 11 }} end,
                 ResolveSpell = function(_, spellID)
                     return {{

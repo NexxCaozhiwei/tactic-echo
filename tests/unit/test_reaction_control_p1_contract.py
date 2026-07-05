@@ -9,14 +9,16 @@ def read(relative: str) -> str:
     return (ADDON / relative).read_text(encoding="utf-8")
 
 
-def test_reaction_defaults_are_opt_in_and_keep_target_order() -> None:
+def test_reaction_defaults_are_hard_suspended_and_keep_target_order() -> None:
     defaults = read("Config/Defaults.lua")
     for token in (
         "autoReaction = {",
-        "schema = 1",
+        "schema = 2",
         "interrupt = {",
         "control = {",
         "enabled = false",
+        "suspended = true",
+        'suspensionReason = "auto_interrupt_suspended"',
         "aoeEnabled = false",
         'targetOrder = { "target", "focus", "mouseover" }',
         "targetEnabled = { target = true, focus = false, mouseover = false }",

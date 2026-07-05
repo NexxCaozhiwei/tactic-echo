@@ -228,8 +228,8 @@ local function eval(intent, transportTick)
 end
 
 -- Models the default session-policy encoded pause while the user intent remains
--- armed. It must stay closed for ordinary recommendations; only an explicit
--- front-injection bridge may return a candidate or observation hold.
+-- armed. P5.8 requires every out-of-combat frame to remain closed, including
+-- an official front window that older builds could bridge.
 local function eval_out_of_combat(transportTick, spellID)
     return AutoBurst:Evaluate({ spellID = spellID or 343527 }, {
         inCombat = false,
@@ -328,33 +328,19 @@ assert(snap.active == false and snap.preWindowCaptureActive == false, "ordinary 
 """)
 
 
-def test_precombat_front_window_bridges_four_holds_then_injection_and_survives_combat_entry() -> None:
+def test_out_of_combat_front_window_never_creates_capture_plan_hold_or_candidate() -> None:
     run_lua(AUTO_BURST_HARNESS + r"""
--- The user resumed from a normal paused state while an official front window
--- was already visible. The event refresh itself must remain a no-token hold.
 AutoBurst.lastIntentState = "paused"
-local initial = eval_out_of_combat(false)
-assert(initial.kind == "hold" and initial.observationOnly == true and initial.preCombatBridge == true,
-    "default out-of-combat policy may bridge only the captured pre-window as a hold")
-for index = 1, 4 do
-    local hold = eval_out_of_combat(true)
-    assert(hold.kind == "hold" and hold.observationOnly == true and hold.preCombatBridge == true,
-        "every required precombat handoff frame must remain an observation hold")
+for index = 1, 8 do
+    local decision = eval_out_of_combat(index % 2 == 0)
+    assert(decision.kind == "none", "out-of-combat front window must always return none")
+    assert(decision.preCombatBridge ~= true, "out-of-combat result must not carry bridge authority")
 end
-local injection = eval_out_of_combat(true)
-assert(injection.kind == "candidate" and injection.dispatchSpellID == 31884 and injection.preCombatBridge == true,
-    "only after the four holds may the precombat injection candidate appear")
-local beforeCombat = AutoBurst:GetSnapshot()
-assert(beforeCombat.active == true and beforeCombat.preCombatBridge == true,
-    "precombat plan origin must be frozen in the live plan")
-AutoBurst:BeginCombatEpoch("test_precombat_regen_disabled")
-local afterCombat = AutoBurst:GetSnapshot()
-assert(afterCombat.active == true and afterCombat.preCombatBridge == true and afterCombat.preCombatBridgeEnteredCombat == true,
-    "PLAYER_REGEN_DISABLED must retain the active bridge plan rather than clear it")
-AutoBurst:RecordSpellcastSucceeded(31884)
-local window = eval()
-assert(window.kind == "candidate" and window.dispatchSpellID == 343527 and window.preCombatBridge == true,
-    "the retained bridge must continue from injection confirmation to the official window")
+local snapshot = AutoBurst:GetSnapshot()
+assert(snapshot.active == false and snapshot.preWindowCaptureActive == false,
+    "out-of-combat front window must not retain plan/capture")
+assert(snapshot.preCombatBridgeDepartureLock == false,
+    "out-of-combat cleanup must clear any old bridge departure lock")
 """)
 
 
@@ -948,36 +934,18 @@ assert(state.cooldownOnGCD ~= true, "own cooldown must not be collapsed into the
 """)
 
 
-def test_world_transition_fence_blocks_implicit_precombat_bridge_until_manual_rearm() -> None:
+def test_world_transition_and_legacy_authorize_call_cannot_reopen_out_of_combat_burst() -> None:
     run_lua(AUTO_BURST_HARNESS + r"""
--- Reproduce the reported regression: after a map transition the old armed
--- intent must not turn a newly visible official window into trinket/skill
--- dispatch while still out of combat.
 AutoBurst:ActivateWorldTransitionFence("test_zone_changed")
 local fenced = AutoBurst:GetSnapshot()
-assert(fenced.preCombatBridgeWorldFence == true, "world transition must enable the precombat fence")
 assert(fenced.active == false and fenced.preWindowCaptureActive == false,
-    "world transition must clear any carried plan/capture without a departure lock")
-local blocked = eval_out_of_combat(true)
-assert(blocked.kind == "none", "fenced out-of-combat window must not create a bridge candidate")
-local afterBlocked = AutoBurst:GetSnapshot()
-assert(afterBlocked.preCombatBridgeWorldFence == true and afterBlocked.requireWindowDeparture == false,
-    "fenced window must stay non-dispatchable without poisoning the next opener")
-
--- The existing Run action reauthorizes only the narrow bridge and forces the
--- normal four fresh observation frames before the optional step becomes visible.
-AutoBurst:AuthorizePreCombatBridge("test_manual_run")
-local initial = eval_out_of_combat(false)
-assert(initial.kind == "hold" and initial.observationOnly == true and initial.preCombatBridge == true,
-    "manual rearm after world transition must begin with an observation hold")
-for index = 1, 4 do
-    local hold = eval_out_of_combat(true)
-    assert(hold.kind == "hold" and hold.observationOnly == true,
-        "manual rearm bridge must publish all four handoff holds")
+    "world transition must clear carried plan/capture")
+local authorized = AutoBurst:AuthorizePreCombatBridge("legacy_manual_run")
+assert(authorized == false, "legacy authorization entry must be a no-op")
+for index = 1, 6 do
+    local blocked = eval_out_of_combat(true)
+    assert(blocked.kind == "none", "no legacy authorization may reopen out-of-combat burst")
 end
-local injection = eval_out_of_combat(true)
-assert(injection.kind == "candidate" and injection.dispatchSpellID == 31884,
-    "only after the fresh handoff may the front injection candidate appear")
 """)
 
 

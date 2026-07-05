@@ -130,34 +130,43 @@ local function tooltipCooldownDuration(spellID)
     local ok = pcall(tooltip.SetSpellByID, tooltip, spellID)
     if not ok then return nil end
 
-    local function parse(text)
-        if type(text) ~= "string" then return nil end
-        -- English game clients.
-        local seconds = text:match("([%d%.]+)%s*sec%s*cooldown")
-            or text:match("cooldown%s*[:：]?%s*([%d%.]+)%s*sec")
-        if seconds then return normaliseCooldownDuration(seconds) end
-        local minutes = text:match("([%d%.]+)%s*min%s*cooldown")
-            or text:match("cooldown%s*[:：]?%s*([%d%.]+)%s*min")
-        if minutes then return normaliseCooldownDuration((tonumber(minutes) or 0) * 60) end
+    local function lineText(region)
+        if not region or type(region.GetText) ~= "function" then return nil end
+        local ok, text = pcall(region.GetText, region)
+        return ok and type(text) == "string" and text or nil
+    end
 
-        -- Simplified-Chinese tooltip variants used by current clients.
-        seconds = text:match("([%d%.]+)%s*秒%s*冷却")
-            or text:match("冷却时间%s*[:：]?%s*([%d%.]+)%s*秒")
-        if seconds then return normaliseCooldownDuration(seconds) end
-        minutes = text:match("([%d%.]+)%s*分钟%s*冷却")
-            or text:match("([%d%.]+)%s*分%s*钟%s*冷却")
-            or text:match("冷却时间%s*[:：]?%s*([%d%.]+)%s*分钟")
-            or text:match("冷却时间%s*[:：]?%s*([%d%.]+)%s*分%s*钟")
-        if minutes then return normaliseCooldownDuration((tonumber(minutes) or 0) * 60) end
-        return nil
+    local function parse(text)
+        local ok, duration = pcall(function()
+            if type(text) ~= "string" then return nil end
+            -- English game clients.
+            local seconds = string.match(text, "([%d%.]+)%s*sec%s*cooldown")
+                or string.match(text, "cooldown%s*[:：]?%s*([%d%.]+)%s*sec")
+            if seconds then return normaliseCooldownDuration(seconds) end
+            local minutes = string.match(text, "([%d%.]+)%s*min%s*cooldown")
+                or string.match(text, "cooldown%s*[:：]?%s*([%d%.]+)%s*min")
+            if minutes then return normaliseCooldownDuration((tonumber(minutes) or 0) * 60) end
+
+            -- Simplified-Chinese tooltip variants used by current clients.
+            seconds = string.match(text, "([%d%.]+)%s*秒%s*冷却")
+                or string.match(text, "冷却时间%s*[:：]?%s*([%d%.]+)%s*秒")
+            if seconds then return normaliseCooldownDuration(seconds) end
+            minutes = string.match(text, "([%d%.]+)%s*分钟%s*冷却")
+                or string.match(text, "([%d%.]+)%s*分%s*钟%s*冷却")
+                or string.match(text, "冷却时间%s*[:：]?%s*([%d%.]+)%s*分钟")
+                or string.match(text, "冷却时间%s*[:：]?%s*([%d%.]+)%s*分%s*钟")
+            if minutes then return normaliseCooldownDuration((tonumber(minutes) or 0) * 60) end
+            return nil
+        end)
+        return ok and duration or nil
     end
 
     for index = 1, tooltip:NumLines() do
         local right = _G and _G["TacticEchoCooldownTrackerProbeTextRight" .. index]
         local left = _G and _G["TacticEchoCooldownTrackerProbeTextLeft" .. index]
-        local duration = right and parse(right:GetText()) or nil
+        local duration = right and parse(lineText(right)) or nil
         if duration then return duration end
-        duration = left and parse(left:GetText()) or nil
+        duration = left and parse(lineText(left)) or nil
         if duration then return duration end
     end
     return nil

@@ -151,37 +151,32 @@ def test_any_created_plan_keeps_window_ownership_after_terminal_abort() -> None:
     assert "planOwnsWindowBeforeDispatch" not in abort
 
 
-def test_precombat_bridge_is_front_window_only_and_keeps_default_policy_closed_for_ordinary_frames() -> None:
+def test_out_of_combat_is_a_hard_autoburst_boundary_without_bridge_authority() -> None:
     auto = read(ADDON / "Tactics" / "AutoBurst.lua")
     signal = read(ADDON / "Signal" / "SignalFrame.lua")
-    assert "canStartPreCombatBridge" in auto
-    assert 'rule.requiresPreWindowCapture == true' in auto
-    assert 'runtime.runtimeReason == "out_of_combat_policy_pause"' in auto
-    assert "preCombatBridgeDepartureLock" in auto
-    assert "precombat_burst_bridge_combat_entered" in auto
-    assert "preCombatBurstBridgeFrame" in signal
-    assert "precombat_burst_bridge" in signal
-    assert "and not inCombat" in signal
+    assert "Hard encounter boundary. This runs before the enable check" in auto
+    assert 'self:Abort("out_of_combat", true)' in auto
+    assert 'local paused, pauseReason = isRuntimePaused(self, runtime)' in auto
+    assert "canStartPreCombatBridge" not in auto
+    assert "runtimeAllowsPreCombatBridge" not in auto
+    assert "precombat_burst_bridge_combat_entered" not in auto
+    assert 'local preCombatBurstBridgeFrame = false' in signal
+    assert 'TE.AutoBurst:AuthorizePreCombatBridge("signal_state_armed")' not in signal
 
 
-def test_world_transition_revokes_only_implicit_precombat_bridge_until_existing_run_action_or_combat() -> None:
+def test_world_transition_and_legacy_authorize_are_diagnostic_only_not_dispatch_authority() -> None:
     auto = read(ADDON / "Tactics" / "AutoBurst.lua")
-    signal = read(ADDON / "Signal" / "SignalFrame.lua")
     mapping = read(ADDON / "Diagnostics" / "MappingExport.lua")
     for token in (
         "PLAYER_LEAVING_WORLD",
         "PLAYER_ENTERING_WORLD",
         "ZONE_CHANGED_NEW_AREA",
         "ActivateWorldTransitionFence",
-        "preCombatBridgeWorldFence",
-        "world_transition_precombat_fenced",
         "AuthorizePreCombatBridge",
-        "precombat_bridge_reauthorized",
-        "world_transition_fence_cleared_by_combat",
-        "preCombatBridgeAuthorizationRequiresHandoff",
+        "precombat_bridge_removed",
+        "preCombatBridgeWorldFence",
     ):
         assert token in auto
-    assert 'TE.AutoBurst:AuthorizePreCombatBridge("signal_state_armed")' in signal
     assert "preCombatBridgeWorldFence" in mapping
     assert "lastWorldTransitionReason" in mapping
 

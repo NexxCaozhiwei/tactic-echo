@@ -1,6 +1,6 @@
 # Codex 接手提示词
 
-你正在维护 `tactic-echo` 当前基线版本 `0.9.0`。本项目的功能基线来自已验证的 `0.8.11-trace-retention` 工作树；禁止复制、迁移、对比或叠加任何历史高版本源码、补丁或测试。开始前先阅读：`AGENTS.md`、`HANDOFF.md`、`PROJECT_CONTEXT.md`、`TASKS.md`、`DECISIONS.md`、`AUDIT_REPORT.md` 和 `docs/README.md`。
+你正在维护 `tactic-echo` 当前基线版本 `1.1.0`。当前基线和不可回归边界以 `AGENTS.md`、`HANDOFF.md`、`PROJECT_CONTEXT.md` 与 `docs/baselines/BASELINE_1.1.0.md` 为准；禁止通过历史补丁、SavedVariables 或宏缓存推断当前动作栏事实。开始前先阅读：`AGENTS.md`、`HANDOFF.md`、`PROJECT_CONTEXT.md`、`TASKS.md`、`DECISIONS.md`、`AUDIT_REPORT.md` 和 `docs/README.md`。
 
 ## 必须保持的架构边界
 

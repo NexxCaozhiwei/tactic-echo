@@ -22,14 +22,11 @@ local AutoBurst = {
     plan = nil,
     requireWindowDeparture = false,
     lockedWindowSpellID = nil,
-    -- A completed pre-combat bridge still owns its official window until it
-    -- departs.  This marker makes that terminal hold observable without
-    -- reopening ordinary out-of-combat dispatch.
+    -- Legacy diagnostic scalar retained for one-version compatibility. It is
+    -- always cleared before returning from an out-of-combat evaluation.
     preCombatBridgeDepartureLock = false,
-    -- A world/zone transition invalidates any implicit out-of-combat opener
-    -- authority.  The normal in-combat path is unaffected; this fence only
-    -- blocks the narrow pre-combat bridge until a real combat epoch begins or
-    -- the user explicitly presses the existing Run control again.
+    -- Legacy transition telemetry retained for mapping export compatibility.
+    -- It has no dispatch-authority role after P5.8.
     preCombatBridgeWorldFence = false,
     preCombatBridgeAuthorizationRequiresHandoff = false,
     worldTransitionEpoch = 0,
@@ -126,10 +123,7 @@ local QUIET_DECISION_LOG_MIN_SECONDS = 15.00
 
 local PRIORITY_LOG_EVENTS = {
     combat_epoch_started = true,
-    precombat_burst_bridge_started = true,
-    precombat_burst_bridge_combat_entered = true,
     world_transition_precombat_fenced = true,
-    precombat_bridge_reauthorized = true,
     world_transition_fence_cleared_by_combat = true,
     armed_epoch_started = true,
     armed_window_observation_rebased = true,
@@ -302,39 +296,11 @@ local function isInCombat(runtime)
     return type(InCombatLockdown) == "function" and InCombatLockdown() == true
 end
 
--- The normal session policy remains authoritative for ordinary out-of-combat
--- recommendations.  A pre-combat bridge is a deliberately narrow exception:
--- it exists only while the player has explicitly armed TE, the runtime is
--- paused solely by the default out-of-combat policy, and the declared rule is
--- a configured front-injection window.  Manual hold, text input, cast locks,
--- death, vehicle and close-out-of-combat never qualify.
-local function runtimeAllowsPreCombatBridge(runtime)
-    if type(runtime) ~= "table" or runtime.intentState ~= "armed" then return false end
-    local effective = runtime.effectiveState
-    if effective == "armed" then return true end
-    return effective == "paused" and runtime.runtimeReason == "out_of_combat_policy_pause"
-end
-
-local function hasPreCombatBridgeOwner(self)
-    local plan = self and self.plan
-    if type(plan) == "table" and plan.preCombatBridge == true then return true end
-    local capture = self and self.preWindowCapture
-    if type(capture) == "table" and capture.preCombatBridge == true then return true end
-    return false
-end
-
-local function canStartPreCombatBridge(self, rule, officialSpellID, runtime)
-    -- A zone/world transition keeps the visible session semantics intact, but
-    -- revokes only the implicit pre-combat exception.  Without this fence an
-    -- old armed intent can see a post-load official window and immediately
-    -- dispatch trinkets/skills while the player is still out of combat.
-    if self and self.preCombatBridgeWorldFence == true then return false end
-    return runtimeAllowsPreCombatBridge(runtime)
-        and type(rule) == "table"
-        and rule.requiresPreWindowCapture == true
-        and officialSpellID ~= nil
-        and officialSpellID == rule.windowSpellID
-end
+-- P5.8 removes the historical pre-combat Burst bridge.  The compatibility
+-- snapshot fields below may still be present in old SavedVariables/diagnostics,
+-- but no runtime branch may treat them as dispatch authority.  AutoBurst is
+-- encounter-scoped: plan construction, capture ownership and candidates begin
+-- only after the in-combat gate in Evaluate has passed.
 
 local function isDead()
     return type(UnitIsDeadOrGhost) == "function" and UnitIsDeadOrGhost("player") == true
@@ -527,19 +493,26 @@ local function profileRule(context)
     }, nil
 end
 
--- A macro remains the player's own visible action-bar button. Broad macro
--- support accepts a resolver-proven association (API or parsed body) without
--- TE attempting to evaluate a condition or execute a macro branch itself.
+-- AutoBurst consumes the same current-action-bar macro contract as every
+-- manual HUD role. Only a resolver-verified macro body association may enter a
+-- burst step. The P4 opaque action-info compatibility route is target-only and
+-- is intentionally never an AutoBurst source.
 local function macroAllowed(bindingInfo)
     if not bindingInfo or bindingInfo.source ~= "macro" then return true, nil end
-    if bindingInfo.macroAutoBurstEligible == true then return true, nil end
-    local association = tostring(bindingInfo.macroAssociation or "")
-    if association == "action_info_macro_spell" or association == "GetMacroSpell"
-        or association == "GetMacroSpell(actionInfoId)" then
-        return true, nil
+    local resolver = TE.ActionBarBindingResolver
+    if resolver and type(resolver.IsAutoBurstMacroEligible) == "function" then
+        local ok, reason = resolver:IsAutoBurstMacroEligible(bindingInfo)
+        if ok == true then return true, nil end
+        return false, reason or "macro_spell_not_associated"
     end
-    local semantics = bindingInfo.macroSemantics
-    if type(semantics) == "table" and semantics.broadReferenceEligible == true and association:find("macro_body_", 1, true) == 1 then
+    -- Defensive fallback for an incomplete load order: retain the same strict
+    -- body-backed contract rather than restoring any action-info-only path.
+    local diagnostic = type(bindingInfo.macroDiagnostic) == "table" and bindingInfo.macroDiagnostic or {}
+    local association = tostring(bindingInfo.macroAssociation or "")
+    if diagnostic.macroIdentityVerified == true
+        and type(bindingInfo.macroSemantics) == "table"
+        and bindingInfo.macroAutoBurstEligible == true
+        and (association:find("macro_body_", 1, true) == 1 or association:find("macro_inventory_", 1, true) == 1) then
         return true, nil
     end
     return false, "macro_spell_not_associated"
@@ -1013,21 +986,15 @@ local function preWindowCaptureHold(capture, reason)
     }
 end
 
-local function beginPreWindowCapture(self, rule, officialSpellID, windowGeneration, reason, handoffBarrierRequired, preCombatBridge)
+local function beginPreWindowCapture(self, rule, officialSpellID, windowGeneration, reason, handoffBarrierRequired)
     local existing = self and self.preWindowCapture
     if type(existing) == "table"
         and existing.rule and existing.rule.id == rule.id
         and existing.officialSpellID == officialSpellID
         and number(existing.windowGeneration) == number(windowGeneration) then
-        if preCombatBridge == true then existing.preCombatBridge = true end
         return existing, false
     end
-    -- A manual re-arm after a world transition is still a pre-combat bridge,
-    -- but it starts from a potentially stale screen reader frame.  Require the
-    -- same four fresh observation frames before exposing any optional-step
-    -- token, even when the logical intent remained armed across the map load.
     local requiresHandoff = handoffBarrierRequired == true
-        or (preCombatBridge == true and self.preCombatBridgeAuthorizationRequiresHandoff == true)
     local capture = {
         schema = 1,
         id = self.nextPreWindowCaptureId or 1,
@@ -1037,7 +1004,9 @@ local function beginPreWindowCapture(self, rule, officialSpellID, windowGenerati
         armedEpoch = self.armedEpoch or 0,
         createdAt = now(),
         reason = reason or "pre_window_capture",
-        preCombatBridge = preCombatBridge == true,
+        -- Retained as a scalar-only compatibility field for old diagnostics;
+        -- P5.8 never sets it true and never reads it as authority.
+        preCombatBridge = false,
         preCombatBridgeEnteredCombat = false,
         -- Preserve the legacy boolean for mapping compatibility. The actual
         -- handoff contract is frame-counted, because a single event refresh can
@@ -1051,9 +1020,6 @@ local function beginPreWindowCapture(self, rule, officialSpellID, windowGenerati
     }
     self.nextPreWindowCaptureId = capture.id + 1
     self.preWindowCapture = capture
-    if capture.preCombatBridge == true and self.preCombatBridgeAuthorizationRequiresHandoff == true then
-        self.preCombatBridgeAuthorizationRequiresHandoff = false
-    end
     log(self, "pre_window_capture_started", {
         captureId = capture.id,
         ruleId = rule.id,
@@ -1065,18 +1031,6 @@ local function beginPreWindowCapture(self, rule, officialSpellID, windowGenerati
         reason = capture.reason,
         preCombatBridge = capture.preCombatBridge == true,
     })
-    if capture.preCombatBridge == true then
-        log(self, "precombat_burst_bridge_started", {
-            captureId = capture.id,
-            ruleId = rule.id,
-            ruleSource = rule.source,
-            officialSpellID = officialSpellID,
-            windowSpellID = rule.windowSpellID,
-            windowGeneration = capture.windowGeneration,
-            armedEpoch = capture.armedEpoch,
-            reason = capture.reason,
-        })
-    end
     return capture, true
 end
 
@@ -1272,7 +1226,7 @@ local function terminalResult(self, reason, fields)
     if self.requireWindowDeparture then
         recordDecision(self, "hold", fields.reason, fields)
         return holdResult(nil, "burst_await_window_departure", {
-            preCombatBridge = self.preCombatBridgeDepartureLock == true,
+            preCombatBridge = false,
         })
     end
     recordDecision(self, "released", fields.reason, fields)
@@ -1619,25 +1573,16 @@ function AutoBurst:ActivateWorldTransitionFence(reason)
     })
 end
 
--- SignalFrame calls this only from the existing explicit SetState("armed")
--- control.  It does not change user-visible state labels or enable ordinary
--- out-of-combat dispatch; it merely authorizes the already-designed opener
--- bridge after a map transition and forces a fresh four-frame handoff.
+-- P5.8 compatibility no-op retained for external diagnostic callers from prior P5.7 builds.
+-- P5.8 has no pre-combat Burst authority: pressing Run only controls normal
+-- in-combat execution and can never authorize a plan/capture while out of combat.
 function AutoBurst:AuthorizePreCombatBridge(reason)
-    local wasFenced = self.preCombatBridgeWorldFence == true
-    self.preCombatBridgeWorldFence = false
-    self.preCombatBridgeAuthorizationRequiresHandoff = true
-    if wasFenced then
-        self.firstHealthyFramePending = true
-        self.lastOfficialSpellID = nil
-        self.currentWindowSpellID = nil
-        self.activePlanGeneration = nil
-        log(self, "precombat_bridge_reauthorized", {
-            reason = tostring(reason or "manual_arm"),
-            worldTransitionEpoch = self.worldTransitionEpoch or 0,
-        })
-    end
-    return wasFenced
+    self.preCombatBridgeAuthorizationRequiresHandoff = false
+    log(self, "precombat_bridge_removed", {
+        reason = tostring(reason or "manual_arm"),
+        worldTransitionEpoch = self.worldTransitionEpoch or 0,
+    })
+    return false
 end
 
 -- Begin a new encounter-scoped official-window epoch.  This deliberately
@@ -1659,37 +1604,6 @@ function AutoBurst:BeginCombatEpoch(reason)
             worldTransitionEpoch = self.worldTransitionEpoch or 0,
         })
     end
-    local plan = self.plan
-    local capture = self.preWindowCapture
-    local bridgePlan = type(plan) == "table" and plan.preCombatBridge == true
-    local bridgeCapture = type(capture) == "table" and capture.preCombatBridge == true
-
-    -- A front-injection opener may itself cross PLAYER_REGEN_DISABLED. Do not
-    -- clear its capture, plan, window generation or handoff budget on that
-    -- event: the bridge is the only explicit owner allowed to cross this
-    -- boundary. Every non-bridge encounter still receives the historical clean
-    -- combat epoch reset below.
-    if bridgePlan or bridgeCapture then
-        if bridgePlan then
-            plan.preCombatBridgeEnteredCombat = true
-            plan.combatEpoch = self.combatEpoch
-        end
-        if bridgeCapture then
-            capture.preCombatBridgeEnteredCombat = true
-            capture.combatEpoch = self.combatEpoch
-        end
-        self.eventPauseUntil = 0
-        self.eventPauseReason = nil
-        log(self, "precombat_burst_bridge_combat_entered", {
-            reason = reason or "combat_started",
-            combatEpoch = self.combatEpoch,
-            planId = bridgePlan and plan.id or nil,
-            captureId = bridgeCapture and capture.id or nil,
-            windowGeneration = bridgePlan and plan.windowGeneration or (bridgeCapture and capture.windowGeneration or nil),
-        })
-        return true
-    end
-
     releasePreWindowCapture(self, "combat_epoch:" .. tostring(reason or "combat_started"))
     self.plan = nil
     self.requireWindowDeparture = false
@@ -1781,21 +1695,13 @@ function AutoBurst:ResumeIfPossible()
     })
 end
 
-local function isRuntimePaused(self, runtime, allowPreCombatBridge)
+local function isRuntimePaused(self, runtime)
     if self.deadPaused then return true, "player_dead" end
     if self.vehiclePaused then return true, "vehicle_active" end
     local t = now()
     if self.eventPauseUntil and t < self.eventPauseUntil then return true, self.eventPauseReason or "event_revalidation" end
     local effective = runtime and runtime.effectiveState
     if effective and effective ~= "armed" then
-        -- Do not turn the default out-of-combat display pause into a global
-        -- input permission. Only the already-qualified, front-injection bridge
-        -- may continue its own capture/plan through this one internal state.
-        if allowPreCombatBridge == true
-            and effective == "paused"
-            and runtime and runtime.runtimeReason == "out_of_combat_policy_pause" then
-            return false, nil
-        end
         return true, runtime.runtimeReason or ("runtime_" .. tostring(effective))
     end
     return false, nil
@@ -2285,6 +2191,19 @@ function AutoBurst:Evaluate(official, runtime)
 
     self.lastIntentState = intentState
 
+    -- Hard encounter boundary. This runs before the enable check, profile/rule
+    -- lookup, plan-rule comparison, capture recovery and candidate creation.
+    -- A stale in-memory object from an earlier build is therefore discarded
+    -- before it can influence any out-of-combat transport result.
+    local inCombat = isInCombat(runtime)
+    if not inCombat then
+        if self.plan or self.preWindowCapture then self:Abort("out_of_combat", true) end
+        self.preCombatBridgeDepartureLock = false
+        self.preCombatBridgeAuthorizationRequiresHandoff = false
+        recordDecision(self, "idle", "out_of_combat", { officialSpellID = officialSpellID })
+        return noneResult()
+    end
+
     if settings.autoBurstEnabled ~= true then
         if self.plan or self.preWindowCapture then self:Abort("auto_burst_disabled", false) end
         recordDecision(self, "idle", "auto_burst_disabled", { officialSpellID = officialSpellID })
@@ -2311,33 +2230,7 @@ function AutoBurst:Evaluate(official, runtime)
         return terminalResult(self, "rule_changed", { officialSpellID = officialSpellID, windowSpellID = rule.windowSpellID, injectionSpellID = rule.injectionSpellID, ruleSource = rule.source, ruleId = rule.id })
     end
 
-    local inCombat = isInCombat(runtime)
-    local worldTransitionPreCombatFence = self.preCombatBridgeWorldFence == true
-    local preCombatBridge = not inCombat and not worldTransitionPreCombatFence and (
-        hasPreCombatBridgeOwner(self)
-        or self.preCombatBridgeDepartureLock == true
-        or canStartPreCombatBridge(self, rule, officialSpellID, runtime)
-    )
-    if not inCombat and not preCombatBridge then
-        if worldTransitionPreCombatFence then
-            -- A transition event normally clears this state first.  Preserve a
-            -- fail-closed fallback for an event/refresh race without installing
-            -- an ordinary departure lock against the next legitimate opener.
-            if self.plan or self.preWindowCapture then
-                self:ActivateWorldTransitionFence("evaluate_fence")
-            end
-            recordDecision(self, "idle", "world_transition_precombat_fenced", {
-                officialSpellID = officialSpellID,
-                worldTransitionEpoch = self.worldTransitionEpoch or 0,
-            })
-            return noneResult()
-        end
-        self:Abort("out_of_combat", true)
-        recordDecision(self, "idle", "out_of_combat", { officialSpellID = officialSpellID })
-        return noneResult()
-    end
-
-    local paused, pauseReason = isRuntimePaused(self, runtime, preCombatBridge)
+    local paused, pauseReason = isRuntimePaused(self, runtime)
     if paused then
         self:SoftPause(pauseReason)
         recordDecision(self, self.plan and "paused" or "idle", pauseReason or "runtime_paused", { officialSpellID = officialSpellID })
@@ -2357,7 +2250,7 @@ function AutoBurst:Evaluate(official, runtime)
         -- receives the official display binding from SignalFrame.
         recordDecision(self, "hold", "await_window_departure", { officialSpellID = officialSpellID, windowSpellID = self.lockedWindowSpellID })
         return holdResult(nil, "burst_await_window_departure", {
-            preCombatBridge = self.preCombatBridgeDepartureLock == true,
+            preCombatBridge = false,
         })
     end
 
@@ -2420,7 +2313,7 @@ function AutoBurst:Evaluate(official, runtime)
             self.windowGeneration = (self.windowGeneration or 0) + 1
             capture = beginPreWindowCapture(
                 self, rule, officialSpellID, self.windowGeneration,
-                "pre_window_capture_recover:window_edge_missing", rearmedFromNonArmed, preCombatBridge
+                "pre_window_capture_recover:window_edge_missing", rearmedFromNonArmed
             )
             windowEntry = true
             windowReason = "pre_window_capture_recover:window_edge_missing"
@@ -2451,18 +2344,10 @@ function AutoBurst:Evaluate(official, runtime)
         end
         rule = selectedRule
 
-        -- A pre-combat bridge is deliberately limited to sequences that really
-        -- have an optional step before the official window after preflight.
-        if not inCombat and rule.requiresPreWindowCapture ~= true then
-            if capture then releasePreWindowCapture(self, "precombat_sequence_window_first") end
-            self.lastWindowRejectReason = "precombat_sequence_window_first"
-            return noneResult()
-        end
-
         if rule.requiresPreWindowCapture == true and not capture then
             capture = beginPreWindowCapture(
                 self, rule, officialSpellID, self.windowGeneration,
-                windowReason or "official_window_edge", rearmedFromNonArmed, preCombatBridge
+                windowReason or "official_window_edge", rearmedFromNonArmed
             )
         elseif capture and rule.requiresPreWindowCapture ~= true then
             -- A previously captured front step may have been excluded by the
@@ -2474,7 +2359,7 @@ function AutoBurst:Evaluate(official, runtime)
 
         local creation = {
             windowGeneration = self.windowGeneration,
-            preCombatBridge = (capture and capture.preCombatBridge == true) or (preCombatBridge == true and rule.requiresPreWindowCapture == true),
+            preCombatBridge = false,
             injectionPreflight = shallowCopy(self.lastInjectionPreflight),
             sequencePreflight = shallowCopy(self.lastSequencePreflight),
             preInjectionRequired = rule.requiresPreWindowCapture == true,

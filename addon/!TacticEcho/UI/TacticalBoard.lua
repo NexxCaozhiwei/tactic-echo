@@ -184,12 +184,15 @@ end
 
 local function bindPrimaryDrag(card)
     card:RegisterForDrag("LeftButton")
-    card:SetScript("OnDragStart", function()
+    card:SetScript("OnDragStart", function(self)
+        self.tacticEchoDragging = true
         if not db().locked then board:StartMoving() end
     end)
-    card:SetScript("OnDragStop", function()
+    card:SetScript("OnDragStop", function(self)
         board:StopMovingOrSizing()
         savePoint(board)
+        self.tacticEchoDragging = false
+        self.tacticEchoSuppressClickUntil = (type(GetTime) == "function" and GetTime() or 0) + 0.15
     end)
     card:SetScript("OnMouseUp", function(self, button)
         if self.pushedTexture then self.pushedTexture:Hide() end
@@ -228,21 +231,21 @@ local function ensureBoard()
         "防御队列抓手")
     defenseFrame.handle:SetPoint("LEFT", defenseFrame, "LEFT", -18, 0)
 
-    nodes.primary = TacticalIconButton:Create(board, nil, 68)
+    nodes.primary = TacticalIconButton:Create(board, nil, 68, "main_toggle")
     bindPrimaryDrag(nodes.primary)
     nodes.candidates = {}
-    for index = 1, 3 do nodes.candidates[index] = TacticalIconButton:Create(board, nil, 38) end
+    for index = 1, 3 do nodes.candidates[index] = TacticalIconButton:Create(board, nil, 38, "none") end
     nodes.tactical = {
-        interrupt = TacticalIconButton:Create(board, nil, 46),
+        interrupt = TacticalIconButton:Create(board, nil, 46, "manual_action"),
         burst = {},
-        control = TacticalIconButton:Create(board, nil, 46),
-        mobility = TacticalIconButton:Create(board, nil, 46),
+        control = TacticalIconButton:Create(board, nil, 46, "manual_action"),
+        mobility = TacticalIconButton:Create(board, nil, 46, "none"),
     }
     for index = 1, MAX_BURST_CARDS do
-        nodes.tactical.burst[index] = TacticalIconButton:Create(board, nil, 46)
+        nodes.tactical.burst[index] = TacticalIconButton:Create(board, nil, 46, "manual_action")
     end
     nodes.defense = {}
-    for index = 1, 4 do nodes.defense[index] = TacticalIconButton:Create(defenseFrame, nil, 38) end
+    for index = 1, 4 do nodes.defense[index] = TacticalIconButton:Create(defenseFrame, nil, 38, "manual_action") end
 
     -- Right-click navigation is intentionally visual-only.  It opens the
     -- matching settings page but never changes a recommendation, binding,

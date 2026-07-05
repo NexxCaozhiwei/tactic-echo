@@ -10,7 +10,7 @@ local TE = _G.TacticEcho
 local ReactionObservation = {}
 TE.ReactionObservation = ReactionObservation
 
-ReactionObservation.schemaVersion = 6
+ReactionObservation.schemaVersion = 7
 ReactionObservation.snapshot = nil
 
 local AOE_CONTROL_THRESHOLD = 4
@@ -168,6 +168,22 @@ local function safeMethodBoolean(object, methodName)
     return plainBoolean(value)
 end
 
+
+local function safeMethodText(object, methodName)
+    local method = safeObjectField(object, methodName)
+    if type(method) ~= "function" then return nil end
+    local ok, value = pcall(method, object)
+    if not ok then return nil end
+    return plainText(value)
+end
+
+local function safeMethodList(object, methodName)
+    local method = safeObjectField(object, methodName)
+    if type(method) ~= "function" then return {} end
+    local ok, values = pcall(function() return { method(object) } end)
+    return ok and type(values) == "table" and values or {}
+end
+
 local function nativeFrameActive(frame)
     if frame == nil then return false, nil end
     -- Blizzard and popular unit-frame templates use both old (`casting`) and
@@ -220,6 +236,36 @@ local function appendShieldWidget(out, widget, label)
     if widget ~= nil then out[#out + 1] = { widget = widget, label = label } end
 end
 
+-- Current Retail templates do not always expose BorderShield as a direct Lua
+-- field. Scan only named/atlased children and regions whose identifiers are
+-- explicitly shield-related; generic castbar decoration is never treated as a
+-- steel-bar proof. This remains read-only and retains no frame object.
+local function shieldIdentifier(value)
+    local text = plainText(value)
+    if not text then return false end
+    local ok, lower = pcall(string.lower, text)
+    if not ok or type(lower) ~= "string" then return false end
+    return string.find(lower, "shield", 1, true) ~= nil
+        or string.find(lower, "uninterruptible", 1, true) ~= nil
+        or string.find(lower, "notinterruptible", 1, true) ~= nil
+end
+
+local function appendSemanticShieldWidgets(out, frame)
+    for _, child in ipairs(safeMethodList(frame, "GetChildren")) do
+        local name = safeMethodText(child, "GetName")
+        if shieldIdentifier(name) then appendShieldWidget(out, child, "child:" .. tostring(name)) end
+    end
+    for _, region in ipairs(safeMethodList(frame, "GetRegions")) do
+        local name = safeMethodText(region, "GetName")
+        local atlas = safeMethodText(region, "GetAtlas")
+        local texture = safeMethodText(region, "GetTexture")
+        if shieldIdentifier(name) or shieldIdentifier(atlas) or shieldIdentifier(texture) then
+            local label = name or atlas or texture or "shield_region"
+            appendShieldWidget(out, region, "region:" .. tostring(label))
+        end
+    end
+end
+
 local function nativeShieldShown(frame, globalPrefix)
     -- Prefer parent-key access, then probe the well-known global child names
     -- used by Blizzard's target/focus spell bars.  The latter matters on
@@ -234,6 +280,13 @@ local function nativeShieldShown(frame, globalPrefix)
             appendShieldWidget(candidates, safeObjectField(_G, globalPrefix .. suffix), globalPrefix .. suffix)
         end
     end
+    local frameName = safeMethodText(frame, "GetName")
+    if frameName and frameName ~= globalPrefix then
+        for _, suffix in ipairs(SHIELD_GLOBAL_SUFFIXES) do
+            appendShieldWidget(candidates, safeObjectField(_G, frameName .. suffix), frameName .. suffix)
+        end
+    end
+    appendSemanticShieldWidgets(candidates, frame)
 
     local hiddenField = nil
     for _, candidate in ipairs(candidates) do
@@ -246,7 +299,7 @@ local function nativeShieldShown(frame, globalPrefix)
     return nil, nil
 end
 
--- P3.4: A current Retail nameplate castbar can retain its scalar
+-- P5.3 native shield probe: A current Retail nameplate castbar can retain its scalar
 -- `notInterruptible` / `isUninterruptible` value across another player (or an
 -- NPC) ending a cast and the same unit immediately beginning a new cast. That
 -- scalar is useful diagnostic data, but it is not an independently visible
@@ -424,7 +477,14 @@ local function readCast(unit)
         }
     end
 
-    local directNotInterruptible = apiRecord and plainBoolean(apiRecord.notInterruptible) or nil
+    -- Do not write this as `apiRecord and plainBoolean(...) or nil`: Lua's
+    -- `and/or` idiom collapses the authoritative ordinary `false` value into
+    -- nil.  Here false is the decisive proof that the current API cast is
+    -- interruptible, so retain it exactly.
+    local directNotInterruptible = nil
+    if apiRecord ~= nil then
+        directNotInterruptible = plainBoolean(apiRecord.notInterruptible)
+    end
     local resolvedNotInterruptible = directNotInterruptible
     local directInterruptibilityKnown = directNotInterruptible ~= nil
     local nativeInterruptibilityKnown = false

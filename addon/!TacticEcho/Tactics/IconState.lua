@@ -430,6 +430,13 @@ function IconState:CollectCooldownOnly(spellID, options)
         cooldownRequestedActionSlot = numeric(options.actionSlot or options.slot),
         cooldownActionBarStateTrusted = options.actionBarStateTrusted == true,
         cooldownRequestedSpellID = spellID,
+        -- A verified reaction macro may be a target-management macro and is
+        -- therefore not a general AutoBurst-ready actionbar source. It can
+        -- still provide one narrow negative fact: its exact visible button is
+        -- on a real non-GCD cooldown. This flag permits only that veto; it
+        -- never lets a macro button's ready state authorize a dispatch.
+        cooldownExactActionVeto = options.exactActionCooldownVeto == true,
+        cooldownExactActionVetoEvidence = false,
         charges = nil,
         maxCharges = nil,
         chargeCooldownKnown = false,
@@ -572,7 +579,7 @@ function IconState:CollectCooldownOnly(spellID, options)
         state.cooldownDirectActionBarReadyEvidence = true
     elseif actionActive == true and actionOnGCD == false
         and options.directActionSlot == true
-        and options.actionBarStateTrusted == true then
+        and (options.actionBarStateTrusted == true or options.exactActionCooldownVeto == true) then
         if applyDirectActionbarNumericCooldown(state, actionCooldown, spellID) ~= true then
             state.cooldownKnown = true
             state.cooldownActive = true
@@ -586,13 +593,16 @@ function IconState:CollectCooldownOnly(spellID, options)
             state.cooldownSource = "actionbar_api"
             state.cooldownIdentityKey = "spell:" .. tostring(spellID)
             state.cooldownUnknownReason = nil
-            state.cooldownDirectActionBarEvidence = true
+            state.cooldownDirectActionBarEvidence = options.actionBarStateTrusted == true
+            state.cooldownExactActionVetoEvidence = options.exactActionCooldownVeto == true
         end
     elseif actionLongOwnCooldown == true
         and options.directActionSlot == true
-        and options.actionBarStateTrusted == true then
+        and (options.actionBarStateTrusted == true or options.exactActionCooldownVeto == true) then
         -- Compatibility path for clients that omit public action booleans while
-        -- exposing a normal long CD on the exact direct button.
+        -- exposing a normal long CD on the exact direct button. For a verified
+        -- reaction macro this remains a *veto only*: the same read cannot make
+        -- a ready macro authoritative for delivery.
         if applyDirectActionbarNumericCooldown(state, actionCooldown, spellID) ~= true then
             state.cooldownKnown = true
             state.cooldownActive = true
@@ -606,7 +616,8 @@ function IconState:CollectCooldownOnly(spellID, options)
             state.cooldownSource = "actionbar_duration"
             state.cooldownIdentityKey = "spell:" .. tostring(spellID)
             state.cooldownUnknownReason = nil
-            state.cooldownDirectActionBarEvidence = true
+            state.cooldownDirectActionBarEvidence = options.actionBarStateTrusted == true
+            state.cooldownExactActionVetoEvidence = options.exactActionCooldownVeto == true
         end
     end
 

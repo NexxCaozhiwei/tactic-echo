@@ -20,28 +20,65 @@ local function spellInfo(spellID)
     return nil, nil
 end
 
-local function bound(spellID)
+local function verifiedManualPresentationSource(resolved)
+    if type(resolved) ~= "table" or resolved.source ~= "macro" then return true end
+    local resolver = TE.ActionBarBindingResolver
+    if resolver and type(resolver.IsVerifiedCurrentMacroSource) == "function" then
+        local verified = resolver:IsVerifiedCurrentMacroSource(resolved, resolved.macroAssociation)
+        return verified == true
+    end
+    -- Conservative load-order fallback: this is intentionally narrower than
+    -- the resolver contract and never admits opaque action-info compatibility.
+    local diagnostic = type(resolved.macroDiagnostic) == "table" and resolved.macroDiagnostic or {}
+    local association = tostring(resolved.macroAssociation or "")
+    return diagnostic.macroIdentityVerified == true
+        and type(resolved.macroSemantics) == "table"
+        and (association:find("macro_body_", 1, true) == 1
+            or association:find("macro_item_", 1, true) == 1
+            or association:find("macro_inventory_", 1, true) == 1)
+end
+
+local function presentationBinding(resolved)
+    resolved = type(resolved) == "table" and resolved or nil
+    if not resolved or type(resolved.buttonName) ~= "string" or resolved.buttonName == "" then return nil end
+    if verifiedManualPresentationSource(resolved) ~= true then return nil end
+    -- Advisory/control/defense cards may be manually clicked through the HUD
+    -- even when the existing visible source has no normalized keyboard token.
+    -- This is display/manual metadata only; BindingToken remains zero.
+    return {
+        binding = resolved.binding or resolved.rawBinding,
+        bindingToken = 0,
+        source = resolved.source,
+        bindingSourceIndex = resolved.bindingSourceIndex,
+        actionSlot = resolved.actionSlot or resolved.slot,
+        slot = resolved.actionSlot or resolved.slot,
+        buttonName = resolved.buttonName,
+        directActionSlot = resolved.directActionSlot == true,
+        actionBarStateTrusted = resolved.actionBarStateTrusted == true,
+        requestedSpellID = resolved.requestedSpellID,
+        matchedSpellID = resolved.matchedSpellID,
+        equivalentSpellIDs = resolved.equivalentSpellIDs,
+        macroID = resolved.macroID,
+        macroAssociation = resolved.macroAssociation,
+        macroDiagnostic = resolved.macroDiagnostic,
+        macroSemantics = resolved.macroSemantics,
+        manualActionSource = true,
+        advisoryOnlyBinding = true,
+        reason = resolved.reason,
+    }
+end
+
+local function bound(spellID, allowManualPresentation)
     local resolver = TE.ActionBarBindingResolver
     if not resolver or type(resolver.ResolveSpell) ~= "function" then return nil end
     local resolved = resolver:ResolveSpell(spellID)
     if not resolved then return nil end
-    if resolved.status == "Ready" and resolved.binding then return resolved end
-    if resolved.rawBinding then
-        return {
-            binding = resolved.rawBinding,
-            bindingToken = 0,
-            source = resolved.source,
-            bindingSourceIndex = resolved.bindingSourceIndex,
-            actionSlot = resolved.actionSlot or resolved.slot,
-            directActionSlot = resolved.directActionSlot == true,
-            requestedSpellID = resolved.requestedSpellID,
-            matchedSpellID = resolved.matchedSpellID,
-            equivalentSpellIDs = resolved.equivalentSpellIDs,
-            advisoryOnlyBinding = true,
-            reason = resolved.reason,
-        }
-    end
-    return nil
+    if resolved.status == "Ready" and resolved.binding and verifiedManualPresentationSource(resolved) == true then return resolved end
+    -- P5.9 deliberately limits unbound-but-visible macro presentation to the
+    -- HUD roles requested by the user: control and defense. Prediction and
+    -- mobility stay on their prior actual-keybinding rule.
+    if allowManualPresentation ~= true then return nil end
+    return presentationBinding(resolved)
 end
 
 local function knownState(spellID)
@@ -82,10 +119,11 @@ local function advisoryItem(spellID, category, binding, known, knownSource, defe
         bindingToken = binding and binding.bindingToken or 0,
         bindingSource = binding and binding.source or nil,
         bindingSourceIndex = binding and binding.bindingSourceIndex or nil,
+        buttonName = binding and binding.buttonName or nil,
         actionSlot = actionSlot,
         slot = actionSlot,
         directActionSlot = directActionSlot,
-        actionBarStateTrusted = directActionSlot,
+        actionBarStateTrusted = binding and binding.actionBarStateTrusted == true or false,
         requestedSpellID = binding and (binding.requestedSpellID or spellID) or spellID,
         matchedSpellID = binding and binding.matchedSpellID or nil,
         equivalentSpellIDs = binding and binding.equivalentSpellIDs or nil,
@@ -118,7 +156,7 @@ local function readCandidate(candidate, fallbackCategory)
     return spellID, nil
 end
 
-local function firstBound(candidates, category)
+local function firstBound(candidates, category, allowManualPresentation)
     -- Prefer the first spell that is both usable for the current specialization
     -- and actually found on a current visible Blizzard action bar.  Retain one
     -- current-spec unbound candidate only as a diagnostic fallback. Structured
@@ -130,7 +168,7 @@ local function firstBound(candidates, category)
         if spellID then
             local known, knownSource = knownState(spellID)
             if known ~= false then
-                local binding = bound(spellID)
+                local binding = bound(spellID, allowManualPresentation == true)
                 local item = advisoryItem(spellID, category, binding, known, knownSource, defenseEntry)
                 if binding then return item end
                 if not firstUnbound then firstUnbound = item end
@@ -218,6 +256,8 @@ local function itemBinding(itemID)
     local ok, resolved = pcall(resolver.ResolveItem, resolver, itemID)
     if not ok or type(resolved) ~= "table" then return nil, "item_resolver_failed" end
     if resolved.status == "Ready" and resolved.binding then return resolved, nil end
+    local source = presentationBinding(resolved)
+    if source then return source, nil end
     return nil, resolved.reason or "actionbar_item_not_found"
 end
 
@@ -238,10 +278,16 @@ local function survivalItem(itemID, category, displayName)
         bindingToken = 0, -- advisory items never receive a dispatch token.
         bindingSource = binding.source,
         bindingSourceIndex = binding.bindingSourceIndex,
+        buttonName = binding.buttonName,
+        actionSlot = binding.actionSlot or binding.slot,
+        slot = binding.actionSlot or binding.slot,
+        directActionSlot = binding.directActionSlot == true,
+        actionBarStateTrusted = binding.actionBarStateTrusted == true,
         bindingInfo = binding,
         category = category,
         source = "survival_consumable",
-        advisoryCondition = "背包、当前动作条与真实键位均已确认；只读提示，不参与派发",
+        advisoryCondition = binding.binding and "背包与当前动作条真实键位均已确认；只读提示，不参与派发"
+            or "背包与当前可见动作条来源已确认；可手动点击 HUD，不参与派发",
         advisoryOnly = true,
         usableState = "unknown",
         unbound = false,
@@ -337,10 +383,11 @@ function Planner:BuildCandidates(primary, settings)
         candidate.binding = binding and binding.binding or nil
         candidate.bindingToken = binding and binding.bindingToken or 0
         candidate.bindingSource = binding and binding.source or nil
+        candidate.buttonName = binding and binding.buttonName or nil
         candidate.actionSlot = binding and (binding.actionSlot or binding.slot) or nil
         candidate.slot = candidate.actionSlot
         candidate.directActionSlot = binding and binding.directActionSlot == true or false
-        candidate.actionBarStateTrusted = candidate.directActionSlot == true
+        candidate.actionBarStateTrusted = binding and binding.actionBarStateTrusted == true or false
         candidate.requestedSpellID = binding and (binding.requestedSpellID or candidate.spellID) or candidate.spellID
         candidate.matchedSpellID = binding and binding.matchedSpellID or nil
         candidate.equivalentSpellIDs = binding and binding.equivalentSpellIDs or nil
@@ -402,7 +449,7 @@ function Planner:BuildDefense(classFile, inCombat, settings, context, runtime)
         if not spellID or seen[spellID] then return false end
         -- firstBound retains the current known-spell and real action-bar resolver
         -- checks. Passing one registry entry preserves the unified user order.
-        local item = firstBound({ entry }, entry.type or "defense")
+        local item = firstBound({ entry }, entry.type or "defense", true)
         if not item or not hasRequiredBinding(item, requireActualBinding) then return false end
         seen[spellID] = true
         item.defensiveProfileKey = out.profileKey
@@ -523,7 +570,7 @@ function Planner:BuildControl(classFile, settings, runtime)
     local sample = runtime.monitor or monitor()
     if sample.targetCasting ~= true then
         if settings.controlDisplayMode == "always" then
-            local item = firstBound(TE.AbilityProfiles and TE.AbilityProfiles:GetControls(classFile) or {}, "control")
+            local item = firstBound(TE.AbilityProfiles and TE.AbilityProfiles:GetControls(classFile) or {}, "control", true)
             if item then
                 out.active, out.state, out.items = true, "always_visible", { item }
                 out.notice = "控制提示常驻：等待不可打断读条"
@@ -544,7 +591,7 @@ function Planner:BuildControl(classFile, settings, runtime)
         return out
     end
     if sample.targetInterruptibleKnown and sample.targetInterruptible == false then
-        local item = firstBound(TE.AbilityProfiles and TE.AbilityProfiles:GetControls(classFile) or {}, "control")
+        local item = firstBound(TE.AbilityProfiles and TE.AbilityProfiles:GetControls(classFile) or {}, "control", true)
         if item then
             item.source = "target_noninterruptible_cast"
             out.active, out.state, out.items = true, "noninterruptible_cast", { item }

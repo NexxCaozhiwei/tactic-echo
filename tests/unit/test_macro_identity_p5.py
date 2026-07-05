@@ -171,3 +171,45 @@ def test_same_name_same_spell_candidates_fail_closed() -> None:
         '''
     )
     _run_lua(script)
+
+
+
+def test_represented_spell_id_recovers_label_from_action_info_when_action_text_is_missing() -> None:
+    """Retail can expose the macro label only through GetMacroInfo(actionInfoID)."""
+    script = textwrap.dedent(
+        _preamble(147362)
+        + r'''
+        _G.GetActionText = function() return nil end
+        _G.GetNumMacros = function() return 0, 1 end
+        _G.GetMacroSpell = function(index)
+            if index == 121 then return "反制射击", nil, 147362 end
+            return nil
+        end
+        _G.GetMacroInfo = function(index)
+            -- This is the live client shape: action-info represented SpellID
+            -- exposes the macro label but no body, while the real character
+            -- macro index owns the authoritative body.
+            if index == 147362 then return "反射", 1, nil end
+            if index == 121 then return "反射", 1, [[#showtooltip
+/stopcasting
+/cast [@focus,nodead] 反制射击
+/cleartarget
+/targetenemy
+/cast 反制射击
+/targetlasttarget]] end
+            return nil
+        end
+        local result = _G.TacticEcho.ActionBarBindingResolver:ResolveSpell(147362)
+        if result.status ~= "Ready" or result.macroID ~= 121 then
+            error("action_info_label_recovery_failed:" .. tostring(result.status) .. ":" .. tostring(result.macroID))
+        end
+        local diag = result.candidates[1].macroDiagnostic or {}
+        if diag.semanticNameSource ~= "action_info_macro_name"
+            or diag.semanticLookupName ~= "反射"
+            or diag.lookupSource ~= "action_info_name_unique_spell_semantic"
+            or diag.macroIdentityVerified ~= true then
+            error("action_info_label_recovery_diag_missing:" .. tostring(diag.semanticNameSource))
+        end
+        '''
+    )
+    _run_lua(script)

@@ -993,7 +993,7 @@ function ControlPanel:SetInterruptSubpage(subpage)
     local pageInfo = {
         interrupt = {
             title = "打断设置",
-            description = "打断提示、P2 动作条/宏识别、自动打断预设与目标来源优先级。",
+            description = "打断提示、P2 动作条/宏识别、已暂停自动打断状态与目标来源诊断。",
         },
         control = {
             title = "控制设置",
@@ -1188,15 +1188,22 @@ local function reactionBindingEntryText(entry)
     if #parts > 0 then
         local suffix = ""
         if entry.macroRouteReason == "macro_priority_chain_auto" then
-            suffix = "；已识别为严格鼠标指向→焦点→当前目标整合宏。自动打断仅在没有更高优先级有效单位会抢占宏分支时按键；宏不能判断“是否正在施法”。"
+            suffix = "；已识别为严格鼠标指向→焦点→当前目标整合宏。P5.8 自动打断已暂停；HUD 手动点击仅复用该已有宏，宏本身的目标语义保持不变。"
         elseif entry.macroRouteReason == "macro_target_switch_fallback_auto" then
-            suffix = "；已识别为焦点优先、选敌回退并恢复原目标的宏。后续自动打断/控制会直接按此宏，目标处理由宏自身完成。"
+            suffix = "；已识别为焦点优先、选敌回退并恢复原目标的宏。P5.8 HUD 手动点击可复用该已有宏；目标处理仍完全由宏自身完成，自动打断已暂停。"
         elseif entry.macroRouteReason == "macro_target_mutation_auto" then
-            suffix = "；已识别为宏内目标处理。后续自动打断/控制会直接按此宏，目标处理由宏自身完成。"
+            suffix = "；已识别为宏内目标处理。P5.8 HUD 手动点击可复用该已有宏；目标处理仍完全由宏自身完成，自动打断已暂停。"
         end
         return name .. "：" .. table.concat(parts, "；") .. suffix
     end
     if entry.status == "recognized_manual_only" then
+        local manual = type(entry.manualSource) == "table" and entry.manualSource or nil
+        if manual then
+            local key = manual.binding or manual.rawBinding or "无快捷键"
+            local slot = manual.actionSlot or manual.slot or "-"
+            return name .. "：当前宏已识别（槽位=" .. tostring(slot) .. "，键位=" .. tostring(key)
+                .. "）；仅可由 HUD 或原动作条真实鼠标点击复用，宏内目标/条件语义不变。"
+        end
         return name .. "：宏已识别，但目标分支、目标切换或 /castsequence 不透明；仅保留动作条手动使用。"
     end
     if entry.status == "binding_unsupported" then
@@ -1270,7 +1277,7 @@ local function formatReactionDiagnostics(reaction)
     local reconcile = diag.reconciledTargetCast == true and "，已用监控回退" or ""
     local mapping = diag.bindingsAvailable == true and "P2映射已加载" or "P2映射暂不可用（P3仅提示回退）"
     local auto = type(reaction.auto) == "table" and reaction.auto or {}
-    local autoText = "P4自动打断：" .. tostring(auto.state or "未初始化")
+    local autoText = "P5.8 自动打断（已暂停）：" .. tostring(auto.state or "未初始化")
         .. " / " .. tostring(auto.reason or "-")
         .. (auto.source and (" / " .. tostring(REACTION_TARGET_LABELS[auto.source] or auto.source)) or "")
         .. (auto.confirmationReason and (" / 判定=" .. tostring(auto.confirmationReason)) or "")
@@ -1279,6 +1286,11 @@ local function formatReactionDiagnostics(reaction)
         .. (auto.routeRefresh and (" / 重扫=" .. tostring(auto.routeRefresh)) or "")
         .. (auto.nativeEvidence and (" / 原生=" .. tostring(auto.nativeEvidence)) or "")
         .. ((tonumber(auto.nativeVisualSamples) or 0) > 0 and (" / 视觉采样=" .. tostring(auto.nativeVisualSamples) .. "/2") or "")
+        .. (auto.compatibilityFallback == true and (" / 兼容=" .. tostring(auto.compatibilityFallbackReason or "active_cast")) or "")
+        .. ((tonumber(auto.compatibilityEvidenceSamples) or 0) > 0 and (" / 兼容采样=" .. tostring(auto.compatibilityEvidenceSamples) .. "/3") or "")
+        .. (auto.cooldownActive == true and (" / 打断CD=中" .. (auto.cooldownActionSlot and ("(槽" .. tostring(auto.cooldownActionSlot) .. ")") or "")) or "")
+        .. (auto.cooldownExactActionVetoEvidence == true and " / 槽位CD证据" or "")
+        .. (auto.macroManagedTargetFallback == true and " / 焦点回退宏" or "")
         .. (auto.burstBlocked == true and " / Burst占用" or "")
     return "P3 目标观测：" .. target .. " / " .. hostile .. " / " .. alive
         .. "\n读条：" .. cast .. " / " .. interrupt
@@ -1395,11 +1407,16 @@ function ControlPanel:UpdateInputStatus()
         and ("P3 高亮：" .. tostring(reaction.state or "候选") .. "  ·  " .. tostring(reactionItem and reactionItem.spellName or "无")
             .. "\n说明：" .. tostring(reaction.notice or "只读候选"))
         or ("P3 监测：" .. tostring(reaction.state or "monitoring") .. "  ·  " .. tostring(reaction.notice or "等待可打断或可控制读条"))
-    reactionText = reactionText .. "\nP4 自动打断：" .. tostring(reactionAuto.state or "未初始化")
+    reactionText = reactionText .. "\nP5.8 自动打断（已暂停）：" .. tostring(reactionAuto.state or "未初始化")
         .. "  ·  " .. tostring(reactionAuto.reason or "-")
         .. (reactionAuto.confirmationReason and ("  ·  判定=" .. tostring(reactionAuto.confirmationReason)) or "")
         .. (reactionAuto.routeReason and ("  ·  路由=" .. tostring(reactionAuto.routeReason)) or "")
         .. (reactionAuto.routeRefresh and ("  ·  重扫=" .. tostring(reactionAuto.routeRefresh)) or "")
+        .. (reactionAuto.compatibilityFallback == true and ("  ·  兼容=" .. tostring(reactionAuto.compatibilityFallbackReason or "active_cast")) or "")
+        .. ((tonumber(reactionAuto.compatibilityEvidenceSamples) or 0) > 0 and ("  ·  采样=" .. tostring(reactionAuto.compatibilityEvidenceSamples) .. "/3") or "")
+        .. (reactionAuto.cooldownActive == true and "  ·  打断CD中" or "")
+        .. (reactionAuto.cooldownExactActionVetoEvidence == true and "  ·  槽位CD证据" or "")
+        .. (reactionAuto.macroManagedTargetFallback == true and "  ·  焦点回退宏" or "")
     setLabel("interruptState", "打断：" .. tostring(interrupt.state or "monitoring")
         .. "  ·  建议：" .. tostring(interrupt.suggestion and interrupt.suggestion.spellName or "无")
         .. "\n控制：" .. tostring((advisory.control or {}).state or "monitoring")
@@ -2058,11 +2075,20 @@ local REACTION_TARGET_ORDER = { "target", "focus", "mouseover" }
 local function ensureAutoReactionSettings(tactics)
     tactics.autoReaction = type(tactics.autoReaction) == "table" and tactics.autoReaction or {}
     local reaction = tactics.autoReaction
-    reaction.schema = 1
+    reaction.schema = 2
     for _, kind in ipairs({ "interrupt", "control" }) do
         reaction[kind] = type(reaction[kind]) == "table" and reaction[kind] or {}
         local config = reaction[kind]
         if config.enabled == nil then config.enabled = false end
+        if kind == "interrupt" then
+            -- P5.8 UI fallback mirrors Config/Normalize: the old checkbox is
+            -- visible as a disabled design-pause notice, never a selectable
+            -- future dispatch preference.
+            config.enabled = false
+            config.suspended = true
+            config.suspensionReason = "auto_interrupt_suspended"
+            if config.compatibilityActiveCast == nil then config.compatibilityActiveCast = false end
+        end
         if kind == "control" and config.aoeEnabled == nil then config.aoeEnabled = false end
         config.targetOrder = type(config.targetOrder) == "table" and config.targetOrder or { "target", "focus", "mouseover" }
         config.targetEnabled = type(config.targetEnabled) == "table" and config.targetEnabled or {}
@@ -2181,28 +2207,29 @@ local function buildInterruptSettings(pane)
     y = y - 38
     createCheckbox(pane, "目标框 / 姓名板打断提示", LEFT_X, y, function() return select(2, ensureTactics()).showTargetPrompt end, function(value) select(2, ensureTactics()).showTargetPrompt = value end,
         "默认关闭。仅当当前目标正在进行可打断读条、打断技能存在真实动作条键位且当前可用时显示；不继承“打断常驻”模式。")
-    createText(pane, "GameFontDisableSmall", RIGHT_X, y - 4, 340, "P4 已接入确认可打断读条的自动尝试：仍沿用现有动作条/宏键位和 TEAP→TEK 门禁；控制与群控仍只提示。")
+    createText(pane, "GameFontDisableSmall", RIGHT_X, y - 4, 340, "P5.8 自动打断已暂停：UnitCastingInfo / UnitChannelInfo 与事件证据仅用于只读打断提示、高亮和诊断；控制与群控仍只提示。")
     y = y - 76
 
     y = createSection(pane, "P2 · 打断动作条与宏识别", y)
     createText(pane, "GameFontDisableSmall", 14, y, 720,
-        "复用爆发模块的 ActionBarBindingResolver 与 MacroSemantics：读取当前可见暴雪默认动作条和已有宏，不改宏、不写按键。明确 @focus / @mouseover 路由会单独登记；同技能目标切换宏会保留宏自身目标逻辑，并标为后续自动可按。")
+        "复用爆发模块的 ActionBarBindingResolver 与 MacroSemantics：读取当前可见暴雪默认动作条和已有宏，不改宏、不写按键。明确 @focus / @mouseover 路由会单独登记；含 /targetenemy 等目标管理命令的同技能宏仅允许按键前可归属的焦点分支，当前目标不自动使用其后续分支。")
     createActionButton(pane, "重扫按键 / 宏", 14, y - 36, 144, function() ControlPanel:RefreshActionBar("reaction_p2_interrupt") end)
     local _, bindingValue = createReadout(pane, "interruptBindingState", "当前打断映射", 14, y - 76, 720, "GameFontHighlightSmall")
     bindingValue:SetHeight(118)
     y = y - 220
 
-    y = createSection(pane, "自动打断（P4）", y)
-    createCheckbox(pane, "启用自动打断", 14, y, function() return reaction.interrupt.enabled == true end, function(value)
-        reaction.interrupt.enabled = value == true
-    end, "开启后，仅在战斗内、TE 运行中，且当前读条获得直接 API、单位施法事件或连续两次“真实无盾/原生可打断”确认，并已解析为安全动作条/宏路由时，自动按一次现有打断键位。施法条的 showShield 配置位不参与判定；可见盾、未验证读条、无映射均只高亮。")
+    y = createSection(pane, "自动打断（已暂停）", y)
+    local pausedToggle = createCheckbox(pane, "自动打断（当前不可用）", 14, y, function() return false end, function() end,
+        "该模块的自动派发设计已暂停。此开关保留可见，但不可选择；无论旧 SavedVariables 为何，运行时都不会创建自动打断候选、TEAP token 或 TEK 请求。")
+    pausedToggle:SetChecked(false)
+    pausedToggle:Disable()
+    if pausedToggle.label then pausedToggle.label:SetTextColor(0.50, 0.50, 0.50) end
     createText(pane, "GameFontDisableSmall", RIGHT_X, y - 4, 340,
-        "冲突策略：Burst 计划或前窗口捕获尚未结束时，自动打断不派发，仅保留高亮；Burst 结束后才允许下一段确认读条自动尝试。")
+        "打断提示与 HUD 手动点击仍可用：HUD 只复用已有可靠动作条按钮/已识别宏，不会自动按键。")
+    y = y - 42
+    createText(pane, "GameFontDisableSmall", 14, y - 4, 720,
+        "暂停边界：自动打断不扫描目标优先级、不生成 reaction candidate、不占主键、不写 TEAP/TEK 自动打断派发。当前 UnitCastingInfo / UnitChannelInfo 和事件证据仅继续服务于只读提示、高亮与诊断。")
     y = y - 52
-    y = createReactionTargetPriorityEditor(pane, "自动打断目标顺序", "勾选决定未来候选目标来源；上移、下移决定未来扫描顺序。默认仅启用当前目标，焦点和鼠标指向需由你显式勾选。", y, function()
-        return ensureAutoReactionSettings(select(1, ensureTactics())).interrupt
-    end)
-    y = y - 22
     createReadout(pane, "interruptState", "当前打断 / 控制监控", 14, y, 720, "GameFontHighlightSmall")
 end
 
@@ -2269,7 +2296,7 @@ local function buildInterrupt(pane)
         ControlPanel:SetInterruptSubpage("style")
     end)
     createText(pane, "GameFontDisableSmall", 430, tabY - 4, 278,
-        "三页分别管理自动打断、控制预设与共享 HUD 样式；P4 仅自动打断，控制与群控仍保留提示。")
+        "三页分别管理打断提示与已暂停自动打断状态、控制预设和共享 HUD 样式；控制与群控仍保留提示。")
     createLine(pane, 14, -46, 692)
 
     local interruptPane = CreateFrame("Frame", nil, pane)

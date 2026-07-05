@@ -1,0 +1,31 @@
+# Tactic Echo 1.0.49 P5.4 直接覆盖补丁清单
+
+## 版本
+
+- 版本：`1.0.49 P5.4`
+- 主题：P4.3 当前动作栏代表 SpellID 路由恢复、钢条稳定窗口、打断自身 CD 门控。
+- TEK：未修改；不需要重建 `TEK.exe`。
+
+## 覆盖内容
+
+- AddOn：
+  - `addon/!TacticEcho/Actions/ActionBarBindingResolver.lua`
+  - `addon/!TacticEcho/Tactics/ReactionBindings.lua`
+  - `addon/!TacticEcho/Tactics/AutoReaction.lua`
+  - `addon/!TacticEcho/Core/Bootstrap.lua`
+  - `addon/!TacticEcho/!TacticEcho.toc`
+- 根目录：
+  - `VERSION`、`AGENTS.md`、`docs/baselines/BASELINE_1.0.49.md`、`CHANGELOG.md`、`DECISIONS.md`、`HANDOFF.md`、`PROJECT_CONTEXT.md`、`README.md`、`TASKS.md`、`PATCH_MANIFEST_1.0.49.md`
+- 文档与测试：
+  - `docs/P5.4_P43_TRANSPORT_AND_SAFETY_TEST.md`
+  - `tests/unit/test_reaction_p54_p43_route_reanchor.py`
+
+## 安装
+
+1. 覆盖项目根目录。
+2. 覆盖 WoW 实际加载目录的 `Interface/AddOns/!TacticEcho`。
+3. 重启 TEK，游戏内执行 `/reload` 与 `/tecache refresh`。
+
+## 不包含
+
+- `TEK.exe`、构建产物、缓存、诊断日志、SavedVariables、宏正文、历史补丁包。

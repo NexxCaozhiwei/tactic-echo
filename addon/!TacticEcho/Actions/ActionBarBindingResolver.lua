@@ -229,6 +229,23 @@ local function getSpellName(spellID)
     return nil
 end
 
+local function getItemName(itemID)
+    itemID = tonumber(itemID)
+    if not itemID or itemID <= 0 then return nil end
+    if C_Item and type(C_Item.GetItemInfo) == "function" then
+        local ok, info = pcall(C_Item.GetItemInfo, itemID)
+        if ok and type(info) == "table" then
+            local name = info.itemName or info.name
+            if type(name) == "string" and name ~= "" then return name end
+        end
+    end
+    if type(GetItemInfo) == "function" then
+        local ok, name = pcall(GetItemInfo, itemID)
+        if ok and type(name) == "string" and name ~= "" then return name end
+    end
+    return nil
+end
+
 local function normalizeSpellID(value)
     if type(value) == "number" then return value end
     if type(value) == "string" then return tonumber(value) end
@@ -427,14 +444,17 @@ local function directMacroIndexResolution(actionInfoID, actionText, layout, diag
         diag.failureReason = "macro_body_unavailable_action_info_id"
         return nil
     end
-    -- If the action button exposes its macro label, a direct numeric macro
-    -- index must agree with it. This prevents a low SpellID that happens to
-    -- equal a populated macro index from being accepted as the wrong macro.
+    -- A valid current macro index is already the exact identity of the visible
+    -- action-bar macro.  `GetActionText()` may legitimately display the
+    -- represented spell (for example through #showtooltip) rather than the
+    -- player-assigned macro name, so a label difference is diagnostic only.
+    -- Do not scan or substitute another macro index; the same-index body is
+    -- the only body that may be accepted in this branch.
     if type(actionText) == "string" and actionText ~= ""
         and type(snapshot.macroName) == "string" and snapshot.macroName ~= actionText then
-        diag.directIndexNameMismatch = true
-        diag.failureReason = "macro_action_info_index_name_mismatch"
-        return nil
+        diag.directIndexActionTextDiffers = true
+        diag.directIndexActionText = actionText
+        diag.directIndexMacroName = snapshot.macroName
     end
     local spellInfo = readMacroSpellInfo(macroIndex)
     return setResolvedMacro(
@@ -444,6 +464,26 @@ local function directMacroIndexResolution(actionInfoID, actionText, layout, diag
         snapshot.readAttempts > 1 and "action_info_macro_index_retry" or "action_info_macro_index",
         "action_info_macro_index"
     )
+end
+
+-- A represented SpellID can be a valid opaque macro-action handle in Retail.
+-- It is never treated as a macro-list index when outside the current index
+-- layout. In that shape Retail can expose an opaque action-info handle that
+-- returns a macro label. Read that handle once and retain only its name as a
+-- semantic join key; never use its icon/body and never treat it as a macro-list
+-- entry. Final recovery still requires one real current macro index with a
+-- parsed body that references the represented spell.
+local function readOpaqueActionInfoHandleName(actionInfoID, diag)
+    if type(diag) ~= "table" or diag.actionInfoLooksLikeMacroIndex == true then return end
+    local handle = normalizeMacroIndex(actionInfoID)
+    if not handle or type(GetMacroInfo) ~= "function" then return end
+    local ok, macroName = safeCall(GetMacroInfo, handle)
+    diag.actionInfoLabelProbeAttempted = true
+    diag.actionInfoLabelProbeSuccess = ok == true
+    if type(macroName) == "string" and macroName ~= "" then
+        diag.getMacroInfoByActionInfoIdName = diag.getMacroInfoByActionInfoIdName or macroName
+        diag.actionInfoLabelProbeName = macroName
+    end
 end
 
 local function actionSpellIdentity(actionInfoID, actionMacroSpellID, actionInfoLooksLikeMacroIndex)
@@ -459,13 +499,15 @@ local function actionSpellIdentity(actionInfoID, actionMacroSpellID, actionInfoL
     return nil, nil
 end
 
-local function semanticMacroResolution(actionText, representedSpellID, layout, diag)
+local function semanticMacroResolution(labelCandidates, representedSpellID, layout, diag)
     diag.lookupByActionText = false
     diag.lookupByActionInfoName = false
     diag.actionTextCandidateCount = 0
+    diag.actionInfoNameCandidateCount = 0
+    diag.displaySpellSemanticCandidateCount = 0
     diag.semanticCandidateCount = 0
     diag.semanticRejectedCount = 0
-    if type(actionText) ~= "string" or actionText == "" then
+    if type(labelCandidates) ~= "table" or #labelCandidates == 0 then
         diag.failureReason = diag.failureReason or "macro_action_text_missing"
         return nil
     end
@@ -478,62 +520,130 @@ local function semanticMacroResolution(actionText, representedSpellID, layout, d
         return nil
     end
 
+    -- Labels remain the primary, read-only identity join.  A current action
+    -- bar may instead display the represented spell name while the macro keeps
+    -- a different player-assigned name.  That display shape is permitted only
+    -- as a *secondary* bounded recovery: no macro-name label may have matched,
+    -- and exactly one current macro body must reference the represented spell.
+    -- This never falls back to a same-spell button or selects a macro by name.
+    local labels, labelSources = {}, {}
+    local actionText = nil
+    for _, item in ipairs(labelCandidates) do
+        local name = type(item) == "table" and item.name or nil
+        local source = type(item) == "table" and item.source or nil
+        if source == "action_text" and actionText == nil then actionText = name end
+        if type(name) == "string" and name ~= "" and not labels[name] then
+            labels[name] = true
+            labelSources[name] = source
+        end
+    end
+    if not next(labels) then
+        diag.failureReason = diag.failureReason or "macro_action_text_missing"
+        return nil
+    end
+
     local expectedName = getSpellName(representedSpellID)
-    local matches = {}
+    local actionTextIsRepresentedSpell = type(actionText) == "string" and actionText ~= ""
+        and type(expectedName) == "string" and expectedName ~= ""
+        and (trim(actionText) == trim(expectedName) or trim(actionText):lower() == trim(expectedName):lower())
+    diag.actionTextMatchesRepresentedSpell = actionTextIsRepresentedSpell == true
+
+    local namedMatchesByIndex, namedMatchingIndexes = {}, {}
+    local displayMatchesByIndex, displayMatchingIndexes = {}, {}
     for _, macroIndex in ipairs(macroIndexList(layout)) do
         local snapshot = readMacroInfoWithRetries(macroIndex)
-        if hasMacroBody(snapshot.body) and snapshot.macroName == actionText then
-            diag.actionTextCandidateCount = diag.actionTextCandidateCount + 1
+        if hasMacroBody(snapshot.body) then
+            local labelSource = labels[snapshot.macroName] and labelSources[snapshot.macroName] or nil
             local spellInfo = readMacroSpellInfo(macroIndex)
             local spellMatches = tonumber(spellInfo.spellID) == tonumber(representedSpellID)
-            local bodyMatches = false
-            if not spellMatches then
-                bodyMatches = macroBodyReferencesSpell(snapshot.body, expectedName, representedSpellID)
-            else
-                -- Retain parsed semantic proof even when GetMacroSpell exposes
-                -- the represented spell, so a wrong same-name macro cannot
-                -- become eligible solely because of a stale display spell.
-                bodyMatches = macroBodyReferencesSpell(snapshot.body, expectedName, representedSpellID)
+            -- P5.5/P5.6 identity rule: represented SpellID and GetMacroSpell
+            -- may corroborate a result, but the recovered current macro body
+            -- must itself reference the requested spell.
+            local bodyMatches = macroBodyReferencesSpell(snapshot.body, expectedName, representedSpellID)
+
+            if labelSource then
+                if labelSource == "action_text" then
+                    diag.actionTextCandidateCount = diag.actionTextCandidateCount + 1
+                elseif labelSource == "action_info_macro_name" then
+                    diag.actionInfoNameCandidateCount = diag.actionInfoNameCandidateCount + 1
+                end
+                if bodyMatches then
+                    namedMatchesByIndex[macroIndex] = {
+                        snapshot = snapshot,
+                        spellInfo = spellInfo,
+                        spellMatches = spellMatches,
+                        bodyMatches = true,
+                        labelSource = labelSource,
+                    }
+                    namedMatchingIndexes[#namedMatchingIndexes + 1] = macroIndex
+                else
+                    diag.semanticRejectedCount = diag.semanticRejectedCount + 1
+                end
             end
-            if spellMatches or bodyMatches then
-                diag.semanticCandidateCount = diag.semanticCandidateCount + 1
-                matches[#matches + 1] = {
+
+            -- Only collect broad display-semantic candidates when the visible
+            -- action text is exactly the represented spell name.  They are used
+            -- only when there was no exact macro-name candidate at all.
+            if actionTextIsRepresentedSpell and bodyMatches then
+                displayMatchesByIndex[macroIndex] = {
                     snapshot = snapshot,
                     spellInfo = spellInfo,
                     spellMatches = spellMatches,
-                    bodyMatches = bodyMatches == true,
+                    bodyMatches = true,
+                    labelSource = "action_text_represented_spell",
                 }
-            else
-                diag.semanticRejectedCount = diag.semanticRejectedCount + 1
+                displayMatchingIndexes[#displayMatchingIndexes + 1] = macroIndex
             end
         end
     end
 
-    if #matches == 1 then
-        local candidate = matches[1]
-        diag.lookupByActionText = true
-        diag.actionTextSemanticMatch = candidate.spellMatches and candidate.bodyMatches and "macro_spell_and_body"
-            or (candidate.spellMatches and "macro_spell" or "macro_body")
-        return setResolvedMacro(
-            diag,
-            candidate.snapshot,
-            candidate.spellInfo,
-            "action_text_unique_spell_semantic",
-            "action_text_unique_spell_semantic"
-        )
+    local anyNamedCandidate = (diag.actionTextCandidateCount + diag.actionInfoNameCandidateCount) > 0
+    local matchingIndexes, matchesByIndex, sourceMode
+    if anyNamedCandidate then
+        matchingIndexes, matchesByIndex, sourceMode = namedMatchingIndexes, namedMatchesByIndex, "named"
+    else
+        matchingIndexes, matchesByIndex, sourceMode = displayMatchingIndexes, displayMatchesByIndex, "display_spell"
+        diag.displaySpellSemanticCandidateCount = #displayMatchingIndexes
+    end
+    diag.semanticCandidateCount = #matchingIndexes
+
+    if #matchingIndexes == 1 then
+        local candidate = matchesByIndex[matchingIndexes[1]]
+        local source = candidate.labelSource
+        diag.lookupByActionText = source == "action_text" or source == "action_text_represented_spell"
+        diag.lookupByActionInfoName = source == "action_info_macro_name"
+        diag.semanticNameSource = source
+        -- The displayed spell name is an identity *condition*, not the macro
+        -- name. Preserve both values in transient diagnostics for audit.
+        diag.semanticLookupName = source == "action_text_represented_spell" and actionText or candidate.snapshot.macroName
+        diag.semanticResolvedMacroName = candidate.snapshot.macroName
+        diag.actionTextSemanticMatch = candidate.spellMatches and "macro_spell_and_body" or "macro_body"
+        local lookupSource
+        if source == "action_info_macro_name" then
+            lookupSource = "action_info_name_unique_spell_semantic"
+        elseif source == "action_text_represented_spell" then
+            lookupSource = "action_text_represented_spell_unique_semantic"
+        else
+            lookupSource = "action_text_unique_spell_semantic"
+        end
+        return setResolvedMacro(diag, candidate.snapshot, candidate.spellInfo, lookupSource, lookupSource)
+    end
+
+    if #matchingIndexes > 1 then
+        diag.semanticCandidateIndexes = matchingIndexes
+        if sourceMode == "display_spell" then diag.displaySpellSemanticCandidateIndexes = matchingIndexes end
+        diag.failureReason = "macro_semantic_identity_ambiguous"
+        return nil
     end
 
     diag.lookupByActionText = diag.actionTextCandidateCount > 0
-    if #matches > 1 then
-        diag.semanticCandidateIndexes = {}
-        for _, candidate in ipairs(matches) do
-            diag.semanticCandidateIndexes[#diag.semanticCandidateIndexes + 1] = candidate.snapshot.macroIndex
-        end
-        diag.failureReason = "macro_semantic_identity_ambiguous"
+    diag.lookupByActionInfoName = diag.actionInfoNameCandidateCount > 0
+    if anyNamedCandidate then
+        diag.failureReason = "macro_semantic_identity_no_spell_match"
+    elseif actionTextIsRepresentedSpell then
+        diag.failureReason = "macro_display_spell_semantic_not_found"
     else
-        diag.failureReason = diag.actionTextCandidateCount > 0
-            and "macro_semantic_identity_no_spell_match"
-            or "macro_action_text_name_not_found"
+        diag.failureReason = "macro_action_text_name_not_found"
     end
     return nil
 end
@@ -560,6 +670,11 @@ local function resolveMacroFromActionSlot(actionSlot, actionInfoID, actionMacroS
 
     local direct = directMacroIndexResolution(actionInfoID, diag.actionText, layout, diag)
     if direct then return diag end
+    -- A value inside the current macro index layout is an identity claim for
+    -- that exact macro only. Do not fall back to any other account/character
+    -- macro name after the bounded same-index reads fail.
+    if diag.actionInfoLooksLikeMacroIndex == true then return diag end
+    readOpaqueActionInfoHandleName(actionInfoID, diag)
 
     local representedSpellID, representedSource = actionSpellIdentity(
         actionInfoID,
@@ -568,7 +683,30 @@ local function resolveMacroFromActionSlot(actionSlot, actionInfoID, actionMacroS
     )
     diag.representedSpellID = representedSpellID
     diag.representedSpellSource = representedSource
-    local semantic = semanticMacroResolution(diag.actionText, representedSpellID, layout, diag)
+    -- Keep both permitted read-only labels when Retail exposes them. They are
+    -- evaluated as one bounded identity join so a current action-text display
+    -- name cannot hide the opaque-handle macro label, and two distinct surviving
+    -- macros fail closed instead of selecting the first label that happened to
+    -- match.
+    local semanticLabels = {}
+    if type(diag.actionText) == "string" and diag.actionText ~= "" then
+        semanticLabels[#semanticLabels + 1] = { name = diag.actionText, source = "action_text" }
+    end
+    if type(diag.getMacroInfoByActionInfoIdName) == "string"
+        and diag.getMacroInfoByActionInfoIdName ~= "" then
+        semanticLabels[#semanticLabels + 1] = {
+            name = diag.getMacroInfoByActionInfoIdName,
+            source = "action_info_macro_name",
+        }
+    end
+    diag.semanticLookupNames = {}
+    for _, label in ipairs(semanticLabels) do
+        diag.semanticLookupNames[#diag.semanticLookupNames + 1] = {
+            name = label.name,
+            source = label.source,
+        }
+    end
+    local semantic = semanticMacroResolution(semanticLabels, representedSpellID, layout, diag)
     if semantic then return diag end
 
     return diag
@@ -724,7 +862,25 @@ local function buildMacroEntry(base, actionInfoID, subType, actionMacroSpellID)
         and TE.MacroSemantics:Summary(base.macroSemantics) or nil
     base.macroSpellID = actionMacroSpellID
     base.macroResolvedSpellID = normalizeSpellID(diag.getMacroSpellByResolvedIndex)
+    -- Retail can expose a macro action as the spell it represents even when
+    -- the macro body/index cannot be recovered from this client state. Keep
+    -- that evidence distinct from GetMacroSpell(actionInfoId): it is a direct
+    -- read of the visible player-authored action button, not a guessed macro
+    -- name or a semantic reconstruction.
     base.macroActionInfoSpellID = normalizeSpellID(diag.getMacroSpellByActionInfoId)
+    base.macroRepresentedSpellID = normalizeSpellID(diag.representedSpellID)
+    base.macroRepresentedSpellSource = diag.representedSpellSource
+    -- The P5.4 transport fallback is only for a body/index opacity gap on the
+    -- actual visible button. If semantic recovery observed multiple same-name,
+    -- same-spell macro bodies, identity is genuinely ambiguous and must retain
+    -- P5's fail-closed result rather than bypassing it through represented-ID.
+    base.macroOpaqueRepresentedSpell = base.macroRepresentedSpellID ~= nil
+        and (type(base.macroBody) ~= "string" or base.macroBody == "")
+        and (
+            diag.failureReason == "macro_body_unavailable_action_info_id"
+            or diag.failureReason == "macro_action_text_missing"
+            or diag.failureReason == "macro_action_text_name_not_found"
+        )
     return base
 end
 
@@ -914,6 +1070,12 @@ function Resolver:Invalidate(reason)
     self.cacheDirty = true
     self.lastReason = reason or "invalidated"
     self.lastScanReason = reason or "invalidated"
+    -- P5.8 HUD click proxies are static secure frames. Mark their mapping dirty
+    -- rather than letting a later HUD click use an action-bar source from an
+    -- earlier page/macro state. HudClickRouter will reconfigure only OOC.
+    if TE.HudClickRouter and type(TE.HudClickRouter.InvalidateMappings) == "function" then
+        TE.HudClickRouter:InvalidateMappings(self.lastReason)
+    end
 end
 
 function Resolver:Rebuild(reason)
@@ -998,19 +1160,157 @@ function Resolver:GetButtonCache()
     return self:EnsureCache("get_cache")
 end
 
+-- P5.5/P5.6 policy: representative action-info spell evidence is not a
+-- general macro identity. It can remain only as the narrow P4 target-transport
+-- compatibility shape when a visible macro body/index is genuinely opaque.
+local function opaqueActionInfoCompatibilityEligible(entry)
+    entry = type(entry) == "table" and entry or {}
+    if entry.source ~= "macro" then return false end
+    local diagnostic = type(entry.macroDiagnostic) == "table" and entry.macroDiagnostic or {}
+    if diagnostic.macroIdentityVerified == true then return false end
+    if entry.macroOpaqueRepresentedSpell ~= true then return false end
+    local failure = diagnostic.failureReason
+    return failure == "macro_body_unavailable_action_info_id"
+        or failure == "macro_action_text_missing"
+        or failure == "macro_action_text_name_not_found"
+end
+
 local function macroCandidateMatches(entry, spellID, spellName)
-    if macroSpellMatches(entry.macroSpellID, spellID, spellName) then
-        return true, "action_info_macro_spell"
+    entry = type(entry) == "table" and entry or {}
+    local diagnostic = type(entry.macroDiagnostic) == "table" and entry.macroDiagnostic or {}
+    -- A real numeric macro index or a unique semantic recovery must prove the
+    -- requested spell from its parsed body. GetMacroSpell may corroborate that
+    -- proof in diagnostics but cannot by itself bind a control/HUD source.
+    if diagnostic.macroIdentityVerified == true then
+        local matched, association = macroBodyReferencesSpell(entry.macroBody, spellName, spellID, entry.macroSemantics)
+        if matched then return true, association or "macro_body_broad_reference" end
+        return false, association or "macro_semantic_identity_no_spell_match"
     end
-    if macroSpellMatches(entry.macroResolvedSpellID, spellID, spellName) then
-        return true, "GetMacroSpell"
+
+    -- The sole non-body path is P4 reaction target transport. The reaction
+    -- layer separately requires a real BindingToken and never uses this for
+    -- focus/mouseover/cursor inference, HUD manual sources, or AutoBurst.
+    if opaqueActionInfoCompatibilityEligible(entry) then
+        if macroSpellMatches(entry.macroSpellID, spellID, spellName) then
+            return true, "action_info_macro_spell"
+        end
+        if macroSpellMatches(entry.macroActionInfoSpellID, spellID, spellName) then
+            return true, "GetMacroSpell(actionInfoId)"
+        end
+        if macroSpellMatches(entry.macroRepresentedSpellID, spellID, spellName) then
+            return true, "action_info_represented_spell"
+        end
     end
-    if macroSpellMatches(entry.macroActionInfoSpellID, spellID, spellName) then
-        return true, "GetMacroSpell(actionInfoId)"
+    return false, diagnostic.failureReason or "macro_body_unavailable"
+end
+
+-- All macro-consuming layers share this compact eligibility check.  A macro
+-- becomes a normal current-action-bar source only after the resolver has
+-- established the current visible macro identity and parsed a body association.
+-- `action_info_*` compatibility is deliberately excluded: it remains an
+-- isolated P4 target-transport exception, not a general macro source.
+local function bodyVerifiedMacroAssociation(association)
+    if association == nil or association == "" then return true end
+    association = tostring(association)
+    return association:find("macro_body_", 1, true) == 1
+        or association:find("macro_item_", 1, true) == 1
+        or association:find("macro_inventory_", 1, true) == 1
+end
+
+function Resolver:IsVerifiedCurrentMacroSource(value, association)
+    value = type(value) == "table" and value or {}
+    if value.source ~= "macro" then return true, nil end
+    local diagnostic = type(value.macroDiagnostic) == "table" and value.macroDiagnostic or {}
+    if diagnostic.macroIdentityVerified ~= true then
+        return false, "macro_identity_unverified"
     end
-    local matched, association = macroBodyReferencesSpell(entry.macroBody, spellName, spellID, entry.macroSemantics)
-    if matched then return true, association or "macro_body_broad_reference" end
-    return false, association
+    if value.macroOpaqueRepresentedSpell == true then
+        return false, "macro_action_info_opaque_compat"
+    end
+    if type(value.macroSemantics) ~= "table" then
+        return false, "macro_semantics_unavailable"
+    end
+    local resolvedAssociation = association
+    if resolvedAssociation == nil then resolvedAssociation = value.macroAssociation end
+    if bodyVerifiedMacroAssociation(resolvedAssociation) ~= true then
+        return false, "macro_association_not_body_verified"
+    end
+    return true, nil
+end
+
+function Resolver:IsAutoBurstMacroEligible(value)
+    value = type(value) == "table" and value or {}
+    if value.source ~= "macro" then return true, nil end
+    local verified, reason = self:IsVerifiedCurrentMacroSource(value, value.macroAssociation)
+    if verified ~= true then return false, reason end
+    local association = tostring(value.macroAssociation or "")
+    if association:find("macro_body_", 1, true) ~= 1
+        and association:find("macro_inventory_", 1, true) ~= 1 then
+        return false, "macro_burst_association_unverified"
+    end
+    if value.macroAutoBurstEligible ~= true then
+        return false, "macro_burst_semantics_uneligible"
+    end
+    return true, nil
+end
+
+
+-- Diagnostics are request-scoped.  An unrelated visible macro is not evidence
+-- for a requested control spell and must never be rendered as that spell's
+-- "unmatched candidate".  Keep only failures whose current action-info or
+-- bounded macro evidence explicitly names the requested spell.
+local function macroDiagnosticRelatesToRequestedSpell(entry, spellID, spellName)
+    entry = type(entry) == "table" and entry or {}
+    if entry.source ~= "macro" then return false end
+    local requested = tonumber(spellID)
+    if not requested or requested <= 0 then return false end
+    local diagnostic = type(entry.macroDiagnostic) == "table" and entry.macroDiagnostic or {}
+    -- Do not put optional values in an ipairs list: Lua stops at the first
+    -- nil and would silently hide a later represented SpellID diagnostic.
+    local function matches(value) return tonumber(value) == requested end
+    if matches(entry.macroSpellID)
+        or matches(entry.macroActionInfoSpellID)
+        or matches(entry.macroResolvedSpellID)
+        or matches(entry.macroRepresentedSpellID)
+        or matches(diagnostic.actionMacroSpellID)
+        or matches(diagnostic.getMacroSpellByResolvedIndexSpellID)
+        or matches(diagnostic.representedSpellID) then
+        return true
+    end
+
+    -- A valid numeric action-info macro index already identifies *this* visible
+    -- button, even when GetMacroInfo(index) temporarily has no body.  Preserve
+    -- a request-scoped diagnostic only when the current button's action text
+    -- visibly names the requested spell.  This is diagnostic evidence only:
+    -- it never restores a body, never binds a macro, and never scans another
+    -- macro index.  It prevents a genuine CTRL+1 trap failure from being hidden
+    -- while still excluding unrelated buttons such as a BUTTON3 mount macro.
+    if diagnostic.actionInfoLooksLikeMacroIndex == true
+        and type(spellName) == "string" and spellName ~= ""
+        and type(diagnostic.actionText) == "string" and diagnostic.actionText ~= "" then
+        local actionText = trim(diagnostic.actionText):lower()
+        local requestedName = trim(spellName):lower()
+        if requestedName ~= "" and actionText:find(requestedName, 1, true) then
+            return true
+        end
+    end
+    return false
+end
+
+local function macroItemCandidateMatches(entry, itemID, itemName)
+    if not (entry and entry.source == "macro" and TE.MacroSemantics
+        and type(TE.MacroSemantics.MatchItem) == "function") then
+        return false, "macro_item_semantics_unavailable"
+    end
+    local verified, identityReason = Resolver:IsVerifiedCurrentMacroSource(entry)
+    if verified ~= true then return false, identityReason or "macro_identity_unverified" end
+    local semantics = type(entry.macroSemantics) == "table" and entry.macroSemantics
+        or (type(entry.macroBody) == "string" and type(TE.MacroSemantics.Analyze) == "function"
+            and TE.MacroSemantics:Analyze(entry.macroBody) or nil)
+    if not semantics then return false, "macro_body_unavailable" end
+    -- Match only an exact existing macro body/ItemID/name association. Do not
+    -- treat macro labels, icons or a macro-list entry as an action-bar source.
+    return TE.MacroSemantics:MatchItem(semantics, itemID, itemName, "broad")
 end
 
 local function appendUnique(list, seen, value)
@@ -1075,14 +1375,21 @@ local function makeCandidate(entry, spellID, association, matchedSpellID, matchK
     local isMacro = entry.source == "macro"
     local semantics = entry.macroSemantics
     local macroAssociation = isMacro and association or nil
-    local macroAssociationFromAPI = macroAssociation == "action_info_macro_spell"
-        or macroAssociation == "GetMacroSpell"
-        or macroAssociation == "GetMacroSpell(actionInfoId)"
-    local macroAutoBurstEligible = not isMacro or (
-        macroAssociation ~= nil and (
-            macroAssociationFromAPI == true or (semantics and semantics.autoBurstEligible == true)
-        )
-    )
+    -- Keep candidate metadata and AutoBurst on the same canonical macro
+    -- contract.  Do not reproduce a looser action-info-only test here: the
+    -- resolver helper excludes the P4 opaque target-transport exception.
+    local macroAutoBurstEligible = true
+    if isMacro then
+        local eligibilityValue = {
+            source = "macro",
+            macroDiagnostic = entry.macroDiagnostic,
+            macroOpaqueRepresentedSpell = entry.macroOpaqueRepresentedSpell == true,
+            macroSemantics = semantics,
+            macroAssociation = macroAssociation,
+            macroAutoBurstEligible = semantics and semantics.autoBurstEligible == true,
+        }
+        macroAutoBurstEligible = Resolver:IsAutoBurstMacroEligible(eligibilityValue) == true
+    end
     local actionBarStateTrusted = entry.actionSlot ~= nil and (
         not isMacro or macroAutoBurstEligible == true
     )
@@ -1112,6 +1419,11 @@ local function makeCandidate(entry, spellID, association, matchedSpellID, matchK
         macroAutoBurstEligible = macroAutoBurstEligible == true,
         macroDiagnostic = entry.macroDiagnostic,
         macroSemantics = semantics,
+        macroRepresentedSpellID = entry.macroRepresentedSpellID,
+        macroRepresentedSpellSource = entry.macroRepresentedSpellSource,
+        macroOpaqueRepresentedSpell = isMacro
+            and association == "action_info_represented_spell"
+            and entry.macroOpaqueRepresentedSpell == true,
         matchedSpellName = getSpellName(matchedSpellID or spellID),
         matchedSpellID = matchedSpellID or spellID,
     }
@@ -1197,7 +1509,7 @@ function Resolver:ResolveSpell(spellID)
     local macroDiagnostics = {}
     for _, entry in ipairs(cache.macroEntries or {}) do
         local matches, macroReason = macroCandidateMatches(entry, spellID, spellName)
-        if not matches then
+        if not matches and macroDiagnosticRelatesToRequestedSpell(entry, spellID, spellName) then
             local diag = entry.macroDiagnostic or {}
             macroDiagnostics[#macroDiagnostics + 1] = {
                 slot = entry.actionSlot,
@@ -1214,8 +1526,9 @@ function Resolver:ResolveSpell(spellID)
                 macroIdentityVerified = diag.macroIdentityVerified == true,
                 actionInfoMacroIndex = diag.actionInfoMacroIndex,
                 actionInfoLooksLikeMacroIndex = diag.actionInfoLooksLikeMacroIndex == true,
-                representedSpellID = diag.representedSpellID,
-                representedSpellSource = diag.representedSpellSource,
+                representedSpellID = diag.representedSpellID or entry.macroRepresentedSpellID,
+                representedSpellSource = diag.representedSpellSource or entry.macroRepresentedSpellSource,
+                opaqueRepresentedSpell = entry.macroOpaqueRepresentedSpell == true,
                 actionTextCandidateCount = tonumber(diag.actionTextCandidateCount) or 0,
                 semanticCandidateCount = tonumber(diag.semanticCandidateCount) or 0,
                 semanticRejectedCount = tonumber(diag.semanticRejectedCount) or 0,
@@ -1301,8 +1614,49 @@ function Resolver:ResolveSpell(spellID)
     return result, result.reason
 end
 
--- Resolve a visible action-bar item by ItemID. It is intentionally a
--- read-only mapping for survival/consumable display; no input caller uses it.
+local function makeItemCandidate(entry, itemID, association)
+    local isMacro = entry.source == "macro"
+    local macroAssociated = false
+    if isMacro then
+        local verified = Resolver:IsVerifiedCurrentMacroSource(entry, association)
+        macroAssociated = verified == true and bodyVerifiedMacroAssociation(association) == true
+    end
+    return {
+        itemID = itemID,
+        slot = entry.actionSlot,
+        actionSlot = entry.actionSlot,
+        buttonName = entry.buttonName,
+        bar = entry.bar,
+        visualOrder = entry.visualOrder,
+        visualX = entry.visualX,
+        visualY = entry.visualY,
+        source = entry.source,
+        kind = entry.source,
+        directActionSlot = entry.source == "item" and entry.actionSlot ~= nil,
+        -- This says only that the current visible Blizzard button is a verified
+        -- semantic source for the requested item. It grants no automatic input
+        -- authority; survival remains advisory/manual-only.
+        actionBarStateTrusted = entry.actionSlot ~= nil and (not isMacro or macroAssociated),
+        bindingCommand = entry.bindingCommand,
+        rawBinding = entry.rawBinding,
+        bindingSourceIndex = entry.bindingSourceIndex,
+        parsed = entry.parsedBinding,
+        reason = entry.bindingError,
+        macroID = entry.macroID,
+        macroName = entry.macroName,
+        macroAssociation = isMacro and association or nil,
+        macroCommand = isMacro and association or nil,
+        macroDiagnostic = entry.macroDiagnostic,
+        macroSemantics = entry.macroSemantics,
+        matchKind = isMacro and (association or "macro_item") or "direct_item",
+    }
+end
+
+-- Resolve a visible action-bar item by ItemID. This remains a read-only mapping for survival/consumable display. Direct item buttons and existing `/use
+-- <ItemID|item:ID|localized name>` macros share the same current-visible-button
+-- identity policy as spell macros. This resolver does not create a BindingToken
+-- for an unbound macro and never creates a TEAP/TEK path; it exists for
+-- advisory display and physical HUD secure-click reuse.
 function Resolver:ResolveItem(itemID)
     itemID = tonumber(itemID)
     if not itemID or itemID <= 0 then
@@ -1312,7 +1666,7 @@ function Resolver:ResolveItem(itemID)
     if specialActionBar.active then
         return {
             itemID = itemID, status = "NoBinding", reason = specialActionBar.reason,
-            bindingToken = 0, candidates = {}, specialActionBar = specialActionBar,
+            bindingToken = 0, candidates = {}, macroDiagnostics = {}, specialActionBar = specialActionBar,
         }, specialActionBar.reason
     end
     self:EnsureCache("resolve_item")
@@ -1320,46 +1674,110 @@ function Resolver:ResolveItem(itemID)
     local cached = self.cache[cacheKey]
     if cached then
         cached.specialActionBar = specialActionBar
+        cached.bindingSettling = self:IsBindingSettling()
         return cached, cached.reason
     end
+
+    local cache = self.buttonCache
+    local itemName = getItemName(itemID)
     local candidates = {}
-    for _, entry in ipairs((self.buttonCache.byItem or {})[itemID] or {}) do
-        candidates[#candidates + 1] = {
-            itemID = itemID,
-            slot = entry.actionSlot, actionSlot = entry.actionSlot, buttonName = entry.buttonName,
-            bar = entry.bar, visualOrder = entry.visualOrder, source = "item",
-            bindingCommand = entry.bindingCommand, rawBinding = entry.rawBinding,
-            bindingSourceIndex = entry.bindingSourceIndex, parsed = entry.parsedBinding,
-            directActionSlot = entry.actionSlot ~= nil,
-            reason = entry.bindingError,
-        }
+    for _, entry in ipairs((cache.byItem or {})[itemID] or {}) do
+        candidates[#candidates + 1] = makeItemCandidate(entry, itemID, nil)
+    end
+
+    local macroSeen = {}
+    for _, entry in ipairs(cache.macroEntries or {}) do
+        local key = tostring(entry.buttonName) .. ":" .. tostring(entry.actionSlot)
+        if not macroSeen[key] then
+            local matches, association = macroItemCandidateMatches(entry, itemID, itemName)
+            if matches then
+                macroSeen[key] = true
+                candidates[#candidates + 1] = makeItemCandidate(entry, itemID, association)
+            end
+        end
     end
     candidates = dedupeCandidates(candidates)
     table.sort(candidates, candidateCompare)
+
+    local macroDiagnostics = {}
+    for _, entry in ipairs(cache.macroEntries or {}) do
+        local matches, macroReason = macroItemCandidateMatches(entry, itemID, itemName)
+        -- Do not render every unrelated visible macro as a failed item source.
+        -- Only an actual semantic ambiguity for this item would be actionable;
+        -- ordinary non-references and opaque identities remain silent.
+        if not matches and macroReason ~= "macro_item_not_referenced"
+            and macroReason ~= "macro_identity_unverified"
+            and macroReason ~= "macro_action_info_opaque_compat" then
+            local diag = type(entry.macroDiagnostic) == "table" and entry.macroDiagnostic or {}
+            macroDiagnostics[#macroDiagnostics + 1] = {
+                slot = entry.actionSlot,
+                buttonName = entry.buttonName,
+                bindingCommand = entry.bindingCommand,
+                rawBinding = entry.rawBinding,
+                macroName = entry.macroName,
+                resolvedMacroIndex = entry.macroID,
+                macroIdentitySource = diag.macroIdentitySource,
+                macroIdentityVerified = diag.macroIdentityVerified == true,
+                actionInfoMacroIndex = diag.actionInfoMacroIndex,
+                actionInfoIdReadAttempts = tonumber(diag.actionInfoIdReadAttempts) or 0,
+                identityFailureReason = diag.failureReason,
+                failureReason = macroReason or diag.failureReason or "macro_item_not_referenced",
+            }
+        end
+    end
+
     local selected = candidates[1]
     local result
     if not selected then
-        result = { itemID = itemID, status = "NoBinding", reason = "actionbar_item_not_found", bindingToken = 0,
-            candidates = candidates, cacheGeneration = self.buttonCache.generation, specialActionBar = specialActionBar }
+        local reason = "actionbar_item_not_found"
+        for _, diag in ipairs(macroDiagnostics) do
+            if diag.failureReason == "macro_body_unavailable" then
+                reason = "macro_body_unavailable"
+                break
+            end
+        end
+        result = {
+            itemID = itemID, status = "NoBinding", reason = reason, bindingToken = 0,
+            candidates = candidates, macroDiagnostics = macroDiagnostics,
+            cacheGeneration = cache.generation, cacheSummary = self:GetCacheSummary(), specialActionBar = specialActionBar,
+            directActionSlot = false, actionBarStateTrusted = false,
+        }
     elseif not selected.parsed then
-        result = { itemID = itemID, status = "NoBinding", reason = selected.reason or "binding_token_invalid", bindingToken = 0,
+        result = {
+            itemID = itemID, status = "NoBinding", reason = selected.reason or "binding_token_invalid", bindingToken = 0,
             slot = selected.slot, actionSlot = selected.actionSlot, buttonName = selected.buttonName,
-            source = selected.source, bindingCommand = selected.bindingCommand, rawBinding = selected.rawBinding,
-            bindingSourceIndex = selected.bindingSourceIndex, directActionSlot = selected.directActionSlot == true, candidates = candidates,
-            cacheGeneration = self.buttonCache.generation, specialActionBar = specialActionBar }
+            bar = selected.bar, source = selected.source, bindingCommand = selected.bindingCommand, rawBinding = selected.rawBinding,
+            bindingSourceIndex = selected.bindingSourceIndex, directActionSlot = selected.directActionSlot == true,
+            actionBarStateTrusted = selected.actionBarStateTrusted == true,
+            macroID = selected.macroID, macroName = selected.macroName, macroAssociation = selected.macroAssociation,
+            macroCommand = selected.macroCommand, macroDiagnostic = selected.macroDiagnostic,
+            macroSemantics = selected.macroSemantics, matchKind = selected.matchKind,
+            candidates = candidates, macroDiagnostics = macroDiagnostics,
+            cacheGeneration = cache.generation, cacheSummary = self:GetCacheSummary(), specialActionBar = specialActionBar,
+            bindingSettling = self:IsBindingSettling(),
+        }
     else
-        result = { itemID = itemID, status = "Ready", reason = nil,
+        result = {
+            itemID = itemID, status = "Ready", reason = nil,
             slot = selected.slot, actionSlot = selected.actionSlot, buttonName = selected.buttonName,
             bar = selected.bar, source = selected.source, bindingCommand = selected.bindingCommand,
             bindingSourceIndex = selected.bindingSourceIndex, binding = selected.parsed.binding,
             bindingToken = selected.parsed.token, inputType = selected.parsed.inputType,
-            key = selected.parsed.key, modifier = selected.parsed.modifier, directActionSlot = selected.directActionSlot == true, candidates = candidates,
-            cacheGeneration = self.buttonCache.generation, specialActionBar = specialActionBar }
+            key = selected.parsed.key, modifier = selected.parsed.modifier,
+            directActionSlot = selected.directActionSlot == true,
+            actionBarStateTrusted = selected.actionBarStateTrusted == true,
+            macroID = selected.macroID, macroName = selected.macroName, macroAssociation = selected.macroAssociation,
+            macroCommand = selected.macroCommand, macroDiagnostic = selected.macroDiagnostic,
+            macroSemantics = selected.macroSemantics, matchKind = selected.matchKind,
+            candidates = candidates, macroDiagnostics = macroDiagnostics,
+            cacheGeneration = cache.generation, cacheSummary = self:GetCacheSummary(), specialActionBar = specialActionBar,
+            bindingSettling = self:IsBindingSettling(),
+        }
     end
     self.cache[cacheKey] = result
+    self.lastReason = result.reason or "ready"
     return result, result.reason
 end
-
 
 -- Resolve one explicitly configured equipped trinket slot.  Direct item buttons
 -- and visible user macros such as `/use 13` are both accepted.  This resolver
@@ -1378,6 +1796,8 @@ local function inventoryMacroMatches(entry, slot)
         and type(TE.MacroSemantics.MatchInventorySlot) == "function") then
         return false, "macro_inventory_semantics_unavailable"
     end
+    local verified, identityReason = Resolver:IsVerifiedCurrentMacroSource(entry)
+    if verified ~= true then return false, identityReason or "macro_identity_unverified" end
     return TE.MacroSemantics:MatchInventorySlot(entry.macroSemantics, slot, "broad")
 end
 
@@ -1385,7 +1805,18 @@ local function makeInventoryCandidate(entry, slot, itemID, association)
     local parsed = entry.parsedBinding
     local isMacro = entry.source == "macro"
     local semantics = entry.macroSemantics
-    local macroEligible = not isMacro or (association ~= nil and semantics and semantics.autoBurstEligible == true)
+    local macroEligible = true
+    if isMacro then
+        local eligibilityValue = {
+            source = "macro",
+            macroDiagnostic = entry.macroDiagnostic,
+            macroOpaqueRepresentedSpell = entry.macroOpaqueRepresentedSpell == true,
+            macroSemantics = semantics,
+            macroAssociation = association,
+            macroAutoBurstEligible = semantics and semantics.autoBurstEligible == true,
+        }
+        macroEligible = Resolver:IsAutoBurstMacroEligible(eligibilityValue) == true
+    end
     return {
         itemID = itemID,
         expectedItemID = itemID,
@@ -1477,7 +1908,9 @@ function Resolver:ResolveInventorySlot(slot, expectedItemID)
     local macroDiagnostics = {}
     for _, entry in ipairs(cache.macroEntries or {}) do
         local matches, association = inventoryMacroMatches(entry, slot)
-        if not matches then
+        if not matches and association ~= "macro_inventory_slot_not_referenced"
+            and association ~= "macro_identity_unverified"
+            and association ~= "macro_action_info_opaque_compat" then
             macroDiagnostics[#macroDiagnostics + 1] = {
                 slot = entry.actionSlot,
                 buttonName = entry.buttonName,
@@ -1538,6 +1971,295 @@ function Resolver:ResolveInventorySlot(slot, expectedItemID)
     self.lastReason = result.reason or "ready"
     return result, result.reason
 end
+
+
+-- P5.8 manual HUD entry helpers. These are intentionally separate from the
+-- BindingToken dispatch resolvers: a player may click a visible action button
+-- even when it has no keyboard binding, while TEAP/TEK must still require a
+-- normalized BindingToken. The returned button is only ever consumed by the
+-- secure HUD proxy during a physical mouse click.
+local function manualButtonVisible(button)
+    if not button then return false end
+    if type(button.IsShown) == "function" and button:IsShown() ~= true then return false end
+    if type(button.IsVisible) == "function" and button:IsVisible() ~= true then return false end
+    return true
+end
+
+local function verifiedManualMacroResult(result)
+    if type(result) ~= "table" or result.source ~= "macro" then return true end
+    local verified = Resolver:IsVerifiedCurrentMacroSource(result, result.macroAssociation)
+    return verified == true
+end
+
+local function verifiedManualMacroEntry(entry)
+    if type(entry) ~= "table" or entry.source ~= "macro" then return true end
+    -- Cache entries have no final request association yet. Their exact spell or
+    -- item association is re-proven immediately before the secure proxy uses
+    -- them, so this check enforces current identity/semantics without guessing.
+    local verified = Resolver:IsVerifiedCurrentMacroSource(entry)
+    return verified == true
+end
+
+local function manualTargetFromResult(result, fallbackReason)
+    result = type(result) == "table" and result or {}
+    local special = type(result.specialActionBar) == "table" and result.specialActionBar or nil
+    if verifiedManualMacroResult(result) ~= true then
+        return { status = "Blocked", reason = "manual_macro_identity_unverified", resolverReason = result.reason or fallbackReason }
+    end
+    if special and special.active == true then
+        return { status = "Blocked", reason = "manual_actionbar_special_actionbar" }
+    end
+    local buttonName = type(result.buttonName) == "string" and result.buttonName or nil
+    if not buttonName then
+        return { status = "Blocked", reason = "manual_actionbar_source_missing", resolverReason = result.reason or fallbackReason }
+    end
+    local button = _G[buttonName]
+    if not button then
+        return { status = "Blocked", reason = "manual_actionbar_button_missing", buttonName = buttonName, resolverReason = result.reason or fallbackReason }
+    end
+    if not manualButtonVisible(button) then
+        return { status = "Blocked", reason = "manual_actionbar_button_hidden", buttonName = buttonName, resolverReason = result.reason or fallbackReason }
+    end
+    return {
+        status = "Ready",
+        button = button,
+        buttonName = buttonName,
+        actionSlot = tonumber(result.actionSlot or result.slot) or nil,
+        inventorySlot = tonumber(result.inventorySlot) or nil,
+        itemID = tonumber(result.itemID or result.expectedItemID) or nil,
+        spellID = tonumber(result.spellID or result.requestedSpellID) or nil,
+        source = result.source or result.kind or "actionbar",
+        macroID = result.macroID,
+        macroAssociation = result.macroAssociation,
+        resolverStatus = result.status,
+    }
+end
+
+function Resolver:ResolveManualSpell(spellID)
+    local result, reason = self:ResolveSpell(spellID)
+    return manualTargetFromResult(result, reason)
+end
+
+function Resolver:ResolveManualItem(itemID)
+    local result, reason = self:ResolveItem(itemID)
+    return manualTargetFromResult(result, reason)
+end
+
+function Resolver:ResolveManualInventorySlot(slot, expectedItemID)
+    local result, reason = self:ResolveInventorySlot(slot, expectedItemID)
+    return manualTargetFromResult(result, reason)
+end
+
+-- P5.10 exact HUD-source verification. A tactical card may already identify a
+-- concrete visible action-bar button (for example, a hunter `[@cursor]` Trap
+-- macro on CTRL+1).  Do not silently resolve that card to another copy of the
+-- same spell on a different slot: re-check the current button cache and either
+-- reuse that exact source or block until the normal out-of-combat HUD rebuild.
+-- This remains a physical HUD click proxy only; it never creates a token,
+-- changes a macro, evaluates a branch, or alters the player's target.
+local function preferredHudField(item, key)
+    item = type(item) == "table" and item or {}
+    local bindingInfo = type(item.bindingInfo) == "table" and item.bindingInfo or {}
+    local value = item[key]
+    if value == nil then value = bindingInfo[key] end
+    return value
+end
+
+local function preferredHudSource(item)
+    local bindingInfo = type(item) == "table" and type(item.bindingInfo) == "table" and item.bindingInfo or {}
+    return preferredHudField(item, "source") or (type(item) == "table" and item.bindingSource) or bindingInfo.source
+end
+
+-- A compact in-memory semantic identity for exact HUD source verification. It
+-- is derived from parsed commands/tokens/targets only: the macro text itself is
+-- never copied to card data or persisted. Any edit that changes a target mode,
+-- spell/item token, conditional branch count, or target mutation changes this
+-- signature and forces fail-closed remapping.
+local function macroSemanticIdentity(semantics)
+    if type(semantics) ~= "table" then return nil end
+    local parts = {
+        tostring(semantics.macroShape or ""),
+        tostring(tonumber(semantics.actionLineCount) or 0),
+        tostring(semantics.hasCastsequence == true),
+        tostring(semantics.hasConditional == true),
+        tostring(semantics.hasTargetMutation == true),
+    }
+    for _, action in ipairs(semantics.actions or {}) do
+        local conditions = {}
+        for _, block in ipairs(type(action.conditionBlocks) == "table" and action.conditionBlocks or {}) do
+            conditions[#conditions + 1] = tostring(block)
+        end
+        parts[#parts + 1] = table.concat({
+            tostring(action.command or ""),
+            tostring(action.kind or ""),
+            tostring(action.token or ""),
+            tostring(tonumber(action.resolvedSpellID) or 0),
+            tostring(tonumber(action.resolvedItemID) or 0),
+            tostring(action.target or ""),
+            tostring(tonumber(action.branchIndex) or 0),
+            table.concat(conditions, "&"),
+        }, "~")
+    end
+    for _, token in ipairs(semantics.castsequenceTokens or {}) do
+        parts[#parts + 1] = "seq:" .. tostring(token)
+    end
+    for _, command in ipairs(semantics.targetMutationCommands or {}) do
+        parts[#parts + 1] = "mut:" .. tostring(command)
+    end
+    return table.concat(parts, "|")
+end
+
+local function exactManualSourceIdentityMatches(item, entry)
+    item = type(item) == "table" and item or {}
+    entry = type(entry) == "table" and entry or {}
+    local expectedSource = preferredHudSource(item)
+    if type(expectedSource) == "string" and expectedSource ~= "" and entry.source ~= expectedSource then
+        return false
+    end
+    if expectedSource ~= "macro" then return true end
+    if verifiedManualMacroEntry(entry) ~= true then return false end
+    local expectedMacroID = tonumber(preferredHudField(item, "macroID"))
+    if expectedMacroID and tonumber(entry.macroID) ~= expectedMacroID then return false end
+    local expectedSemantics = preferredHudField(item, "macroSemantics")
+    local expectedIdentity = macroSemanticIdentity(expectedSemantics)
+    if expectedIdentity and expectedIdentity ~= macroSemanticIdentity(entry.macroSemantics) then return false end
+    return true
+end
+
+local function exactManualSpellMatch(resolver, cache, entry, spellID)
+    spellID = tonumber(spellID)
+    if not spellID or spellID <= 0 or type(entry) ~= "table" then return false, nil end
+    local equivalents = resolver:GetEquivalentSpellIDs(spellID, cache)
+    for _, equivalentID in ipairs(equivalents or {}) do
+        if entry.source == "spell" and tonumber(entry.spellID) == tonumber(equivalentID) then
+            return true, tonumber(equivalentID)
+        end
+        if entry.source == "macro" and verifiedManualMacroEntry(entry) == true then
+            local matched = macroCandidateMatches(entry, equivalentID, getSpellName(equivalentID))
+            if matched then return true, tonumber(equivalentID) end
+        end
+    end
+    return false, nil
+end
+
+local function exactManualItemMatch(entry, itemID)
+    itemID = tonumber(itemID)
+    if not itemID or itemID <= 0 or type(entry) ~= "table" then return false end
+    if entry.source == "item" and tonumber(entry.itemID) == itemID then return true end
+    if entry.source == "macro" and verifiedManualMacroEntry(entry) == true then
+        local matched = macroItemCandidateMatches(entry, itemID, getItemName(itemID))
+        return matched == true
+    end
+    return false
+end
+
+local function exactManualInventoryMatch(entry, inventorySlot, itemID)
+    inventorySlot = tonumber(inventorySlot)
+    if inventorySlot ~= 13 and inventorySlot ~= 14 then return false end
+    if entry.source == "macro" and verifiedManualMacroEntry(entry) == true then
+        local matched = inventoryMacroMatches(entry, inventorySlot)
+        return matched == true
+    end
+    if entry.source == "item" and itemID and tonumber(entry.itemID) == tonumber(itemID) then
+        -- A direct equipped-item card is still tied to the current physical
+        -- item identity. We do not infer a different item/slot association.
+        return true
+    end
+    return false
+end
+
+local function exactManualHudTarget(resolver, item)
+    item = type(item) == "table" and item or {}
+    local buttonName = preferredHudField(item, "buttonName")
+    if type(buttonName) ~= "string" or buttonName == "" then
+        return { status = "Blocked", reason = "manual_actionbar_source_missing" }
+    end
+
+    local specialActionBar = resolver:GetSpecialActionBarState()
+    if specialActionBar and specialActionBar.active == true then
+        return { status = "Blocked", reason = "manual_actionbar_special_actionbar" }
+    end
+    local cache = resolver:EnsureCache("manual_exact_hud_source")
+    if type(cache) ~= "table" then
+        return { status = "Blocked", reason = "manual_actionbar_source_missing" }
+    end
+
+    local expectedSlot = tonumber(preferredHudField(item, "actionSlot") or preferredHudField(item, "slot"))
+    local spellID = tonumber(item.spellID)
+    local itemID = tonumber(item.itemID)
+    local inventorySlot = tonumber(item.inventorySlot or item.itemSlot)
+    if not ((spellID and spellID > 0) or (itemID and itemID > 0) or inventorySlot == 13 or inventorySlot == 14) then
+        return { status = "Blocked", reason = "manual_actionbar_source_missing" }
+    end
+
+    for _, entry in ipairs(cache.entries or {}) do
+        if entry.buttonName == buttonName
+            and (not expectedSlot or tonumber(entry.actionSlot) == expectedSlot)
+            and exactManualSourceIdentityMatches(item, entry) == true then
+            local matched, matchedSpellID = false, nil
+            if spellID and spellID > 0 then
+                matched, matchedSpellID = exactManualSpellMatch(resolver, cache, entry, spellID)
+            elseif inventorySlot == 13 or inventorySlot == 14 then
+                matched = exactManualInventoryMatch(entry, inventorySlot, itemID)
+            elseif itemID and itemID > 0 then
+                matched = exactManualItemMatch(entry, itemID)
+            end
+            if matched then
+                return manualTargetFromResult({
+                    status = "Ready",
+                    buttonName = entry.buttonName,
+                    actionSlot = entry.actionSlot,
+                    inventorySlot = inventorySlot,
+                    itemID = itemID,
+                    spellID = spellID,
+                    requestedSpellID = spellID,
+                    matchedSpellID = matchedSpellID,
+                    source = entry.source,
+                    macroID = entry.macroID,
+                    macroAssociation = entry.macroAssociation,
+                    macroDiagnostic = entry.macroDiagnostic,
+                    macroSemantics = entry.macroSemantics,
+                })
+            end
+        end
+    end
+
+    -- A preferred source is an identity contract, not a hint. Falling back to
+    -- another matching spell/item would change the player-authored macro or
+    -- target semantics. Keep the card visible but block it until OOC refresh.
+    return {
+        status = "Blocked",
+        reason = "manual_actionbar_source_changed",
+        buttonName = buttonName,
+        actionSlot = expectedSlot,
+    }
+end
+
+function Resolver:ResolveManualHudAction(item)
+    item = type(item) == "table" and item or {}
+    -- When the card came from a P5.10 manual macro/source record, it already
+    -- names the exact visible Blizzard button. Verify this identity first and
+    -- never redirect a click to a different same-spell button.
+    if type(preferredHudField(item, "buttonName")) == "string" and preferredHudField(item, "buttonName") ~= "" then
+        return exactManualHudTarget(self, item)
+    end
+
+    local inventorySlot = tonumber(item.inventorySlot or item.itemSlot)
+    local itemID = tonumber(item.itemID)
+    -- A trinket HUD card represents a physical 13/14 slot, not merely its
+    -- current item/spell identity. Resolve that exact existing action-bar/macro
+    -- source first so duplicate items, shared effects and `/use 13|14` macros
+    -- preserve the player's original slot semantics.
+    if inventorySlot == 13 or inventorySlot == 14 then
+        return self:ResolveManualInventorySlot(inventorySlot, itemID)
+    end
+
+    local spellID = tonumber(item.spellID)
+    if spellID and spellID > 0 then return self:ResolveManualSpell(spellID) end
+    if itemID and itemID > 0 then return self:ResolveManualItem(itemID) end
+    return { status = "Blocked", reason = "manual_actionbar_source_missing" }
+end
+
 
 local events = {
     "PLAYER_ENTERING_WORLD", "UPDATE_BINDINGS", "ACTIONBAR_SLOT_CHANGED",

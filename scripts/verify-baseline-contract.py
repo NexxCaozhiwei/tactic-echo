@@ -62,6 +62,22 @@ def verify_repository(root: Path) -> list[str]:
     except (OSError, ValueError) as exc:
         return [str(exc)]
 
+    baseline_dir = root / "docs" / "baselines"
+    misplaced_baselines = []
+    for path in sorted(root.rglob("BASELINE_*.md")):
+        try:
+            path.relative_to(baseline_dir)
+        except ValueError:
+            misplaced_baselines.append(path)
+    if misplaced_baselines:
+        errors.extend(f"baseline must live under docs/baselines: {path.relative_to(root)}" for path in misplaced_baselines)
+    if not baseline_dir.is_dir():
+        errors.append("missing canonical baseline directory: docs/baselines")
+    elif not (baseline_dir / f"BASELINE_{root_version}.md").is_file():
+        errors.append(f"missing current baseline: docs/baselines/BASELINE_{root_version}.md")
+    if not (root / "CHANGELOG.md").is_file():
+        errors.append("required file missing: CHANGELOG.md")
+
     toc_text = _read_text(toc_path)
     bootstrap_text = _read_text(bootstrap_path)
     toc_match = TOC_VERSION.search(toc_text)

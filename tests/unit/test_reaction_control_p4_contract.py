@@ -1,4 +1,4 @@
-"""1.0.41 P4.4: strict automatic-interrupt evidence with stable reaction delivery."""
+"""1.0.51 P5.6: API/event-confirmed eligibility with P4.3 transport."""
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -19,21 +19,26 @@ def test_p4_auto_reaction_is_loaded_after_p2_mapping_p3_observation_and_event_ca
     assert toc.index("Tactics/ReactionInterruptEvents.lua") < toc.index("Tactics/AutoReaction.lua")
 
 
-def test_p4_4_uses_strict_evidence_and_never_reintroduces_the_probe_exception() -> None:
+def test_p56_requires_api_or_positive_event_and_preserves_p43_transport_after_confirmation() -> None:
     source = read("Tactics/AutoReaction.lua")
     for token in (
         "TE.AutoReaction = AutoReaction",
         "confirmedInterruptible",
+        "eligibleInterrupt",
+        "HARD_INTERRUPTIBILITY_VETO",
         "unit_api_confirmed",
         "unit_api_not_interruptible",
         "unit_event_interruptible_confirmed",
         "unit_event_not_interruptible",
         "native_visible_shield",
-        "visible_no_shield_confirmed",
-        "native_explicit_interruptible_confirmed",
-        "interruptibility_unconfirmed",
-        "NATIVE_VISUAL_MIN_SAMPLES = 2",
-        "nativeVisualStabilized",
+        "interruptibility_unknown",
+        "UNIT_SPELLCAST_INTERRUPTIBLE",
+        "UNIT_SPELLCAST_NOT_INTERRUPTIBLE",
+        "notInterruptible=false",
+        "directInterruptibilityKnown",
+        "native_visible_shield",
+        "reactionCooldownGate",
+        "interrupt_action_cooldown",
         "native_visual_settling",
         "deliveryStable = true",
         "safeForFutureAuto ~= true",
@@ -69,6 +74,9 @@ def test_p4_4_native_visual_path_reads_real_shield_widgets_and_ignores_template_
         "native_showShield_config_false",
         "native_bar_type_unverified:",
         "nativeShieldSource",
+        "appendSemanticShieldWidgets",
+        "GetChildren",
+        "GetRegions",
         "directInterruptibilityKnown",
         "nativeInterruptibilityKnown",
     ):
@@ -112,9 +120,9 @@ def test_p4_keeps_p3_observation_read_only_and_reports_visual_diagnostics() -> N
     advisors = read("Tactics/TacticalAdvisors.lua")
     for forbidden in ("CreateFrame(", ":RegisterEvent(", "SendInput(", "TE.SignalFrame", "TE.SignalEncoder"):
         assert forbidden not in observer
-    for token in ("P4.4 remains automatic-interrupt-only", "P5 work"):
+    for token in ("P5.6 remains automatic-interrupt-only", "P4.3-proven", "Single control and AOE control remain display-only"):
         assert token in read("Tactics/AutoReaction.lua")
-    for token in ("盾组件=", "视觉采样=", "showShield 配置位不参与判定"):
+    for token in ("自动打断（已暂停）", "自动打断（当前不可用）", "暂停边界：自动打断不扫描目标优先级", "UnitCastingInfo / UnitChannelInfo"):
         assert token in panel
     assert "targetNativeShieldSource" in advisors
 
@@ -126,7 +134,7 @@ def test_p4_4_uses_existing_signal_transport_and_burst_owns_live_plan_priority()
     assert 'dispatchOrigin = "reaction"' in signal
     assert "reactionHoldObservation" in signal
     assert "autoBurstSnapshot = autoBurstSnapshot" in signal
-    block = signal[signal.index("-- P4 automatic interrupts"):signal.index("-- The default session policy")]
+    block = signal[signal.index("-- P4 automatic interrupts"):signal.index("-- P5.8 has no out-of-combat Burst transport exception")]
     for forbidden in ("AutoBurst:Abort", "AutoBurst.Abort", "AutoBurst:Evaluate", "AutoBurst.Evaluate"):
         assert forbidden not in block
 
@@ -148,6 +156,7 @@ def test_p4_3_delivery_fix_remains_in_place_and_tek_dedupes_stable_candidates() 
         "Keep the same candidate visible until the observed cast disappears",
         "deliveryStable = true",
         "confirmed_interrupt_candidate",
+        "interruptibility_unknown",
     ):
         assert token in auto
     for token in (

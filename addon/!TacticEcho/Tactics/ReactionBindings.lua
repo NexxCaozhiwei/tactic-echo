@@ -15,7 +15,7 @@ local TE = _G.TacticEcho
 local ReactionBindings = {}
 TE.ReactionBindings = ReactionBindings
 
-ReactionBindings.schemaVersion = 1
+ReactionBindings.schemaVersion = 2
 ReactionBindings.cache = nil
 ReactionBindings.cacheKey = nil
 ReactionBindings.lastReason = "not_scanned"
@@ -81,11 +81,53 @@ local function candidateBinding(candidate)
         macroAssociation = candidate.macroAssociation,
         macroCommand = candidate.macroCommand,
         macroSemantics = candidate.macroSemantics,
+        macroRepresentedSpellID = candidate.macroRepresentedSpellID,
+        macroRepresentedSpellSource = candidate.macroRepresentedSpellSource,
+        macroOpaqueRepresentedSpell = candidate.macroOpaqueRepresentedSpell == true,
         bindingSourceIndex = candidate.bindingSourceIndex,
         bindingReason = candidate.reason,
         actionBarStateTrusted = candidate.actionBarStateTrusted == true,
         directActionSlot = candidate.directActionSlot == true,
     }
+end
+
+-- A route can be unsuitable for target/focus/mouseover reaction selection and
+-- still be a legitimate player-operated HUD source. The canonical example is a
+-- `[@cursor] 冰冻陷阱` macro: its cursor placement must remain Blizzard macro
+-- behavior, so it cannot be relabelled as a target route or sent through any
+-- automatic path. Preserve its exact visible button only for physical manual
+-- HUD/native clicks, with BindingToken permanently zero.
+local function manualMacroSource(candidate)
+    candidate = type(candidate) == "table" and candidate or {}
+    if candidate.source ~= "macro" then return nil end
+    -- P5.11 shares the resolver's current-visible macro contract with Burst,
+    -- control, defense and survival. Opaque action-info identity remains a
+    -- target-only P4 transport exception and cannot authorise a HUD card.
+    local resolver = TE.ActionBarBindingResolver
+    local verified = resolver and type(resolver.IsVerifiedCurrentMacroSource) == "function"
+        and resolver:IsVerifiedCurrentMacroSource(candidate, candidate.macroAssociation) == true
+    if verified ~= true then return nil end
+    local record = candidateBinding(candidate)
+    if type(record.buttonName) ~= "string" or record.buttonName == "" then return nil end
+    if not tonumber(record.actionSlot) then return nil end
+    record.bindingToken = 0
+    record.manualActionSource = true
+    record.manualOnly = true
+    record.safeForFutureAuto = false
+    record.routeKind = "manual_macro_source"
+    record.routeReason = "manual_existing_macro"
+    return record
+end
+
+local function manualMacroSourceFromResolved(resolved)
+    -- `resolved.candidates` are already matched against the requested SpellID
+    -- by ActionBarBindingResolver. Select only a current visible macro source;
+    -- do not recover macro list entries by name/icon and do not create routes.
+    for _, candidate in ipairs(type(resolved) == "table" and resolved.candidates or {}) do
+        local source = manualMacroSource(candidate)
+        if source then return source end
+    end
+    return nil
 end
 
 local function recordRoute(routes, route, candidate, sourceKind, routeReason, safeForFutureAuto, routeOptions)
@@ -98,24 +140,122 @@ local function recordRoute(routes, route, candidate, sourceKind, routeReason, sa
     record.routeKind = sourceKind
     record.routeReason = routeReason
     record.macroManagedTarget = routeOptions.macroManagedTarget == true
+    record.macroManagedTargetFallback = routeOptions.macroManagedTargetFallback == true
     record.macroPriorityChain = routeOptions.macroPriorityChain == true
+    -- P5.4 compatibility route: the current visible macro button is known by
+    -- GetActionInfo to represent this interrupt SpellID, but its body/index is
+    -- temporarily opaque. Keep it as a target-only route so P4.3's proven
+    -- BindingToken -> TEAP -> TEK delivery can remain available without using
+    -- a macro name, icon, or a guessed macro-list entry.
+    record.macroOpaqueRepresentedSpell = routeOptions.macroOpaqueRepresentedSpell == true
     record.autoRouteMode = routeOptions.autoRouteMode
     record.targetMutationCommands = routeOptions.targetMutationCommands or {}
+    record.managedTargetRouteOrder = {}
+    for _, priorityRoute in ipairs(type(routeOptions.managedTargetRouteOrder) == "table" and routeOptions.managedTargetRouteOrder or {}) do
+        if ROUTE_LABELS[priorityRoute] then record.managedTargetRouteOrder[#record.managedTargetRouteOrder + 1] = priorityRoute end
+    end
     record.priorityRouteOrder = {}
     for _, priorityRoute in ipairs(type(routeOptions.priorityRouteOrder) == "table" and routeOptions.priorityRouteOrder or {}) do
         if ROUTE_LABELS[priorityRoute] then record.priorityRouteOrder[#record.priorityRouteOrder + 1] = priorityRoute end
     end
     record.safeForFutureAuto = safeForFutureAuto == true and record.bindingReady == true
 
-    -- Resolver candidates are already in current visible-button preference
-    -- order. Keep the first ready candidate; retain an earlier unbound record
-    -- only until a usable mapping is found.
-    if not current or (record.bindingReady and current.bindingReady ~= true) then
+    -- A direct target button has no macro branch that can preempt the observed
+    -- target. Prefer it over a same-spell target-management macro when both are
+    -- ready; focus/mouseover still require their explicit macro routes. The
+    -- remaining order preserves the resolver's visible-button preference.
+    local function safetyPriority(value)
+        if type(value) ~= "table" then return 0 end
+        if value.bindingReady ~= true then return 0 end
+        if value.routeKind == "direct" then return 40 end
+        if value.macroPriorityChain == true then return 30 end
+        if value.macroManagedTargetFallback == true then return 25 end
+        if value.macroManagedTarget == true then return 20 end
+        -- Prefer an explicit parsed macro route over the P4.3 represented-spell
+        -- compatibility route, while retaining the latter when it is the only
+        -- bound visible interrupt action.
+        if value.macroOpaqueRepresentedSpell == true then return 10 end
+        return 30
+    end
+    if not current
+        or (record.bindingReady and current.bindingReady ~= true)
+        or (record.bindingReady and current.bindingReady and safetyPriority(record) > safetyPriority(current)) then
         routes[route] = record
     end
 end
 
+-- Retail can expose the exact spell identity of a visible macro button through
+-- two equivalent action-info forms while withholding its usable macro body/index:
+--   * action_info_represented_spell: `GetActionInfo(...).id` itself is the
+--     represented SpellID outside the valid macro-index range;
+--   * action_info_macro_spell: the action-info macro-spell return carries the
+--     represented SpellID.
+--
+-- Both forms identify the same existing visible action-bar button and its
+-- player-owned binding.  They are not macro-list recovery, macro-name matching,
+-- icon matching, or branch inference.  When the body is genuinely opaque, keep
+-- only a target-only P4.3 transport route: focus/mouseover remain unavailable
+-- until a parsed body proves their explicit branch.
+local OPAQUE_ACTION_SPELL_ASSOCIATIONS = {
+    action_info_represented_spell = true,
+    action_info_macro_spell = true,
+}
+
+local function opaqueActionSpellBodyUnavailable(candidate)
+    candidate = type(candidate) == "table" and candidate or {}
+    local diagnostic = type(candidate.macroDiagnostic) == "table" and candidate.macroDiagnostic or {}
+    local failure = diagnostic.failureReason
+    -- A semantic duplicate remains a true identity conflict.  Do not bypass
+    -- P5's fail-closed rule through action-info transport compatibility.
+    if failure == "macro_semantic_identity_ambiguous" then return false end
+    if candidate.macroOpaqueRepresentedSpell == true then return true end
+    return failure == "macro_body_unavailable_action_info_id"
+        or failure == "macro_action_text_missing"
+        or failure == "macro_action_text_name_not_found"
+end
+
+local function addOpaqueActionSpellMacroRoute(routes, candidate, spellID)
+    if type(candidate) ~= "table" or candidate.source ~= "macro" then return false end
+    -- The P4 exception transports only an existing physical action-bar binding.
+    -- Without a parsed nonzero BindingToken there is no safe target-only route.
+    local parsed = type(candidate.parsed) == "table" and candidate.parsed or nil
+    if not parsed or tonumber(parsed.token) == nil or tonumber(parsed.token) <= 0 then return false end
+    local association = candidate.macroAssociation
+    if OPAQUE_ACTION_SPELL_ASSOCIATIONS[association] ~= true then return false end
+    if opaqueActionSpellBodyUnavailable(candidate) ~= true then return false end
+
+    -- `matchedSpellID` is supplied by the resolver only after the current
+    -- visible button's action-info identity has matched the requested spell.
+    -- Prefer it over any macro-list field, which may be absent in this opacity
+    -- shape.
+    local matchedSpellID = tonumber(candidate.matchedSpellID)
+        or tonumber(candidate.macroRepresentedSpellID)
+        or tonumber(candidate.spellID)
+    if matchedSpellID ~= tonumber(spellID) then return false end
+
+    local routeReason = association == "action_info_macro_spell"
+        and "action_info_macro_spell_compat"
+        or "action_info_represented_spell_compat"
+    recordRoute(routes, "target", candidate, "macro", routeReason, true, {
+        -- Retain the existing scalar for HUD/SavedVariables compatibility:
+        -- it means "opaque exact action-spell route", not that a macro name was
+        -- used to recover a body.
+        macroOpaqueRepresentedSpell = true,
+        autoRouteMode = routeReason,
+    })
+    return true
+end
+
+
 local function addMacroRoutes(routes, candidate, spellID, spellName, role)
+    if addOpaqueActionSpellMacroRoute(routes, candidate, spellID) then
+        return true, "action_info_opaque_spell_compat"
+    end
+    local resolver = TE.ActionBarBindingResolver
+    if not (resolver and type(resolver.IsVerifiedCurrentMacroSource) == "function"
+        and resolver:IsVerifiedCurrentMacroSource(candidate, candidate.macroAssociation) == true) then
+        return false, "macro_identity_unverified"
+    end
     local semantics = type(candidate.macroSemantics) == "table" and candidate.macroSemantics or nil
     local macro = TE.MacroSemantics
     if not (macro and type(macro.DescribeSpellRoutes) == "function") then
@@ -131,9 +271,11 @@ local function addMacroRoutes(routes, candidate, spellID, spellName, role)
     local macroPriorityChain = details.macroPriorityChainAuto == true
     local routeOptions = {
         macroManagedTarget = macroManagedTarget,
+        macroManagedTargetFallback = details.macroManagedTargetFallbackAuto == true,
         macroPriorityChain = macroPriorityChain,
         autoRouteMode = details.autoRouteMode,
         targetMutationCommands = details.targetMutationCommands,
+        managedTargetRouteOrder = details.managedTargetRouteOrder,
         priorityRouteOrder = details.priorityRouteOrder,
     }
     for _, route in ipairs(details.routes or {}) do
@@ -183,18 +325,23 @@ local function buildEntry(profile, resolved)
     local name, icon = spellInfo(spellID)
     local role = profile.role or profile.kind or "single"
     local routes, sawMacro, macroReason = collectRoutes(resolved, spellID, name, role)
+    local manualSource = manualMacroSourceFromResolved(resolved)
     local routeList = sortedRouteList(routes)
     local firstRoute = routes[routeList[1]]
     local readyCount = 0
     local safeRoutes = {}
     local macroManagedTargetAuto = false
+    local macroManagedTargetFallbackAuto = false
     local macroPriorityChainAuto = false
+    local macroOpaqueRepresentedSpellAuto = false
     for _, route in ipairs(routeList) do
         local routeInfo = routes[route]
         if routeInfo and routeInfo.bindingReady then readyCount = readyCount + 1 end
         if routeInfo and routeInfo.safeForFutureAuto then safeRoutes[#safeRoutes + 1] = route end
         if routeInfo and routeInfo.macroManagedTarget == true then macroManagedTargetAuto = true end
+        if routeInfo and routeInfo.macroManagedTargetFallback == true then macroManagedTargetFallbackAuto = true end
         if routeInfo and routeInfo.macroPriorityChain == true then macroPriorityChainAuto = true end
+        if routeInfo and routeInfo.macroOpaqueRepresentedSpell == true then macroOpaqueRepresentedSpellAuto = true end
     end
 
     local status, reason
@@ -203,6 +350,8 @@ local function buildEntry(profile, resolved)
         reason = #safeRoutes > 0 and "route_ready" or "macro_route_ambiguous"
     elseif #routeList > 0 then
         status, reason = "binding_unsupported", (firstRoute and firstRoute.bindingReason) or "binding_token_invalid"
+    elseif manualSource then
+        status, reason = "recognized_manual_only", "manual_existing_macro"
     elseif sawMacro then
         status, reason = "recognized_manual_only", macroReason or "macro_route_unavailable"
     else
@@ -223,12 +372,17 @@ local function buildEntry(profile, resolved)
         recognizedMacro = sawMacro,
         macroRouteReason = macroReason,
         macroManagedTargetAuto = macroManagedTargetAuto,
+        macroManagedTargetFallbackAuto = macroManagedTargetFallbackAuto,
         macroPriorityChainAuto = macroPriorityChainAuto,
+        macroOpaqueRepresentedSpellAuto = macroOpaqueRepresentedSpellAuto,
         targetSwitchAuto = macroReason == "macro_target_switch_fallback_auto",
         resolverStatus = type(resolved) == "table" and resolved.status or "NoBinding",
         resolverReason = type(resolved) == "table" and resolved.reason or "binding_resolver_unavailable",
         cacheGeneration = type(resolved) == "table" and resolved.cacheGeneration or nil,
         candidates = type(resolved) == "table" and resolved.candidates or {},
+        -- Not a target-route or automatic capability. It identifies one exact
+        -- current visible macro button for physical HUD/native manual clicks.
+        manualSource = manualSource,
         -- Read-only compact diagnostics for an unrecognized existing macro.
         -- Macro bodies are deliberately not copied into this P2 snapshot.
         macroDiagnostics = type(resolved) == "table" and resolved.macroDiagnostics or {},

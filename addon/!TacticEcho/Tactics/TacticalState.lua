@@ -129,7 +129,7 @@ local function snapshotFrom(message, encoded)
         actionSlot = binding.actionSlot or binding.slot,
         slot = binding.actionSlot or binding.slot,
         directActionSlot = binding.directActionSlot == true,
-        actionBarStateTrusted = binding.directActionSlot == true,
+        actionBarStateTrusted = binding.actionBarStateTrusted == true,
         requestedSpellID = binding.requestedSpellID or spellID,
         matchedSpellID = binding.matchedSpellID,
         equivalentSpellIDs = binding.equivalentSpellIDs,

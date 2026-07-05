@@ -1,4 +1,6 @@
-# 自动爆发 1.0.22：安装与诊断
+# 自动爆发 1.0.22：安装与诊断（历史参考）
+
+> **当前版本覆盖说明（1.0.53 P5.8）**：本文保留 1.0.18–1.0.22 的历史安装与诊断记录。P5.8 已永久移除任何 `pre-combat bridge` 执行授权：脱战不得创建/保留 Burst capture 或 plan，不得产生 Burst candidate、TEAP Burst 帧或 TEK 派发。有关旧版“脱战窗口 → bridge → 进战续接”的步骤仅供历史追溯，不得作为现行验收或实现依据；现行验收以 `P5.8_HUD_MANUAL_CLICK_AND_OOC_GATE_TEST.md` 为准。
 
 ## 本次故障的直接证据
 
@@ -55,7 +57,7 @@ World of Warcraft/_retail_/WTF/Account/<账号>/SavedVariables/TacticEcho.lua
 
 前置阶段中任何 `dispatch_origin=official + binding=3` 的输入都属于缺陷，应连同 `TacticEcho.lua` 与 TEK 诊断包一并导出。
 
-## 1.0.21 起手 Burst bridge 排障
+## 1.0.21 起手 Burst bridge 排障（历史路径，P5.8 已移除）
 
 当 Boss 开场、倒计时或首次攻击前官方已显示窗口技能时，正确链路为：
 
