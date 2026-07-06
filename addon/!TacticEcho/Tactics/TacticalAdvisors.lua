@@ -11,6 +11,7 @@ local lastSnapshot
 local subscribers = {}
 local subscriberSequence = 0
 local nextRefreshAt = 0
+local REACTION_READONLY_HIGHLIGHT_SUSPENDED = true
 
 local function ensureSettings()
     -- 规范器拥有 interruptDisplayMode / controlDisplayMode / defensiveDisplayMode
@@ -25,6 +26,52 @@ local function ensureSettings()
     TacticEchoDB = TacticEchoDB or {}
     TacticEchoDB.tactics = type(TacticEchoDB.tactics) == "table" and TacticEchoDB.tactics or {}
     return TacticEchoDB.tactics
+end
+
+local function ensureHudSettings()
+    if TE.Config and TE.Config.Normalize and type(TE.Config.Normalize.All) == "function" then
+        local _, _, hud = TE.Config.Normalize:All()
+        if type(hud) == "table" then return hud end
+    end
+    TacticEchoDB = TacticEchoDB or {}
+    TacticEchoDB.tactics = type(TacticEchoDB.tactics) == "table" and TacticEchoDB.tactics or {}
+    TacticEchoDB.tactics.hud = type(TacticEchoDB.tactics.hud) == "table" and TacticEchoDB.tactics.hud or {}
+    return TacticEchoDB.tactics.hud
+end
+
+local function emptyAdvisory(reason)
+    reason = reason or "hud_primary_only"
+    return {
+        candidates = { active = false, mode = "primary_only", items = {}, state = reason, advisoryOnly = true, notice = reason },
+        burst = { active = false, state = reason, items = {}, advisoryOnly = true, notice = reason },
+        control = { active = false, state = reason, items = {}, advisoryOnly = true, notice = reason },
+        mobility = { active = false, state = reason, items = {}, advisoryOnly = true, notice = reason },
+        defense = { active = false, state = reason, items = {}, advisoryOnly = true, notice = reason },
+    }
+end
+
+local function emptyInterrupt(reason)
+    reason = reason or "hud_primary_only"
+    return {
+        active = false,
+        state = reason,
+        suggestion = nil,
+        advisoryOnly = true,
+        blockedReason = reason,
+    }
+end
+
+local function emptyReaction(reason)
+    reason = reason or "hud_primary_only"
+    return {
+        schema = 1,
+        active = false,
+        state = reason,
+        readOnly = true,
+        dispatchAllowed = false,
+        source = reason,
+        notice = reason,
+    }
 end
 
 local function spellInfo(spellID)
@@ -859,16 +906,52 @@ function TacticalAdvisors:Refresh(force)
     local primary = TE.TacticalState and TE.TacticalState:GetSnapshot() or nil
     local context = TE.Context and TE.Context:GetPlayer() or {}
     local settings = ensureSettings()
-    local runtime = {
-        monitor = TE.ProtocolMonitor and TE.ProtocolMonitor:Sample() or {},
-        environment = TE.EnvironmentCompatibility and TE.EnvironmentCompatibility:Sample() or nil,
-        iconContext = TE.IconState and type(TE.IconState.CreateRefreshContext) == "function"
-            and TE.IconState:CreateRefreshContext(primary) or {},
-    }
+    local hud = ensureHudSettings()
+    local primaryOnly = hud and hud.queueMode == "primary"
+    local primaryIconContext = TE.IconState and type(TE.IconState.CreateRefreshContext) == "function"
+        and TE.IconState:CreateRefreshContext(primary) or {}
     local primaryDisplay = primaryDisplayFromState(primary, context)
     if not primaryDisplay and context.inCombat ~= true then
         primaryDisplay = buildOutOfCombatPrimary(context)
     end
+
+    if primaryOnly == true then
+        local advisory = emptyAdvisory("hud_primary_only")
+        local interrupt = emptyInterrupt("hud_primary_only")
+        local reaction = emptyReaction("hud_primary_only")
+        decorateItem(primaryDisplay, "primary", primaryIconContext)
+        applyAutoBurstVerification(primaryDisplay, advisory)
+        local snapshot = {
+            primary = primary,
+            primaryDisplay = primaryDisplay,
+            history = { active = false, items = {}, source = "hud_primary_only", notice = "hud_primary_only" },
+            interrupt = interrupt,
+            defensives = advisory.defense,
+            advisory = advisory,
+            reaction = reaction,
+            context = context,
+            settings = settings,
+            hudPrimaryOnly = true,
+            observedAt = now,
+            queue = {
+                schema = 2,
+                items = {},
+                order = { "primary" },
+                source = "hud_primary_only",
+            },
+        }
+        if TE.TacticalTelemetry and type(TE.TacticalTelemetry.Record) == "function" then
+            TE.TacticalTelemetry:Record(snapshot)
+        end
+        publish(snapshot)
+        return snapshot
+    end
+
+    local runtime = {
+        monitor = TE.ProtocolMonitor and TE.ProtocolMonitor:Sample() or {},
+        environment = TE.EnvironmentCompatibility and TE.EnvironmentCompatibility:Sample() or nil,
+        iconContext = primaryIconContext,
+    }
 
     local advisory
     if TE.AdvisoryPlanner and type(TE.AdvisoryPlanner.Build) == "function" then
@@ -915,14 +998,26 @@ function TacticalAdvisors:Refresh(force)
     -- visible-nameplate evidence into the same HUD lanes without touching any
     -- recommendation, AutoBurst, TEAP, TEK or input state.
     local reaction
-    do
-        local ok, result = pcall(buildReactionReadOnly, settings, runtime.monitor)
-        reaction = ok and type(result) == "table" and result or {
-            schema = 1, active = false, state = "safe_mode", readOnly = true,
-            dispatchAllowed = false, source = "reaction_p3_safe_mode", error = tostring(result),
+    if REACTION_READONLY_HIGHLIGHT_SUSPENDED == true then
+        reaction = {
+            schema = 1,
+            active = false,
+            state = "suspended",
+            readOnly = true,
+            dispatchAllowed = false,
+            source = "reaction_p3_suspended",
+            notice = "P3 reaction highlight suspended for performance while automatic reaction development is paused.",
         }
+    else
+        do
+            local ok, result = pcall(buildReactionReadOnly, settings, runtime.monitor)
+            reaction = ok and type(result) == "table" and result or {
+                schema = 1, active = false, state = "safe_mode", readOnly = true,
+                dispatchAllowed = false, source = "reaction_p3_safe_mode", error = tostring(result),
+            }
+        end
+        interrupt, advisory = applyReactionReadOnly(reaction, interrupt, advisory)
     end
-    interrupt, advisory = applyReactionReadOnly(reaction, interrupt, advisory)
 
     decorateItem(primaryDisplay, "primary", runtime.iconContext)
     decorateCollection((advisory.candidates or {}).items, "candidate", runtime.iconContext)

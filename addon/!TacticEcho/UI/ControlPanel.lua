@@ -1370,6 +1370,7 @@ function ControlPanel:UpdateInputStatus()
     local interrupt = snapshot.interrupt or {}
     local defense = snapshot.defensives or {}
     local reaction = snapshot.reaction or {}
+    local page = activePage
 
     local compactStatus = self:GetCompactStatus()
     setLabel("headerState", "状态：" .. compactStatus.label .. "  ·  " .. tostring(context.class or "-") .. " / " .. tostring(context.specName or "未知专精"))
@@ -1378,97 +1379,108 @@ function ControlPanel:UpdateInputStatus()
         compactToggleButton.text:SetText(compactToggleGlyph(compactStatus))
     end
     setLabel("footerState", "当前配置：" .. (TE.ProfileManager and TE.ProfileManager:GetActiveName() or "Default"))
-    local specialObservation = specialActionObservation(snapshot)
-    local runtimeReasonLine = compactStatus.reasonText and ("\n原因：" .. compactStatus.reasonText) or ""
-    setLabel("generalRuntime", "当前状态：" .. compactStatus.label
-        .. runtimeReasonLine
-        .. "\n当前职业/专精：" .. tostring(context.class or "-") .. " / " .. tostring(context.specName or "未知")
-        .. "\n官方主推荐：" .. tostring(primary.spellName or "等待") .. "  ·  键位：" .. tostring(primary.binding or "无")
-        .. "\n动作条映射：" .. (primary.binding and "已确认" or "等待或无绑定")
-        .. (specialObservation and ("\n" .. specialObservation) or ""))
-    local policyLabel = TE.SignalFrame and type(TE.SignalFrame.GetSessionPolicyLabel) == "function"
-        and TE.SignalFrame:GetSessionPolicyLabel() or tostring(settings.sessionPolicy)
-    setLabel("generalPolicy", "当前策略：" .. policyLabel
-        .. "\n手动启停：脱战仍保持运行，直到手动暂停。"
-        .. "\n自动启停：未进战斗或脱战时显示待命，进战自动恢复运行。"
-        .. "\n脱战停止：脱战显示暂停，进战后仍暂停，需手动启动。"
-        .. "\n“运行中”仅代表用户已启动动态链路；实际派发仍受 TEAP、前台与安全门禁约束。")
-    setLabel("generalHotkey", settings.toggleHotkey ~= "" and ("TE 快捷键：" .. settings.toggleHotkey) or "TE 快捷键：未设置")
 
-    setLabel("hudState", "HUD：" .. (hud.enabled and "显示" or "隐藏")
-        .. "  ·  队列：" .. tostring(hud.queueMode)
-        .. "  ·  候选上限：" .. tostring(hud.maxCandidates)
-        .. "\n布局：" .. tostring(hud.layoutPreset) .. "  ·  主队列：" .. tostring(hud.primaryGrowth)
-        .. "  ·  战术栏：" .. tostring(hud.tacticalGrowth))
-    setLabel("mainState", "主推荐按键：" .. tostring(primary.binding or "无绑定")
-        .. "\n标签、充能、CD 时间和转盘均可独立设置；所有样式仅影响显示层。")
-    setLabel("burstState", "状态：" .. tostring((advisory.burst or {}).state or "等待")
-        .. "  ·  配置：" .. tostring((advisory.burst or {}).profileKey or "当前专精暂无")
-        .. "\n说明：" .. tostring((advisory.burst or {}).notice or "爆发模块只读"))
-    local reactionSelected = type(reaction.selected) == "table" and reaction.selected or nil
-    local reactionItem = reactionSelected and reactionSelected.item or nil
-    local reactionAuto = type(reaction.auto) == "table" and reaction.auto or {}
-    local reactionText = reaction.active == true
-        and ("P3 高亮：" .. tostring(reaction.state or "候选") .. "  ·  " .. tostring(reactionItem and reactionItem.spellName or "无")
-            .. "\n说明：" .. tostring(reaction.notice or "只读候选"))
-        or ("P3 监测：" .. tostring(reaction.state or "monitoring") .. "  ·  " .. tostring(reaction.notice or "等待可打断或可控制读条"))
-    reactionText = reactionText .. "\nP5.8 自动打断（已暂停）：" .. tostring(reactionAuto.state or "未初始化")
-        .. "  ·  " .. tostring(reactionAuto.reason or "-")
-        .. (reactionAuto.confirmationReason and ("  ·  判定=" .. tostring(reactionAuto.confirmationReason)) or "")
-        .. (reactionAuto.routeReason and ("  ·  路由=" .. tostring(reactionAuto.routeReason)) or "")
-        .. (reactionAuto.routeRefresh and ("  ·  重扫=" .. tostring(reactionAuto.routeRefresh)) or "")
-        .. (reactionAuto.compatibilityFallback == true and ("  ·  兼容=" .. tostring(reactionAuto.compatibilityFallbackReason or "active_cast")) or "")
-        .. ((tonumber(reactionAuto.compatibilityEvidenceSamples) or 0) > 0 and ("  ·  采样=" .. tostring(reactionAuto.compatibilityEvidenceSamples) .. "/3") or "")
-        .. (reactionAuto.cooldownActive == true and "  ·  打断CD中" or "")
-        .. (reactionAuto.cooldownExactActionVetoEvidence == true and "  ·  槽位CD证据" or "")
-        .. (reactionAuto.macroManagedTargetFallback == true and "  ·  焦点回退宏" or "")
-    setLabel("interruptState", "打断：" .. tostring(interrupt.state or "monitoring")
-        .. "  ·  建议：" .. tostring(interrupt.suggestion and interrupt.suggestion.spellName or "无")
-        .. "\n控制：" .. tostring((advisory.control or {}).state or "monitoring")
-        .. "  ·  " .. tostring((advisory.control or {}).notice or "等待目标读条")
-        .. "\n" .. reactionText
-        .. "\n" .. formatReactionDiagnostics(reaction))
-    setLabel("interruptBindingState", formatInterruptBindingState())
-    setLabel("controlBindingState", formatControlBindingState())
-    setLabel("defenseState", "防御：" .. tostring(defense.state or "monitoring")
-        .. "  ·  配置：" .. tostring(defense.profileKey or "-")
-        .. "\n来源：" .. tostring(defense.profileSource or "-")
-        .. "  ·  当前建议：" .. tostring(defense.items and defense.items[1] and defense.items[1].spellName or "无")
-        .. "\n说明：" .. tostring(defense.notice or "等待低血或高压兼容信号"))
-    setLabel("monitorMapping", getBindingSummary())
-    setLabel("monitorSpec", "当前职业：" .. tostring(context.class or "-")
-        .. "\n当前专精：" .. tostring(context.specName or "未知") .. "（Index=" .. tostring(context.specIndex or "-") .. "，ID=" .. tostring(context.specID or "-") .. "）"
-        .. "\n防御资料：" .. tostring(defense.profileKey or "-") .. " / " .. tostring(defense.profileSource or "-"))
-    setLabel("monitorRecommendation", "官方：" .. tostring(primary.spellName or "等待") .. " / " .. tostring(primary.binding or "无")
-        .. "\n爆发：" .. tostring((advisory.burst or {}).state or "-")
-        .. "  ·  打断：" .. tostring(interrupt.state or "-")
-        .. "  ·  防御：" .. tostring(defense.state or "-")
-        .. "\n队列：" .. tostring(snapshot.queue and snapshot.queue.source or "等待"))
-    local encodedFields = type(encoded and encoded.fields) == "table" and encoded.fields or {}
-    local rawProtocolState = encoded and encoded.state or (snapshot.primary and snapshot.primary.state) or "-"
-    local rawProtocolReason = snapshot.primary and snapshot.primary.reason or "-"
-    local castLock = TE.SignalFrame and type(TE.SignalFrame.GetCastLockInfo) == "function" and TE.SignalFrame:GetCastLockInfo() or {}
-    setLabel("monitorProtocol", "TEAP：v3 固定布局，仅官方主推荐可进入现有安全链。"
-        .. "\n第4格：" .. tostring(encodedFields[4] or "-")
-        .. "  ·  协议状态：" .. tostring(rawProtocolState)
-        .. "  ·  原因码：" .. tostring(rawProtocolReason)
-        .. "\n锁类型：" .. tostring(castLock.kind or "-")
-        .. "  ·  施法 SpellID：" .. tostring(castLock.spellID or "-")
-        .. "  ·  castGUID：" .. castGuidMatchDiagnostic()
-        .. "\n最近帧：序号=" .. tostring(encoded and encoded.sequence or "-")
-        .. "  ·  Token=" .. tostring(encoded and encoded.bindingToken or 0))
-    setLabel("profileState", profileSummary())
-    setLabel("profileScopes", (function()
-        local manager = TE.ProfileManager
-        if not manager then return "配置范围：配置管理器未加载" end
-        local summary = manager:GetSummary()
-        local keys = summary.keys or {}
-        local assignments = summary.assignments or {}
-        return "全局：" .. tostring(assignments[keys.global] or "未指定")
-            .. "\n角色：" .. tostring(assignments[keys.character] or "未指定")
-            .. "\n职业：" .. tostring(assignments[keys.class] or "未指定")
-            .. "\n专精：" .. tostring(assignments[keys.spec] or "未指定")
-    end)())
+    if page == "general" then
+        local specialObservation = specialActionObservation(snapshot)
+        local runtimeReasonLine = compactStatus.reasonText and ("\n原因：" .. compactStatus.reasonText) or ""
+        setLabel("generalRuntime", "当前状态：" .. compactStatus.label
+            .. runtimeReasonLine
+            .. "\n当前职业/专精：" .. tostring(context.class or "-") .. " / " .. tostring(context.specName or "未知")
+            .. "\n官方主推荐：" .. tostring(primary.spellName or "等待") .. "  ·  键位：" .. tostring(primary.binding or "无")
+            .. "\n动作条映射：" .. (primary.binding and "已确认" or "等待或无绑定")
+            .. (specialObservation and ("\n" .. specialObservation) or ""))
+        local policyLabel = TE.SignalFrame and type(TE.SignalFrame.GetSessionPolicyLabel) == "function"
+            and TE.SignalFrame:GetSessionPolicyLabel() or tostring(settings.sessionPolicy)
+        setLabel("generalPolicy", "当前策略：" .. policyLabel
+            .. "\n手动启停：脱战仍保持运行，直到手动暂停。"
+            .. "\n自动启停：未进战斗或脱战时显示待命，进战自动恢复运行。"
+            .. "\n脱战停止：脱战显示暂停，进战后仍暂停，需手动启动。"
+            .. "\n“运行中”仅代表用户已启动动态链路；实际派发仍受 TEAP、前台与安全门禁约束。")
+        setLabel("generalHotkey", settings.toggleHotkey ~= "" and ("TE 快捷键：" .. settings.toggleHotkey) or "TE 快捷键：未设置")
+    end
+
+    if page == "hud" then
+        setLabel("hudState", "HUD：" .. (hud.enabled and "显示" or "隐藏")
+            .. "  ·  队列：" .. tostring(hud.queueMode)
+            .. "  ·  候选上限：" .. tostring(hud.maxCandidates)
+            .. "\n布局：" .. tostring(hud.layoutPreset) .. "  ·  主队列：" .. tostring(hud.primaryGrowth)
+            .. "  ·  战术栏：" .. tostring(hud.tacticalGrowth))
+    elseif page == "main" then
+        setLabel("mainState", "主推荐按键：" .. tostring(primary.binding or "无绑定")
+            .. "\n标签、充能、CD 时间和转盘均可独立设置；所有样式仅影响显示层。")
+    elseif page == "burst" then
+        setLabel("burstState", "状态：" .. tostring((advisory.burst or {}).state or "等待")
+            .. "  ·  配置：" .. tostring((advisory.burst or {}).profileKey or "当前专精暂无")
+            .. "\n说明：" .. tostring((advisory.burst or {}).notice or "爆发模块只读"))
+    elseif page == "interrupt" then
+        local reactionSelected = type(reaction.selected) == "table" and reaction.selected or nil
+        local reactionItem = reactionSelected and reactionSelected.item or nil
+        local reactionAuto = type(reaction.auto) == "table" and reaction.auto or {}
+        local reactionText = reaction.active == true
+            and ("P3 高亮：" .. tostring(reaction.state or "候选") .. "  ·  " .. tostring(reactionItem and reactionItem.spellName or "无")
+                .. "\n说明：" .. tostring(reaction.notice or "只读候选"))
+            or ("P3 监测：" .. tostring(reaction.state or "monitoring") .. "  ·  " .. tostring(reaction.notice or "等待可打断或可控制读条"))
+        reactionText = reactionText .. "\nP5.8 自动打断（已暂停）：" .. tostring(reactionAuto.state or "未初始化")
+            .. "  ·  " .. tostring(reactionAuto.reason or "-")
+            .. (reactionAuto.confirmationReason and ("  ·  判定=" .. tostring(reactionAuto.confirmationReason)) or "")
+            .. (reactionAuto.routeReason and ("  ·  路由=" .. tostring(reactionAuto.routeReason)) or "")
+            .. (reactionAuto.routeRefresh and ("  ·  重扫=" .. tostring(reactionAuto.routeRefresh)) or "")
+            .. (reactionAuto.compatibilityFallback == true and ("  ·  兼容=" .. tostring(reactionAuto.compatibilityFallbackReason or "active_cast")) or "")
+            .. ((tonumber(reactionAuto.compatibilityEvidenceSamples) or 0) > 0 and ("  ·  采样=" .. tostring(reactionAuto.compatibilityEvidenceSamples) .. "/3") or "")
+            .. (reactionAuto.cooldownActive == true and "  ·  打断CD中" or "")
+            .. (reactionAuto.cooldownExactActionVetoEvidence == true and "  ·  槽位CD证据" or "")
+            .. (reactionAuto.macroManagedTargetFallback == true and "  ·  焦点回退宏" or "")
+        setLabel("interruptState", "打断：" .. tostring(interrupt.state or "monitoring")
+            .. "  ·  建议：" .. tostring(interrupt.suggestion and interrupt.suggestion.spellName or "无")
+            .. "\n控制：" .. tostring((advisory.control or {}).state or "monitoring")
+            .. "  ·  " .. tostring((advisory.control or {}).notice or "等待目标读条")
+            .. "\n" .. reactionText
+            .. "\n" .. formatReactionDiagnostics(reaction))
+        setLabel("interruptBindingState", formatInterruptBindingState())
+        setLabel("controlBindingState", formatControlBindingState())
+    elseif page == "defense" then
+        setLabel("defenseState", "防御：" .. tostring(defense.state or "monitoring")
+            .. "  ·  配置：" .. tostring(defense.profileKey or "-")
+            .. "\n来源：" .. tostring(defense.profileSource or "-")
+            .. "  ·  当前建议：" .. tostring(defense.items and defense.items[1] and defense.items[1].spellName or "无")
+            .. "\n说明：" .. tostring(defense.notice or "等待低血或高压兼容信号"))
+    elseif page == "monitor" then
+        setLabel("monitorMapping", getBindingSummary())
+        setLabel("monitorSpec", "当前职业：" .. tostring(context.class or "-")
+            .. "\n当前专精：" .. tostring(context.specName or "未知") .. "（Index=" .. tostring(context.specIndex or "-") .. "，ID=" .. tostring(context.specID or "-") .. "）"
+            .. "\n防御资料：" .. tostring(defense.profileKey or "-") .. " / " .. tostring(defense.profileSource or "-"))
+        setLabel("monitorRecommendation", "官方：" .. tostring(primary.spellName or "等待") .. " / " .. tostring(primary.binding or "无")
+            .. "\n爆发：" .. tostring((advisory.burst or {}).state or "-")
+            .. "  ·  打断：" .. tostring(interrupt.state or "-")
+            .. "  ·  防御：" .. tostring(defense.state or "-")
+            .. "\n队列：" .. tostring(snapshot.queue and snapshot.queue.source or "等待"))
+        local encodedFields = type(encoded and encoded.fields) == "table" and encoded.fields or {}
+        local rawProtocolState = encoded and encoded.state or (snapshot.primary and snapshot.primary.state) or "-"
+        local rawProtocolReason = snapshot.primary and snapshot.primary.reason or "-"
+        local castLock = TE.SignalFrame and type(TE.SignalFrame.GetCastLockInfo) == "function" and TE.SignalFrame:GetCastLockInfo() or {}
+        setLabel("monitorProtocol", "TEAP：v3 固定布局，仅官方主推荐可进入现有安全链。"
+            .. "\n第4格：" .. tostring(encodedFields[4] or "-")
+            .. "  ·  协议状态：" .. tostring(rawProtocolState)
+            .. "  ·  原因码：" .. tostring(rawProtocolReason)
+            .. "\n锁类型：" .. tostring(castLock.kind or "-")
+            .. "  ·  施法 SpellID：" .. tostring(castLock.spellID or "-")
+            .. "  ·  castGUID：" .. castGuidMatchDiagnostic()
+            .. "\n最近帧：序号=" .. tostring(encoded and encoded.sequence or "-")
+            .. "  ·  Token=" .. tostring(encoded and encoded.bindingToken or 0))
+    elseif page == "profiles" then
+        setLabel("profileState", profileSummary())
+        setLabel("profileScopes", (function()
+            local manager = TE.ProfileManager
+            if not manager then return "配置范围：配置管理器未加载" end
+            local summary = manager:GetSummary()
+            local keys = summary.keys or {}
+            local assignments = summary.assignments or {}
+            return "全局：" .. tostring(assignments[keys.global] or "未指定")
+                .. "\n角色：" .. tostring(assignments[keys.character] or "未指定")
+                .. "\n职业：" .. tostring(assignments[keys.class] or "未指定")
+                .. "\n专精：" .. tostring(assignments[keys.spec] or "未指定")
+        end)())
+    end
 
     -- Only active-page controls need periodic synchronization. Hidden pages
     -- refresh on first show and after their own user actions, avoiding needless

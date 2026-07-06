@@ -14,6 +14,7 @@ ReactionObservation.schemaVersion = 7
 ReactionObservation.snapshot = nil
 
 local AOE_CONTROL_THRESHOLD = 4
+local NAMEPLATE_CONTROL_SCAN_SUSPENDED = true
 local CONTROL_EXCLUDED_CLASSIFICATIONS = {
     elite = true,
     rareelite = true,
@@ -676,6 +677,15 @@ local function nameplateUnitToken(plate)
 end
 
 local function readNameplateControlCastCount()
+    if NAMEPLATE_CONTROL_SCAN_SUSPENDED == true then
+        return {
+            active = false,
+            qualifyingCount = 0,
+            inspectedCount = 0,
+            threshold = AOE_CONTROL_THRESHOLD,
+            reason = "nameplate_control_scan_suspended",
+        }
+    end
     local api = C_NamePlate and C_NamePlate.GetNamePlates
     if type(api) ~= "function" then
         return {

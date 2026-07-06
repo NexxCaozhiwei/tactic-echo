@@ -36,9 +36,53 @@ class Efficiency0910ContractTests(unittest.TestCase):
         telemetry = (ADDON / "Tactics" / "TacticalTelemetry.lua").read_text(encoding="utf-8")
         toc = (ADDON / "!TacticEcho.toc").read_text(encoding="utf-8")
         self.assertIn("settings.diagnosticsEnabled == true", telemetry)
-        self.assertIn('center.page == "monitor"', telemetry)
+        self.assertNotIn('center.page == "monitor"', telemetry)
         self.assertNotIn("Actions/MacroRegistry.lua", toc)
         self.assertFalse((ADDON / "Actions" / "MacroRegistry.lua").exists())
+
+    def test_reaction_p3_heavy_paths_are_suspended(self) -> None:
+        observation = (ADDON / "Tactics" / "ReactionObservation.lua").read_text(encoding="utf-8")
+        advisors = (ADDON / "Tactics" / "TacticalAdvisors.lua").read_text(encoding="utf-8")
+        self.assertIn("NAMEPLATE_CONTROL_SCAN_SUSPENDED = true", observation)
+        self.assertIn("nameplate_control_scan_suspended", observation)
+        self.assertIn("REACTION_READONLY_HIGHLIGHT_SUSPENDED = true", advisors)
+        self.assertIn("reaction_p3_suspended", advisors)
+
+    def test_primary_only_hud_uses_lightweight_advisor_path(self) -> None:
+        advisors = (ADDON / "Tactics" / "TacticalAdvisors.lua").read_text(encoding="utf-8")
+        self.assertIn('hud.queueMode == "primary"', advisors)
+        self.assertIn('emptyAdvisory("hud_primary_only")', advisors)
+        self.assertIn("hudPrimaryOnly = true", advisors)
+        self.assertLess(
+            advisors.index("if primaryOnly == true then"),
+            advisors.index("monitor = TE.ProtocolMonitor and TE.ProtocolMonitor:Sample()"),
+        )
+        self.assertLess(
+            advisors.index("if primaryOnly == true then"),
+            advisors.index("TE.AdvisoryPlanner:Build(primary, context, settings, runtime)"),
+        )
+
+    def test_primary_only_disables_unused_observer_scans(self) -> None:
+        monitor = (ADDON / "Tactics" / "ProtocolMonitor.lua").read_text(encoding="utf-8")
+        planner = (ADDON / "Tactics" / "AdvisoryPlanner.lua").read_text(encoding="utf-8")
+        events = (ADDON / "Tactics" / "ReactionInterruptEvents.lua").read_text(encoding="utf-8")
+        self.assertIn('hud.queueMode == "primary"', monitor)
+        self.assertIn("primary_only_lightweight", monitor)
+        refresh_start = monitor.index("local function refresh()")
+        self.assertLess(
+            monitor.index("if hudPrimaryOnly() == true then", refresh_start),
+            monitor.index("readTargetCast()", refresh_start),
+        )
+        self.assertIn("if hudPrimaryOnly() == true then", planner)
+        self.assertLess(
+            planner.index("if hudPrimaryOnly() == true then"),
+            planner.index('pcall(GetUnitSpeed, "player")'),
+        )
+        self.assertIn("if hudPrimaryOnly() == true then return end", events)
+        self.assertLess(
+            events.index("if hudPrimaryOnly() == true then return end"),
+            events.index("TE.ReactionObservation.Refresh"),
+        )
 
     def test_legacy_resolver_wrapper_and_compact_snapshot_helper_are_removed(self) -> None:
         resolver = (ADDON / "Actions" / "ActionBarBindingResolver.lua").read_text(encoding="utf-8")

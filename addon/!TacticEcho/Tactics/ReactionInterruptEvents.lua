@@ -22,6 +22,13 @@ TE.ReactionInterruptEvents = ReactionInterruptEvents
 
 ReactionInterruptEvents.schemaVersion = 2
 
+local function hudPrimaryOnly()
+    local db = TacticEchoDB
+    local tactics = type(db) == "table" and db.tactics or nil
+    local hud = type(tactics) == "table" and tactics.hud or nil
+    return type(hud) == "table" and hud.queueMode == "primary"
+end
+
 local SOURCE_BY_UNIT = {
     target = "target",
     focus = "focus",
@@ -161,6 +168,7 @@ function ReactionInterruptEvents:GetSnapshot()
 end
 
 local function notifyRefresh(reason)
+    if hudPrimaryOnly() == true then return end
     -- The monitor remains the normal source of P3 samples.  Refresh once here
     -- so an interruptibility event can pair with an already-live target cast
     -- without waiting for the next 0.12s poll.  Fail closed on any reader

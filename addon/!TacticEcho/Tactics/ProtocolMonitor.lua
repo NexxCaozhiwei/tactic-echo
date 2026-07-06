@@ -42,6 +42,13 @@ local function currentTime()
     return type(GetTime) == "function" and GetTime() or 0
 end
 
+local function hudPrimaryOnly()
+    local db = TacticEchoDB
+    local tactics = type(db) == "table" and db.tactics or nil
+    local hud = type(tactics) == "table" and tactics.hud or nil
+    return type(hud) == "table" and hud.queueMode == "primary"
+end
+
 local function readHealthCompatibility()
     if not TE.HealthCompatibility or type(TE.HealthCompatibility.Sample) ~= "function" then
         return { available = false, low = false, source = nil, state = "unavailable" }
@@ -225,6 +232,25 @@ local function reconcileTargetFromReactionObservation()
     state.targetInterruptible = cast.interruptibleKnown == true and cast.interruptible == true
 end
 
+local function resetLightweightState()
+    clearTargetCast()
+    state.playerHealthObserved = false
+    state.playerHealthCritical = false
+    state.healthAvailable = false
+    state.healthSource = nil
+    state.healthState = "primary_only_lightweight"
+    state.playerHealthPercent = nil
+    state.playerRecentDamage = false
+    state.reaction = {
+        schema = 1,
+        readOnly = true,
+        dispatchAllowed = false,
+        sources = {},
+        aoe = { active = false, qualifyingCount = 0, threshold = 4, reason = "primary_only_lightweight" },
+        source = "primary_only_lightweight",
+    }
+end
+
 local function rebuildSnapshot()
     -- Consumers treat this as read-only. Reusing one table per poll prevents
     -- four tactical subsystems from allocating and refreshing the same data.
@@ -251,11 +277,18 @@ local function rebuildSnapshot()
             aoe = { active = false, qualifyingCount = 0, threshold = 4, reason = "not_sampled" },
         },
         observedAt = state.sampledAt,
-        source = "polling_safe_cached",
+        source = hudPrimaryOnly() and "primary_only_lightweight" or "polling_safe_cached",
     }
 end
 
 local function refresh()
+    if hudPrimaryOnly() == true then
+        resetLightweightState()
+        state.sampledAt = currentTime()
+        state.initialized = true
+        rebuildSnapshot()
+        return
+    end
     readTargetCast()
     readReactionObservation()
     reconcileTargetFromReactionObservation()

@@ -8,6 +8,13 @@ TE.AdvisoryPlanner = Planner
 
 local movement = { active = false, observedAt = 0 }
 
+local function hudPrimaryOnly()
+    local db = TacticEchoDB
+    local tactics = type(db) == "table" and db.tactics or nil
+    local hud = type(tactics) == "table" and tactics.hud or nil
+    return type(hud) == "table" and hud.queueMode == "primary"
+end
+
 local function spellInfo(spellID)
     if C_Spell and type(C_Spell.GetSpellInfo) == "function" then
         local info = C_Spell.GetSpellInfo(spellID)
@@ -661,6 +668,12 @@ watcher:SetScript("OnUpdate", function(_, delta)
     movementElapsed = movementElapsed + (tonumber(delta) or 0)
     if movementElapsed < 0.25 then return end
     movementElapsed = 0
+    if hudPrimaryOnly() == true then
+        movement.active = false
+        movement.unknown = false
+        movement.observedAt = type(GetTime) == "function" and GetTime() or 0
+        return
+    end
     if type(GetUnitSpeed) ~= "function" then return end
     local ok, speed = pcall(GetUnitSpeed, "player")
     if not ok then

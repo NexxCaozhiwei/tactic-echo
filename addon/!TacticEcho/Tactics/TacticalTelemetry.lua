@@ -1,5 +1,6 @@
--- Local-only advisory trace.  It is opt-in for diagnostics or the monitor page;
--- normal HUD operation does not allocate SavedVariables telemetry every refresh.
+-- Local-only advisory trace. It is opt-in for explicit diagnostics only;
+-- normal HUD or monitor-page operation must not allocate SavedVariables
+-- telemetry every refresh.
 local TE = _G.TacticEcho
 
 local TacticalTelemetry = {}
@@ -8,9 +9,7 @@ TE.TacticalTelemetry = TacticalTelemetry
 local function enabled()
     local db = TacticEchoDB or {}
     local settings = db.settings or {}
-    if settings.diagnosticsEnabled == true then return true end
-    local center = (((db.ui or {}).settingsCenter) or {})
-    return center.visible == true and center.page == "monitor"
+    return settings.diagnosticsEnabled == true
 end
 
 local function store()
