@@ -115,7 +115,33 @@ local function restorePoint(frame, prefix)
     end
 end
 
+local function beginContainerMove(frame)
+    if not frame then return false end
+    if inCombatLockdown() then
+        frame.tacticEchoCombatDragBlocked = true
+        return false
+    end
+    frame.tacticEchoCombatDragBlocked = nil
+    frame.tacticEchoMoving = true
+    frame:StartMoving()
+    return true
+end
+
+local function finishContainerMove(frame, prefix)
+    if not frame then return false end
+    if inCombatLockdown() then
+        frame.tacticEchoCombatDragBlocked = nil
+        frame.tacticEchoMoving = nil
+        return false
+    end
+    frame:StopMovingOrSizing()
+    frame.tacticEchoMoving = nil
+    savePoint(frame, prefix)
+    return true
+end
+
 local function statusText(primary)
+    if primary and primary.dispatchAllowed == true then return "HAD" end
     local visual = primary and primary.visual or {}
     local labels = {
         dispatchable = "HAD",
@@ -266,12 +292,11 @@ end
 local function bindPrimaryDrag(card)
     card:RegisterForDrag("LeftButton")
     card:SetScript("OnDragStart", function(self)
-        self.tacticEchoDragging = true
-        if not db().locked then board:StartMoving() end
+        self.tacticEchoDragging = false
+        if not db().locked then self.tacticEchoDragging = beginContainerMove(board) end
     end)
     card:SetScript("OnDragStop", function(self)
-        board:StopMovingOrSizing()
-        savePoint(board)
+        if self.tacticEchoDragging == true then finishContainerMove(board) end
         self.tacticEchoDragging = false
         self.tacticEchoSuppressClickUntil = (type(GetTime) == "function" and GetTime() or 0) + 0.15
     end)
@@ -299,15 +324,15 @@ local function ensureBoard()
     createBackdrop(defenseFrame)
 
     board.handle = TacticalHudDragHandle:Create(board,
-        function() if not db().locked then board:StartMoving() end end,
-        function() board:StopMovingOrSizing(); savePoint(board) end,
+        function() if not db().locked then beginContainerMove(board) end end,
+        function() finishContainerMove(board) end,
         function() if TE.ControlPanel then TE.ControlPanel:Show("general") end end,
         "主队列抓手")
     board.handle:SetPoint("LEFT", board, "LEFT", -18, 0)
 
     defenseFrame.handle = TacticalHudDragHandle:Create(defenseFrame,
-        function() if not db().defenseLocked then defenseFrame:StartMoving() end end,
-        function() defenseFrame:StopMovingOrSizing(); savePoint(defenseFrame, "defense") end,
+        function() if not db().defenseLocked then beginContainerMove(defenseFrame) end end,
+        function() finishContainerMove(defenseFrame, "defense") end,
         function() if TE.ControlPanel then TE.ControlPanel:Show("defense") end end,
         "防御队列抓手")
     defenseFrame.handle:SetPoint("LEFT", defenseFrame, "LEFT", -18, 0)

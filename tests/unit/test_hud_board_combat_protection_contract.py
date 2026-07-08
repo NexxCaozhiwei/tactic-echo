@@ -34,6 +34,18 @@ def test_tactical_board_defers_container_visibility_in_combat() -> None:
     assert "panel:Hide()" not in board
 
 
+def test_tactical_board_blocks_drag_moving_api_in_combat() -> None:
+    board = read("UI/TacticalBoard.lua")
+    assert "local function beginContainerMove(frame)" in board
+    assert "frame.tacticEchoCombatDragBlocked = true" in board
+    assert "local function finishContainerMove(frame, prefix)" in board
+    assert "if inCombatLockdown() then\n        frame.tacticEchoCombatDragBlocked = nil" in board
+    assert "board:StartMoving()" not in board
+    assert "defenseFrame:StartMoving()" not in board
+    assert "board:StopMovingOrSizing()" not in board
+    assert "defenseFrame:StopMovingOrSizing()" not in board
+
+
 def test_tactical_layout_defers_layout_mutations_in_combat() -> None:
     layout = read("UI/TacticalHudLayout.lua")
     assert "local function inCombatLockdown()" in layout

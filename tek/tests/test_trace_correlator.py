@@ -9,10 +9,10 @@ TE_SIGNAL = {
     "eventType": "signal_frame",
     "protocolVersion": 3,
     "sessionEpoch": 7,
-    "catalogFingerprint": 21881,
+    "catalogFingerprint": 53253,
     "sequence": 42,
-    "actionCode": 1,
-    "actionId": "PALADIN_RETRIBUTION_JUDGMENT",
+    "actionCode": 0,
+    "actionId": None,
 }
 
 TEK_TRACE = {
@@ -21,10 +21,10 @@ TEK_TRACE = {
     "eventType": "input_dispatch",
     "protocol_version": 3,
     "session_epoch": 7,
-    "catalog_fingerprint": 21881,
+    "catalog_fingerprint": 53253,
     "sequence": 42,
-    "action_code": 1,
-    "action_id": "PALADIN_RETRIBUTION_JUDGMENT",
+    "action_code": 0,
+    "action_id": None,
 }
 
 
@@ -35,7 +35,7 @@ class TraceCorrelatorTests(unittest.TestCase):
         self.assertTrue(result.matched)
         self.assertEqual(result.reason, "matched")
         self.assertEqual(result.sequence, 42)
-        self.assertEqual(result.action_id, "PALADIN_RETRIBUTION_JUDGMENT")
+        self.assertIsNone(result.action_id)
 
     def test_reports_sequence_mismatch(self):
         tek = dict(TEK_TRACE)
@@ -48,21 +48,21 @@ class TraceCorrelatorTests(unittest.TestCase):
 
     def test_reports_action_code_mismatch(self):
         tek = dict(TEK_TRACE)
-        tek["action_code"] = 2
+        tek["action_code"] = 1
 
         result = correlate(TE_SIGNAL, tek)
 
         self.assertFalse(result.matched)
-        self.assertEqual(result.reason, "action_code_mismatch:1:2")
+        self.assertEqual(result.reason, "action_code_mismatch:0:1")
 
     def test_reports_action_id_mismatch(self):
         tek = dict(TEK_TRACE)
-        tek["action_id"] = "PALADIN_RETRIBUTION_BLADE_OF_JUSTICE"
+        tek["action_id"] = "legacy_action"
 
         result = correlate(TE_SIGNAL, tek)
 
         self.assertFalse(result.matched)
-        self.assertEqual(result.reason, "action_id_mismatch:PALADIN_RETRIBUTION_JUDGMENT:PALADIN_RETRIBUTION_BLADE_OF_JUSTICE")
+        self.assertEqual(result.reason, "action_id_mismatch:None:legacy_action")
 
 
 if __name__ == "__main__":

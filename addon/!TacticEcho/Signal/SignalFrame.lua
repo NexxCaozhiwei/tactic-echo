@@ -14,6 +14,9 @@ local MIN_BLOCK_SIZE_PX = 8
 -- startup, manual-release recovery and combat-policy transitions do not spend
 -- multiple 200 ms UI ticks waiting for a new frame.
 local UPDATE_INTERVAL = 0.05
+-- Match WR's practical Assisted Combat cadence for expensive recommendation
+-- and binding work while keeping TEAP freshness at 50 ms for TEK sampling.
+local OFFICIAL_RECOMMENDATION_REBUILD_INTERVAL = 0.10
 local SESSION_POLICIES = {
     manual_keep = true,
     pause_out_of_combat = true,
@@ -38,6 +41,7 @@ local lastPaintedFields
 local lastGeometrySignature
 local activeBlockSize = DEFAULT_BLOCK_SIZE
 local activeBlockGap = DEFAULT_BLOCK_GAP
+local lastFullBuildAt = 0
 local activeAnchorMargin = CLIENT_ANCHOR_MARGIN_PX
 local STATE_SOUND_FILES = {
     armed = "Interface\\AddOns\\!TacticEcho\\Media\\te-armed-123.wav",
@@ -818,7 +822,7 @@ function SignalFrame:BuildMessage(reason)
     end
 
     local autoDecision
-    if TE.AutoBurst and type(TE.AutoBurst.Evaluate) == "function" then
+    if inCombat and TE.AutoBurst and type(TE.AutoBurst.Evaluate) == "function" then
         local context = TE.Context and TE.Context:GetPlayer() or {}
         local ok, decision = pcall(TE.AutoBurst.Evaluate, TE.AutoBurst, official, {
             context = context,
@@ -880,13 +884,13 @@ function SignalFrame:BuildMessage(reason)
     -- validated P2 binding route. SignalFrame keeps AutoBurst ownership first;
     -- the user-selected policy is that a live Burst plan/pre-window capture
     -- suppresses automatic interrupt attempts and leaves P3 highlighting only.
-    local autoBurstSnapshot
-    if TE.AutoBurst and type(TE.AutoBurst.GetSnapshot) == "function" then
-        local snapshotOK, snapshot = pcall(TE.AutoBurst.GetSnapshot, TE.AutoBurst)
-        if snapshotOK and type(snapshot) == "table" then autoBurstSnapshot = snapshot end
-    end
     local reactionDecision
     if TE.AutoReaction and type(TE.AutoReaction.Evaluate) == "function" then
+        local autoBurstSnapshot
+        if TE.AutoBurst and type(TE.AutoBurst.GetSnapshot) == "function" then
+            local snapshotOK, snapshot = pcall(TE.AutoBurst.GetSnapshot, TE.AutoBurst)
+            if snapshotOK and type(snapshot) == "table" then autoBurstSnapshot = snapshot end
+        end
         local reactionOK, decision = pcall(TE.AutoReaction.Evaluate, TE.AutoReaction, {
             inCombat = inCombat,
             intentState = state,
@@ -989,18 +993,15 @@ function SignalFrame:BuildMessage(reason)
             officialBindingInfo, officialBindingReason = TE.ActionBarBindingResolver:ResolveSpell(officialSpellID)
         end
     end
-    local action, legacyCatalogReason
-    if dispatchSpellID then
-        action, legacyCatalogReason = TE.ActionRegistry:ResolveRecommendation({ spellID = dispatchSpellID })
-    end
+    local legacyCatalogReason = dispatchSpellID and "generic_binding_token_path" or nil
 
     if outputState == "armed" and not observationOnly
         and (not bindingInfo or bindingInfo.status ~= "Ready" or (tonumber(bindingInfo.bindingToken) or 0) == 0) then
         outputState = "blocked"
     end
 
-    local actionCode = action and action.actionCode or 0
-    local actionId = action and action.actionId or nil
+    local actionCode = 0
+    local actionId = nil
     if explicitObservationOnly then outputState = "paused" end
 
     runtimeReason = runtimeReason or inputFocusReason or sessionPolicyReason or bindingReason
@@ -1040,7 +1041,6 @@ function SignalFrame:BuildMessage(reason)
         and reactionDecision.deliveryStable == true
     local freshDispatchableFrame = outputState == "armed"
         and observationOnly ~= true
-        and (actionCode ~= 0 or dispatchOrigin == "reaction")
         and bindingInfo ~= nil
         and bindingInfo.status == "Ready"
         and (tonumber(bindingInfo.bindingToken) or 0) ~= 0
@@ -1123,9 +1123,37 @@ function SignalFrame:GetLastEncoded()
     return lastEncoded
 end
 
+local REUSABLE_OFFICIAL_TICK_STATES = {
+    waiting = true,
+    armed = true,
+    paused = true,
+    blocked = true,
+    channeling = true,
+    empowering = true,
+}
+
+local function reusableOfficialTickMessage(message)
+    if type(message) ~= "table" then return false end
+    if REUSABLE_OFFICIAL_TICK_STATES[message.state] ~= true then return false end
+    if message.observationOnly == true then return false end
+    if message.dispatchOrigin == "burst" or message.dispatchOrigin == "reaction" then return false end
+    return true
+end
+
+local function cloneMessageForFreshness(message)
+    local copy = {}
+    for key, value in pairs(message) do copy[key] = value end
+    return copy
+end
+
 function SignalFrame:Refresh(reason)
     frameFreshnessCounter = (frameFreshnessCounter + 1) % 65536
-    local message = self:BuildMessage(reason)
+    local now = type(GetTime) == "function" and GetTime() or 0
+    local canReuse = reason == "tick"
+        and reusableOfficialTickMessage(lastMessage)
+        and (now - (lastFullBuildAt or 0)) < OFFICIAL_RECOMMENDATION_REBUILD_INTERVAL
+    local message = canReuse and cloneMessageForFreshness(lastMessage) or self:BuildMessage(reason)
+    if not canReuse then lastFullBuildAt = now end
     message.frameFreshnessCounter = frameFreshnessCounter
     local encoded = TE.SignalEncoder:Encode(message)
     lastMessage = message

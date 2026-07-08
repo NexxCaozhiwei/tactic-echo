@@ -12,6 +12,7 @@ local subscribers = {}
 local subscriberSequence = 0
 local nextRefreshAt = 0
 local REACTION_READONLY_HIGHLIGHT_SUSPENDED = true
+local ADVISOR_REFRESH_INTERVAL = 0.35
 
 local function ensureSettings()
     -- 规范器拥有 interruptDisplayMode / controlDisplayMode / defensiveDisplayMode
@@ -37,6 +38,18 @@ local function ensureHudSettings()
     TacticEchoDB.tactics = type(TacticEchoDB.tactics) == "table" and TacticEchoDB.tactics or {}
     TacticEchoDB.tactics.hud = type(TacticEchoDB.tactics.hud) == "table" and TacticEchoDB.tactics.hud or {}
     return TacticEchoDB.tactics.hud
+end
+
+local function hudModuleShown(hud, key)
+    local module = type(hud and hud.modules) == "table" and hud.modules[key] or nil
+    return not module or module.show ~= false
+end
+
+local function shouldBuildBurstHud(hud)
+    if type(hud) ~= "table" then return false end
+    if hud.enabled ~= true then return false end
+    if hud.compact == true or hud.queueMode == "primary" then return false end
+    return hudModuleShown(hud, "burst")
 end
 
 local function emptyAdvisory(reason)
@@ -901,18 +914,46 @@ end
 function TacticalAdvisors:Refresh(force)
     local now = type(GetTime) == "function" and GetTime() or 0
     if not force and now < nextRefreshAt then return lastSnapshot end
-    nextRefreshAt = now + 0.10
+    nextRefreshAt = now + ADVISOR_REFRESH_INTERVAL
 
     local primary = TE.TacticalState and TE.TacticalState:GetSnapshot() or nil
     local context = TE.Context and TE.Context:GetPlayer() or {}
     local settings = ensureSettings()
     local hud = ensureHudSettings()
     local primaryOnly = hud and hud.queueMode == "primary"
+    local buildBurstHud = shouldBuildBurstHud(hud)
     local primaryIconContext = TE.IconState and type(TE.IconState.CreateRefreshContext) == "function"
         and TE.IconState:CreateRefreshContext(primary) or {}
     local primaryDisplay = primaryDisplayFromState(primary, context)
     if not primaryDisplay and context.inCombat ~= true then
         primaryDisplay = buildOutOfCombatPrimary(context)
+    end
+
+    if buildBurstHud ~= true then
+        local advisory = emptyAdvisory(primaryOnly and "hud_primary_only" or "hud_burst_hidden")
+        decorateItem(primaryDisplay, "primary", primaryIconContext)
+        applyAutoBurstVerification(primaryDisplay, advisory)
+        local snapshot = {
+            primary = primary,
+            primaryDisplay = primaryDisplay,
+            history = { active = false, items = {}, source = advisory.candidates.state, notice = "candidate queue retired" },
+            interrupt = emptyInterrupt(advisory.candidates.state),
+            defensives = advisory.defense,
+            advisory = advisory,
+            reaction = emptyReaction(advisory.candidates.state),
+            context = context,
+            settings = settings,
+            hudPrimaryOnly = primaryOnly == true,
+            observedAt = now,
+            queue = {
+                schema = 2,
+                items = {},
+                order = { "primary" },
+                source = advisory.candidates.state,
+            },
+        }
+        publish(snapshot)
+        return snapshot
     end
 
     -- Product scope is intentionally narrowed to the official primary card and
@@ -978,144 +1019,6 @@ function TacticalAdvisors:Refresh(force)
         publish(snapshot)
         return snapshot
     end
-
-    if primaryOnly == true then
-        local advisory = emptyAdvisory("hud_primary_only")
-        local interrupt = emptyInterrupt("hud_primary_only")
-        local reaction = emptyReaction("hud_primary_only")
-        decorateItem(primaryDisplay, "primary", primaryIconContext)
-        applyAutoBurstVerification(primaryDisplay, advisory)
-        local snapshot = {
-            primary = primary,
-            primaryDisplay = primaryDisplay,
-            history = { active = false, items = {}, source = "hud_primary_only", notice = "hud_primary_only" },
-            interrupt = interrupt,
-            defensives = advisory.defense,
-            advisory = advisory,
-            reaction = reaction,
-            context = context,
-            settings = settings,
-            hudPrimaryOnly = true,
-            observedAt = now,
-            queue = {
-                schema = 2,
-                items = {},
-                order = { "primary" },
-                source = "hud_primary_only",
-            },
-        }
-        if TE.TacticalTelemetry and type(TE.TacticalTelemetry.Record) == "function" then
-            TE.TacticalTelemetry:Record(snapshot)
-        end
-        publish(snapshot)
-        return snapshot
-    end
-
-    local runtime = {
-        monitor = TE.ProtocolMonitor and TE.ProtocolMonitor:Sample() or {},
-        environment = TE.EnvironmentCompatibility and TE.EnvironmentCompatibility:Sample() or nil,
-        iconContext = primaryIconContext,
-    }
-
-    local advisory
-    if TE.AdvisoryPlanner and type(TE.AdvisoryPlanner.Build) == "function" then
-        -- 兼容调用形态：TE.AdvisoryPlanner:Build(primary, context, settings)
-        -- 第四个 runtime 仅用于本轮共享的监控/环境/GCD 显示快照。
-        local ok, result = pcall(function() return TE.AdvisoryPlanner:Build(primary, context, settings, runtime) end)
-        if ok and type(result) == "table" then
-            advisory = result
-        else
-            advisory = {
-                safeMode = true,
-                error = tostring(result),
-                candidates = { mode = "prediction", label = "候选预测", items = {}, state = "safe_mode", advisoryOnly = true, blockedReason = "建议引擎安全模式" },
-                burst = { active = false, state = "safe_mode", items = {}, advisoryOnly = true, blockedReason = "建议引擎安全模式" },
-                control = { active = false, state = "safe_mode", items = {}, advisoryOnly = true, blockedReason = "建议引擎安全模式" },
-                mobility = { active = false, state = "safe_mode", items = {}, advisoryOnly = true, blockedReason = "建议引擎安全模式" },
-                defense = { active = false, state = "safe_mode", items = {}, advisoryOnly = true, blockedReason = "建议引擎安全模式" },
-            }
-        end
-    else
-        advisory = {
-            candidates = { mode = "prediction", label = "候选预测", items = {}, state = "unavailable", advisoryOnly = true },
-            burst = { active = false, state = "unavailable", items = {}, advisoryOnly = true },
-            control = { active = false, state = "unavailable", items = {}, advisoryOnly = true },
-            mobility = { active = false, state = "unavailable", items = {}, advisoryOnly = true },
-            defense = { active = false, state = "unavailable", items = {}, advisoryOnly = true },
-        }
-    end
-    if primaryDisplay and advisory and advisory.burst and advisory.burst.overlayPrimary == true and settings.burstHighlightPrimary ~= false then
-        primaryDisplay.procHighlight = true
-        primaryDisplay.burstOverlay = true
-        primaryDisplay.burstState = advisory.burst.state
-        primaryDisplay.burstReason = advisory.burst.notice
-    end
-
-    local interrupt
-    do
-        local ok, result = pcall(buildInterrupt, context.class, settings, runtime.monitor)
-        interrupt = ok and result or { active = false, state = "safe_mode", blockedReason = "打断建议安全模式", error = tostring(result) }
-    end
-
-    -- P3 consumes the shared monitor sample only after the legacy advisory
-    -- builders have completed. It projects read-only target/focus/mouseover and
-    -- visible-nameplate evidence into the same HUD lanes without touching any
-    -- recommendation, AutoBurst, TEAP, TEK or input state.
-    local reaction
-    if REACTION_READONLY_HIGHLIGHT_SUSPENDED == true then
-        reaction = {
-            schema = 1,
-            active = false,
-            state = "suspended",
-            readOnly = true,
-            dispatchAllowed = false,
-            source = "reaction_p3_suspended",
-            notice = "P3 reaction highlight suspended for performance while automatic reaction development is paused.",
-        }
-    else
-        do
-            local ok, result = pcall(buildReactionReadOnly, settings, runtime.monitor)
-            reaction = ok and type(result) == "table" and result or {
-                schema = 1, active = false, state = "safe_mode", readOnly = true,
-                dispatchAllowed = false, source = "reaction_p3_safe_mode", error = tostring(result),
-            }
-        end
-        interrupt, advisory = applyReactionReadOnly(reaction, interrupt, advisory)
-    end
-
-    decorateItem(primaryDisplay, "primary", runtime.iconContext)
-    decorateCollection((advisory.candidates or {}).items, "candidate", runtime.iconContext)
-    decorateCollection((advisory.burst or {}).items, "burst", runtime.iconContext)
-    applyAutoBurstVerification(primaryDisplay, advisory)
-    decorateCollection((advisory.control or {}).items, "control", runtime.iconContext)
-    decorateCollection((advisory.mobility or {}).items, "mobility", runtime.iconContext)
-    if interrupt and interrupt.suggestion then decorateItem(interrupt.suggestion, "interrupt", runtime.iconContext) end
-    local defensives = advisory.defense or { active = false, items = {}, state = "unavailable" }
-    decorateCollection(defensives.items, "defense", runtime.iconContext)
-
-    local snapshot = {
-        primary = primary,
-        primaryDisplay = primaryDisplay,
-        history = buildPreview(primary, settings, advisory.candidates),
-        interrupt = interrupt,
-        defensives = defensives,
-        advisory = advisory,
-        reaction = reaction,
-        context = context,
-        settings = settings,
-        observedAt = now,
-    }
-    if TE.RecommendationQueue and type(TE.RecommendationQueue.Build) == "function" then
-        local ok, queue = pcall(function() return TE.RecommendationQueue:Build(snapshot, settings) end)
-        snapshot.queue = ok and queue or { schema = 1, items = {}, source = "queue_fail_safe", error = tostring(queue) }
-    else
-        snapshot.queue = { schema = 1, items = {}, source = "unavailable" }
-    end
-    if TE.TacticalTelemetry and type(TE.TacticalTelemetry.Record) == "function" then
-        TE.TacticalTelemetry:Record(snapshot)
-    end
-    publish(snapshot)
-    return snapshot
 end
 
 function TacticalAdvisors:GetSnapshot()
@@ -1139,7 +1042,7 @@ local watcher = CreateFrame("Frame")
 local refreshElapsed = 0
 watcher:SetScript("OnUpdate", function(_, delta)
     refreshElapsed = refreshElapsed + (tonumber(delta) or 0)
-    if refreshElapsed < 0.20 then return end
+    if refreshElapsed < ADVISOR_REFRESH_INTERVAL then return end
     refreshElapsed = 0
     TacticalAdvisors:Refresh(true)
 end)

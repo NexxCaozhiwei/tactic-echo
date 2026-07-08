@@ -1,4 +1,4 @@
-import json
+﻿import json
 import os
 import tempfile
 import threading
@@ -39,7 +39,7 @@ def make_record(**overrides):
         "dispatchAttempted": True,
         "inputSent": False,
         "tekState": "Armed",
-        "action_id": "PALADIN_RETRIBUTION_JUDGMENT",
+        "action_id": None,
         "binding": "SHIFT+Z",
     }
     values.update(overrides)
@@ -67,7 +67,7 @@ class AppRuntimeTests(unittest.TestCase):
         )
 
         self.assertEqual(snapshot.process_state, "Armed")
-        self.assertEqual(snapshot.last_action_id, "PALADIN_RETRIBUTION_JUDGMENT")
+        self.assertIsNone(snapshot.last_action_id)
         self.assertTrue(snapshot.last_input_sent)
         self.assertEqual(status_color(snapshot), "green")
 

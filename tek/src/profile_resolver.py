@@ -48,6 +48,25 @@ def load_profile(data: dict, catalog: ActionCatalog = RETRIBUTION_V2) -> Profile
     if data.get("schemaVersion") != 1:
         raise ProfileError("unsupported_schema_version")
 
+    required_action_ids = catalog.action_ids
+    if not required_action_ids:
+        profile_id = data.get("profileId") or "generic-binding-token"
+        if not isinstance(profile_id, str) or not profile_id:
+            raise ProfileError("profile_id_required")
+        normalized: dict[str, str] = {}
+        expected_profile_fingerprint = profile_fingerprint(profile_id, normalized)
+        return Profile(
+            schema_version=1,
+            catalog_version=catalog.version,
+            catalog_fingerprint=catalog.fingerprint,
+            profile_id=profile_id,
+            profile_fingerprint=expected_profile_fingerprint,
+            display_name=str(data.get("displayName") or profile_id),
+            bindings=normalized,
+            runnable=data.get("runnable", True) is True,
+            runtime_status=str(data.get("runtimeStatus") or ("runnable" if data.get("runnable", True) is True else "example_only")),
+        )
+
     catalog_version = data.get("catalogVersion")
     if catalog_version != catalog.version:
         raise ProfileError(f"catalog_version_mismatch:{catalog_version}:{catalog.version}")
@@ -65,7 +84,6 @@ def load_profile(data: dict, catalog: ActionCatalog = RETRIBUTION_V2) -> Profile
     if not isinstance(bindings, dict) or not bindings:
         raise ProfileError("bindings_required")
 
-    required_action_ids = catalog.action_ids
     observed_action_ids = set(bindings.keys())
     missing = sorted(required_action_ids - observed_action_ids)
     if missing:

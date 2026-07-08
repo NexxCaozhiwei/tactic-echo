@@ -1,4 +1,4 @@
-import json
+﻿import json
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
@@ -59,7 +59,7 @@ class CLITests(unittest.TestCase):
             self.assertTrue(trace["gatePassed"])
             self.assertFalse(trace["inputSent"])
             self.assertEqual(trace["reason"], "dry_run_planned")
-            self.assertEqual(trace["action_id"], "PALADIN_RETRIBUTION_JUDGMENT")
+            self.assertIsNone(trace["action_id"])
 
     def test_cli_blocks_by_default_without_foreground_assumption(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -88,7 +88,7 @@ class CLITests(unittest.TestCase):
             self.assertEqual(code, 0)
             trace = json.loads(trace_path.read_text(encoding="utf-8").splitlines()[0])
             self.assertTrue(trace["accepted"])
-            self.assertEqual(trace["action_id"], "PALADIN_RETRIBUTION_JUDGMENT")
+            self.assertIsNone(trace["action_id"])
 
     def test_cli_loop_preserves_sequence_state(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -175,11 +175,22 @@ class CLITests(unittest.TestCase):
 
     def test_live_rejects_non_runnable_desktop_profile(self):
         with tempfile.TemporaryDirectory() as directory:
+            profile_path = Path(directory) / "non-runnable.json"
+            profile_path.write_text(json.dumps({
+                "schemaVersion": 1,
+                "catalogVersion": 3,
+                "catalogFingerprint": "d005247012f71db9",
+                "profileId": "non-runnable",
+                "profileFingerprint": "ignored-by-generic-profile",
+                "displayName": "Non runnable",
+                "runnable": False,
+                "bindings": {},
+            }), encoding="utf-8")
             trace_path = Path(directory) / "tek-live.jsonl"
             code = run_cli([
                 "--live",
                 "--profile",
-                "examples/profiles/desktop-numpad.json",
+                str(profile_path),
                 "--trace",
                 str(trace_path),
             ])

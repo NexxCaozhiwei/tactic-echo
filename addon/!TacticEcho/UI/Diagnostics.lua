@@ -285,7 +285,6 @@ end
 SLASH_TACTICECHOCURRENT1 = "/tecurrent"
 SlashCmdList.TACTICECHOCURRENT = function()
     local result = TE.RecommendationAdapter:ReadOfficial()
-    local action, registryReason = TE.ActionRegistry:ResolveRecommendation(result)
     local inputFocusActive, inputFocusReason = false, nil
     local castLock = { active = false }
     if TE.SignalFrame and TE.SignalFrame.IsInputFocusActive then
@@ -302,8 +301,8 @@ SlashCmdList.TACTICECHOCURRENT = function()
         observedAt = date("%Y-%m-%d %H:%M:%S"),
         elapsed = GetTime and GetTime() or 0,
         recommendation = result,
-        actionId = action and action.actionId or nil,
-        actionRegistryReason = registryReason,
+        actionId = nil,
+        actionRegistryReason = "generic_binding_token_path",
         bindingInfo = bindingInfo,
         unresolvedReason = bindingReason,
         inputFocusActive = inputFocusActive,
