@@ -50,6 +50,39 @@ local function copyColor(name)
     return { color[1], color[2], color[3], color[4] }
 end
 
+local SHOT_CAST_SPELL_IDS = {
+    [75] = true,     -- Auto Shot
+    [19434] = true,  -- Aimed Shot
+    [56641] = true,  -- Steady Shot
+    [257044] = true, -- Rapid Fire
+}
+
+local function plainText(value)
+    local ok, result = pcall(function()
+        if type(value) == "string" then
+            local length = #value
+            if length < 0 then return nil end
+            return value
+        end
+        return nil
+    end)
+    return ok and result or nil
+end
+
+local function castingStateLabel(item)
+    item = type(item) == "table" and item or {}
+    local spellID = tonumber(item.castingSpellID or item.spellID)
+    if spellID and SHOT_CAST_SPELL_IDS[spellID] == true then return "射击" end
+    local name = plainText(item.castingName) or plainText(item.spellName) or ""
+    if name ~= "" then
+        local lower = string.lower(name)
+        if string.find(name, "射击", 1, true) or string.find(lower, "shot", 1, true) then
+            return "射击"
+        end
+    end
+    return "施法"
+end
+
 local function primaryVisual(item)
     if not item or (not item.spellID and not item.itemID) then
         return "unknown", "等待官方推荐"
@@ -262,7 +295,7 @@ function TacticalHudStyles:Resolve(item, kind, meta)
         colorKey, alpha, overlay, label, desaturate = "target", 0.90, "none", "目标", false
         stateLabel = label
     elseif visual == "casting" then
-        colorKey, alpha, label = "casting", 1.00, "施法"
+        colorKey, alpha, label = "casting", 1.00, castingStateLabel(item)
         stateLabel = label
     elseif visual == "channeling" then
         colorKey, alpha, label = "channeling", 1.00, "引导"

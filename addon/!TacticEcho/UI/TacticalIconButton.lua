@@ -404,6 +404,23 @@ local function hideCooldown(frame)
     frame:Hide()
 end
 
+local function applyPressedFrame(card, pressed)
+    if not card then return end
+    pressed = pressed == true
+    safeShown(card.pushedTexture, pressed)
+    if card.nativeBorder then
+        safeShown(card.nativeBorder, not pressed)
+    end
+end
+
+local function restorePressedFrame(card)
+    if not card then return end
+    safeShown(card.pushedTexture, false)
+    if card.nativeBorder and card.resolvedAppearance then
+        safeShown(card.nativeBorder, card.resolvedAppearance.theme == "native" and card.resolvedAppearance.showBorder ~= false)
+    end
+end
+
 -- Equipped trinkets have a source-specific cooldown identity. Item-backed
 -- cards can inherit the shared spell GCD from their visible action-bar button,
 -- so it must not be treated as an item cooldown presentation.
@@ -435,8 +452,8 @@ end
 
 -- The HUD has a deliberate display exception for the main recommendation and
 -- the explicit Burst-window card: a shared player GCD is useful to the input
--- gate, but it is not actionable information on either of these two cards.
--- Keep own cooldowns visible; hide only a pure 61304/shared-GCD presentation.
+-- gate, but it is not an own-cooldown timer on either of these two cards.
+-- Show it only as an unlabeled Blizzard-style swipe; own cooldowns still win.
 -- This function is presentation-only and must never affect AutoBurst, bindings,
 -- TEAP or TEK dispatch.
 local function suppressSharedGcdPresentation(item)
@@ -750,17 +767,16 @@ local function updateCooldown(card, item, spellStyle, gcdStyle)
     -- `61304` overlay enabled would still paint the same 1–1.5s GCD sweep on
     -- a ready trinket after the primary timer has been correctly suppressed.
     -- This is presentation-only and must not affect AutoBurst/CD semantics.
-    local suppressItemGcdLayer = isItemBackedCard(item) or suppressSharedGcd == true
+    local suppressItemGcdLayer = isItemBackedCard(item)
     local gcdCanRender = gcdEnabled
         and suppressItemGcdLayer ~= true
         and not spellShown
         and not nativeSpell
-        and not globalOnly
     local gcdShown = showCooldown(card.gcdCooldown, gcdStart, gcdDuration, gcdCanRender)
     local nativeGcd = false
     if suppressItemGcdLayer == true then
-        -- Main/window cards intentionally hide the shared GCD layer; own spell
-        -- cooldowns above remain visible. Item cards retain the same policy.
+        -- Item cards intentionally hide the shared GCD layer; own item
+        -- cooldowns above remain visible through normalized item snapshots.
         hideCooldown(card.gcdCooldown)
         setNativeCountdownNumbers(card.gcdCooldown, false)
     elseif gcdKnown ~= true and nativeSpell ~= true then
@@ -1200,6 +1216,36 @@ function TacticalIconButton:Create(parent, name, size, interactionRole)
     pcall(card.pushedTexture.SetAtlas, card.pushedTexture, "UI-HUD-ActionBar-IconFrame-Down")
     card.pushedTexture:Hide()
 
+    card.pressAnim = card:CreateAnimationGroup()
+    local pressDown = card.pressAnim:CreateAnimation("Scale")
+    pressDown:SetOrder(1)
+    pressDown:SetDuration(0.07)
+    pressDown:SetOrigin("CENTER", 0, 0)
+    pressDown:SetSmoothing("IN")
+    pressDown:SetScaleFrom(1, 1)
+    pressDown:SetScaleTo(0.85, 0.85)
+    card.pressDownAnim = pressDown
+    local pressUp = card.pressAnim:CreateAnimation("Scale")
+    pressUp:SetOrder(2)
+    pressUp:SetDuration(0.12)
+    pressUp:SetOrigin("CENTER", 0, 0)
+    pressUp:SetSmoothing("OUT")
+    pressUp:SetScaleFrom(0.85, 0.85)
+    pressUp:SetScaleTo(1, 1)
+    card.pressUpAnim = pressUp
+    card.pressAnim:SetScript("OnPlay", function()
+        applyPressedFrame(card, true)
+    end)
+    pressDown:SetScript("OnFinished", function()
+        restorePressedFrame(card)
+    end)
+    card.pressAnim:SetScript("OnFinished", function()
+        restorePressedFrame(card)
+    end)
+    card.pressAnim:SetScript("OnStop", function()
+        restorePressedFrame(card)
+    end)
+
     card.hoverTexture = card.nativeBorderFrame:CreateTexture(nil, "HIGHLIGHT", nil, 0)
     applyActionButtonBorderGeometry(card.hoverTexture, card, card.size)
     pcall(card.hoverTexture.SetAtlas, card.hoverTexture, "UI-HUD-ActionBar-IconFrame-Mouseover")
@@ -1254,16 +1300,12 @@ function TacticalIconButton:Create(parent, name, size, interactionRole)
     end)
     card:SetScript("OnLeave", function(self)
         safeShown(self.hoverTexture, false)
-        safeShown(self.pushedTexture, false)
+        restorePressedFrame(self)
         if GameTooltip then GameTooltip:Hide() end
     end)
-    card:SetScript("OnMouseDown", function(self, button)
-        if button == "LeftButton" and self.resolvedAppearance and self.resolvedAppearance.theme == "native" and self.resolvedAppearance.pressedHighlight then
-            safeShown(self.pushedTexture, true)
-        end
-    end)
+    card:SetScript("OnMouseDown", nil)
     card:SetScript("OnMouseUp", function(self, button)
-        safeShown(self.pushedTexture, false)
+        restorePressedFrame(self)
         if button == "RightButton" and TE.ControlPanel and type(TE.ControlPanel.Show) == "function" then
             TE.ControlPanel:Show(self.settingsPage or "general")
         end
@@ -1281,6 +1323,10 @@ function TacticalIconButton:Create(parent, name, size, interactionRole)
     if card.hudInteractionRole == "manual_action" and TE.HudClickRouter and type(TE.HudClickRouter.Attach) == "function" then
         TE.HudClickRouter:Attach(card)
     end
+    card:SetScript("OnHide", function(self)
+        if self.pressAnim and self.pressAnim:IsPlaying() then self.pressAnim:Stop() end
+        restorePressedFrame(self)
+    end)
     card:Hide()
     return card
 end
@@ -1348,6 +1394,19 @@ function TacticalIconButton:ApplyTextSettings(card, hud, moduleKey)
     -- Masque owns its own skin layers.  It is intentionally disabled while
     -- the native atlas theme is selected so the two border systems cannot mix.
     tryApplyMasque(card, appearance.masque and not native)
+end
+
+function TacticalIconButton:PlayCastFeedback(card)
+    if not card or not card.pressAnim then return false end
+    if not card.resolvedAppearance
+        or card.resolvedAppearance.theme ~= "native"
+        or card.resolvedAppearance.pressedHighlight == false then
+        return false
+    end
+    if type(card.IsVisible) == "function" and card:IsVisible() ~= true then return false end
+    if card.pressAnim:IsPlaying() then card.pressAnim:Stop() end
+    card.pressAnim:Play()
+    return true
 end
 
 function TacticalIconButton:Apply(card, item, hud, moduleKey)

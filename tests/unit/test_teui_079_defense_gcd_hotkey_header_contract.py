@@ -62,8 +62,8 @@ class Teui079DefenseGcdHotkeyHeaderContractTests(unittest.TestCase):
             "formatBinding(item.binding)",
         ):
             self.assertIn(marker, self.icon)
-        self.assertIn('local MODIFIERS = { [""]=0, ALT=1, CTRL=2 }', self.resolver)
-        self.assertNotIn('SHIFT = 3', self.resolver)
+        self.assertIn('local MODIFIERS = { [""]=0, ALT=1, CTRL=2, SHIFT=3 }', self.resolver)
+        self.assertIn('["0"]=28,["-"]=29,["="]=30', self.resolver)
         self.assertIn('binding = bindingInfo and (bindingInfo.binding or bindingInfo.rawBinding) or nil', self.signal)
         self.assertIn('binding = message.binding or binding.binding or binding.rawBinding', self.state)
         self.assertIn('binding = primary.binding or primary.rawBinding', self.advisors)

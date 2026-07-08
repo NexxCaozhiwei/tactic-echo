@@ -60,6 +60,10 @@ class StateDisplayUnificationContractTests(unittest.TestCase):
     def test_hud_line_uses_human_cast_summary_but_icon_keeps_detailed_label(self) -> None:
         board = BOARD.read_text(encoding="utf-8")
         styles = STYLES.read_text(encoding="utf-8")
+        icon = ICON.read_text(encoding="utf-8")
+        self.assertIn('dispatchable = "HAD"', board)
+        self.assertIn('dispatchable = "可用"', icon)
+        self.assertNotIn('label = "HAD"', styles)
         self.assertIn('channeling = "引导中"', board)
         self.assertIn('channeling_lock = "引导中"', board)
         self.assertIn('empowering = "蓄力中"', board)

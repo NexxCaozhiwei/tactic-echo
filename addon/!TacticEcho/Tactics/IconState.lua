@@ -59,6 +59,19 @@ local function plainBoolean(value)
     return nil
 end
 
+local function plainText(value, fallback)
+    local ok, result = pcall(function()
+        if value == nil then return fallback end
+        if type(value) == "string" then
+            local length = #value
+            if length < 0 then return fallback end
+            return value
+        end
+        return fallback
+    end)
+    return ok and type(result) == "string" and result or fallback
+end
+
 local function now()
     if type(GetTime) ~= "function" then return 0 end
     local ok, value = pcall(GetTime)
@@ -366,11 +379,35 @@ local function castSnapshot(options)
     return {
         active = active,
         kind = kind,
+        name = plainText(source.name, nil),
         spellID = spellID,
         startTimeMS = numeric(source.startTimeMS),
         endTimeMS = numeric(source.endTimeMS),
         channeling = active and (kind == "channel" or kind == "empower"),
     }
+end
+
+local function sameBaseSpell(firstSpellID, secondSpellID)
+    firstSpellID, secondSpellID = numeric(firstSpellID), numeric(secondSpellID)
+    if not firstSpellID or not secondSpellID or type(FindBaseSpellByID) ~= "function" then return false end
+    local okFirst, firstBase = pcall(FindBaseSpellByID, firstSpellID)
+    local okSecond, secondBase = pcall(FindBaseSpellByID, secondSpellID)
+    firstBase, secondBase = okFirst and numeric(firstBase) or nil, okSecond and numeric(secondBase) or nil
+    return firstBase ~= nil and secondBase ~= nil and firstBase == secondBase
+end
+
+local function spellMatchesCast(spellID, cast, options)
+    spellID = numeric(spellID)
+    local castSpellID = numeric(cast and cast.spellID)
+    if not spellID or not castSpellID then return false end
+    if spellID == castSpellID then return true end
+    if numeric(options and options.matchedSpellID) == castSpellID then return true end
+    if type(options and options.equivalentSpellIDs) == "table" then
+        for _, equivalentID in ipairs(options.equivalentSpellIDs) do
+            if numeric(equivalentID) == castSpellID then return true end
+        end
+    end
+    return sameBaseSpell(spellID, castSpellID)
 end
 
 local function cooldownBlocked(remaining, charges)
@@ -754,7 +791,7 @@ function IconState:Collect(spellID, options)
         TE.CooldownTracker:RegisterSpell(spellID, trackerMeta)
     end
     local cast = castSnapshot(options)
-    local castThisSpell = cast.spellID ~= nil and spellID ~= nil and cast.spellID == spellID
+    local castThisSpell = spellMatchesCast(spellID, cast, options)
     local state = {
         schema = 6,
         spellID = spellID,
@@ -804,6 +841,7 @@ function IconState:Collect(spellID, options)
         castingThisSpell = castThisSpell == true,
         castingSpellID = cast.spellID,
         castingKind = cast.kind,
+        castingName = cast.name,
         castingStartTimeMS = cast.startTimeMS,
         castingEndTimeMS = cast.endTimeMS,
         unusableReason = nil,
@@ -1055,6 +1093,7 @@ function IconState:Decorate(item, options)
     item.castingThisSpell = state.castingThisSpell
     item.castingSpellID = state.castingSpellID
     item.castingKind = state.castingKind
+    item.castingName = state.castingName
     item.castingStartTimeMS = state.castingStartTimeMS
     item.castingEndTimeMS = state.castingEndTimeMS
     item.globalCasting = state.globalCasting

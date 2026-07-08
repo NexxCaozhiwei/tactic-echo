@@ -12,11 +12,17 @@ class BindingTokenTests(unittest.TestCase):
     def test_roundtrip_whitelist_keyboard(self):
         token=encode_binding_token('ALT+Q')
         self.assertEqual(decode_binding_token(token).binding, 'ALT+Q')
+    def test_roundtrip_shift_digit_and_oem_keys(self):
+        for binding in ('SHIFT+1','SHIFT+2','SHIFT+3','SHIFT+4','SHIFT+5','SHIFT+6','SHIFT+7','SHIFT+8','SHIFT+9','SHIFT+0','SHIFT+-','SHIFT+='):
+            with self.subTest(binding=binding):
+                token=encode_binding_token(binding)
+                self.assertEqual(decode_binding_token(token).binding, binding)
+        self.assertEqual(decode_binding_token(encode_binding_token('SHIFT--')).binding, 'SHIFT+-')
+        self.assertEqual(decode_binding_token(encode_binding_token('SHIFT-EQUALS')).binding, 'SHIFT+=')
     def test_roundtrip_wheel(self):
         token=encode_binding_token('MOUSEWHEELUP')
         self.assertEqual(decode_binding_token(token).input_type, 'wheel')
-    def test_rejects_shift_and_unknown(self):
-        with self.assertRaises(BindingTokenError): encode_binding_token('SHIFT+Q')
+    def test_rejects_unknown(self):
         with self.assertRaises(BindingTokenError): encode_binding_token('F12')
     def test_v3_decode_and_engine_dynamic_binding(self):
         token=encode_binding_token('Q')

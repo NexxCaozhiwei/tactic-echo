@@ -35,8 +35,9 @@ local MAIN_KEYS = {
     Q=1,E=2,R=3,F=4,["1"]=5,["2"]=6,["3"]=7,["4"]=8,["5"]=9,
     Z=10,X=11,C=12,V=13,T=14,G=15,F1=16,F2=17,F3=18,F4=19,["`"]=20,
     MOUSEWHEELUP=21,MOUSEWHEELDOWN=22,BUTTON3=23,
+    ["6"]=24,["7"]=25,["8"]=26,["9"]=27,["0"]=28,["-"]=29,["="]=30,
 }
-local MODIFIERS = { [""]=0, ALT=1, CTRL=2 }
+local MODIFIERS = { [""]=0, ALT=1, CTRL=2, SHIFT=3 }
 local SOURCE = { keyboard=0, wheel=1, mouse=2 }
 
 -- Only Blizzard default bars are scanned.  The resolver keeps a state-aware
@@ -195,10 +196,13 @@ end
 
 local function normalize(binding)
     if type(binding) ~= "string" or binding == "" then return nil, "binding_missing" end
-    local raw = binding:upper():gsub("%-", "+")
-    local modifier, key = raw:match("^(ALT)%+(.+)$")
-    if not modifier then modifier, key = raw:match("^(CTRL)%+(.+)$") end
-    if not key then key, modifier = raw, "" end
+    local source = binding:upper()
+    local modifier, key = source:match("^(ALT)[%+%-](.+)$")
+    if not modifier then modifier, key = source:match("^(CTRL)[%+%-](.+)$") end
+    if not modifier then modifier, key = source:match("^(SHIFT)[%+%-](.+)$") end
+    if not key then key, modifier = source, "" end
+    key = key:gsub("^MINUS$", "-"):gsub("^EQUALS?$", "=")
+    local raw = modifier ~= "" and (modifier .. "+" .. key) or key
     if modifier ~= "" and (key == "MOUSEWHEELUP" or key == "MOUSEWHEELDOWN" or key == "BUTTON3") then
         return nil, "mouse_modifier_unsupported"
     end
@@ -782,6 +786,7 @@ local function buttonIsVisible(button)
 end
 
 local function buttonCoordinates(button)
+    if not button then return nil, nil end
     if type(button.GetCenter) ~= "function" then return nil, nil end
     local ok, x, y = safeCall(button.GetCenter, button)
     if ok then return tonumber(x), tonumber(y) end
@@ -795,7 +800,7 @@ local function addBySpell(index, spellID, entry)
     index[spellID][#index[spellID] + 1] = entry
 end
 
--- Item actions use the same visible-button and real-binding scan as spells.
+-- Item actions use the same default-action-slot and real-binding scan as spells.
 -- This is read-only data for tactical survival diagnostics; it does not add an
 -- item to the primary recommendation, BindingToken flow, or TEK dispatch.
 local function addByItem(index, itemID, entry)
@@ -893,8 +898,8 @@ local function scanStandardButton(cache, spec, index)
     cache.scannedButtons = cache.scannedButtons + 1
     local buttonName = spec.prefix .. index
     local button = _G[buttonName]
-    if not buttonIsVisible(button) then return end
-    cache.visibleButtons = cache.visibleButtons + 1
+    local visible = buttonIsVisible(button)
+    if visible then cache.visibleButtons = cache.visibleButtons + 1 end
 
     local actionSlot, actionType, actionInfoID, subType, actionMacroSpellID, slotSource, attributeSlot = actionInfoForButton(button, spec, index)
     local bindingCommand = spec.bindingPrefix .. index
@@ -904,6 +909,7 @@ local function scanStandardButton(cache, spec, index)
     local x, y = buttonCoordinates(button)
     local entry = {
         buttonName = buttonName,
+        buttonVisible = visible,
         bar = spec.bar,
         barOrder = spec.order,
         buttonIndex = index,
@@ -1398,6 +1404,7 @@ local function makeCandidate(entry, spellID, association, matchedSpellID, matchK
         slot = entry.actionSlot,
         actionSlot = entry.actionSlot,
         buttonName = entry.buttonName,
+        buttonVisible = entry.buttonVisible == true,
         bar = entry.bar,
         visualOrder = entry.visualOrder,
         visualX = entry.visualX,
@@ -1574,6 +1581,7 @@ function Resolver:ResolveSpell(spellID)
         result = {
             spellID=spellID, status="NoBinding", reason=selected.reason or "binding_token_invalid", bindingToken=0,
             slot=selected.slot, actionSlot=selected.actionSlot, buttonName=selected.buttonName,
+            buttonVisible=selected.buttonVisible == true,
             source=selected.source, bindingCommand=selected.bindingCommand, rawBinding=selected.rawBinding,
             bindingSourceIndex=selected.bindingSourceIndex,
             macroID=selected.macroID, macroName=selected.macroName, macroAssociation=selected.macroAssociation,
@@ -1592,6 +1600,7 @@ function Resolver:ResolveSpell(spellID)
         result = {
             spellID=spellID, status="Ready", reason=nil,
             slot=selected.slot, actionSlot=selected.actionSlot, buttonName=selected.buttonName,
+            buttonVisible=selected.buttonVisible == true,
             bar=selected.bar, source=selected.source, bindingCommand=selected.bindingCommand,
             bindingSourceIndex=selected.bindingSourceIndex,
             binding=selected.parsed.binding, bindingToken=selected.parsed.token,

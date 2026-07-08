@@ -118,7 +118,7 @@ end
 local function statusText(primary)
     local visual = primary and primary.visual or {}
     local labels = {
-        dispatchable = "可派发",
+        dispatchable = "HAD",
         primary = "官方推荐",
         display_only = "仅显示",
         blocked = "已阻断",
@@ -215,6 +215,52 @@ local function applyCard(key, card, item, hud, moduleKey)
         -- this light update; no second Board OnUpdate polling loop is needed.
         pcall(TacticalIconButton.RefreshDynamic, TacticalIconButton, card, item)
     end
+end
+
+local function secretValue(value)
+    return type(issecretvalue) == "function" and issecretvalue(value) == true
+end
+
+local function spellMatchesCard(castSpellID, item)
+    castSpellID = tonumber(castSpellID)
+    local cardSpellID = tonumber(item and item.spellID)
+    if not castSpellID or not cardSpellID then return false end
+    if secretValue(castSpellID) or secretValue(cardSpellID) then return false end
+    if castSpellID == cardSpellID then return true end
+
+    local resolver = TE.ActionBarBindingResolver
+    if resolver and type(resolver.GetEquivalentSpellIDs) == "function" then
+        local ok, ids = pcall(resolver.GetEquivalentSpellIDs, resolver, cardSpellID)
+        if ok and type(ids) == "table" then
+            for _, equivalentID in ipairs(ids) do
+                if tonumber(equivalentID) == castSpellID then return true end
+            end
+        end
+    end
+
+    if type(FindBaseSpellByID) == "function" then
+        local okCast, castBase = pcall(FindBaseSpellByID, castSpellID)
+        local okCard, cardBase = pcall(FindBaseSpellByID, cardSpellID)
+        if okCast and okCard and tonumber(castBase) and tonumber(castBase) == tonumber(cardBase) then return true end
+    end
+    return false
+end
+
+local function maybePlayCastFeedback(card, castSpellID)
+    if not card or not card.item or card.item.hidden == true then return false end
+    if type(card.IsVisible) == "function" and card:IsVisible() ~= true then return false end
+    if not spellMatchesCard(castSpellID, card.item) then return false end
+    local ok, played = pcall(TacticalIconButton.PlayCastFeedback, TacticalIconButton, card)
+    return ok and played == true
+end
+
+function TacticalBoard:PlayCastFeedbackForSpell(spellID)
+    if not spellID then return false end
+    if maybePlayCastFeedback(nodes.primary, spellID) then return true end
+    for _, card in ipairs(nodes.tactical and nodes.tactical.burst or {}) do
+        if maybePlayCastFeedback(card, spellID) then return true end
+    end
+    return false
 end
 
 local function bindPrimaryDrag(card)
@@ -322,32 +368,16 @@ local function renderInternal(self, snapshot)
         model.tactical = { burst = {} }
     end
 
-    if hud.compact == true or hud.queueMode == "primary" then
-        for _, item in ipairs(model.candidates or {}) do item.hidden = true end
-        if model.tactical then
-            if model.tactical.interrupt then model.tactical.interrupt.hidden = true end
+    for _, item in ipairs(model.candidates or {}) do item.hidden = true end
+    if model.tactical then
+        if model.tactical.interrupt then model.tactical.interrupt.hidden = true end
+        if model.tactical.control then model.tactical.control.hidden = true end
+        if model.tactical.mobility then model.tactical.mobility.hidden = true end
+        if hud.compact == true or hud.queueMode == "primary" then
             for _, item in ipairs(model.tactical.burst or {}) do item.hidden = true end
-            if model.tactical.control then model.tactical.control.hidden = true end
-            if model.tactical.mobility then model.tactical.mobility.hidden = true end
-        end
-        for _, item in ipairs(model.defense or {}) do item.hidden = true end
-    else
-        if hud.showHistory ~= true then
-            for _, item in ipairs(model.candidates or {}) do item.hidden = true end
-        end
-        for index, item in ipairs(model.candidates or {}) do
-            if index > hud.maxCandidates then item.hidden = true end
-        end
-        if hud.queueMode == "queue" then
-            if model.tactical then
-                if model.tactical.interrupt then model.tactical.interrupt.hidden = true end
-                for _, item in ipairs(model.tactical.burst or {}) do item.hidden = true end
-                if model.tactical.control then model.tactical.control.hidden = true end
-                if model.tactical.mobility then model.tactical.mobility.hidden = true end
-            end
-            for _, item in ipairs(model.defense or {}) do item.hidden = true end
         end
     end
+    for _, item in ipairs(model.defense or {}) do item.hidden = true end
 
     -- Per-module HUD switches affect only presentation.  They deliberately run
     -- after queue-mode filtering so queue policy remains independent from what

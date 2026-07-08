@@ -66,12 +66,13 @@ class InventoryGcdPresentationContractTests(unittest.TestCase):
 
     def test_all_item_backed_cards_suppress_generic_gcd_overlay_layer(self) -> None:
         for marker in (
-            "local suppressItemGcdLayer = isItemBackedCard(item) or suppressSharedGcd == true",
+            "local suppressItemGcdLayer = isItemBackedCard(item)",
             "local gcdCanRender = gcdEnabled",
             "and suppressItemGcdLayer ~= true",
             "hideCooldown(card.gcdCooldown)",
         ):
             self.assertIn(marker, self.icon)
+        self.assertNotIn("local suppressItemGcdLayer = isItemBackedCard(item) or suppressSharedGcd == true", self.icon)
 
     def test_gcd_alias_reaches_hud_model_and_burst_item_collector(self) -> None:
         self.assertIn('"cooldownGcdAlias"', self.model)

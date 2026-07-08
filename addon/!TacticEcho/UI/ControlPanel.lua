@@ -71,6 +71,19 @@ local NAV_ORDER = { "general", "hud", "main", "burst", "interrupt", "defense", "
 local LEGACY_PAGE_ALIAS = {
     tactics = "hud", actionbar = "monitor", safety = "monitor", defensive = "defense",
 }
+PAGE_META.interrupt = nil
+PAGE_META.defense = nil
+PAGE_META.monitor = nil
+PAGE_META.hud.description = "主键与自动爆发 HUD 的显示、图标大小、队列模式、标签和布局。"
+NAV_ORDER = { "general", "hud", "main", "burst", "profiles" }
+LEGACY_PAGE_ALIAS.actionbar = "general"
+LEGACY_PAGE_ALIAS.safety = "general"
+LEGACY_PAGE_ALIAS.defensive = "hud"
+LEGACY_PAGE_ALIAS.interrupt = "hud"
+LEGACY_PAGE_ALIAS.control = "hud"
+LEGACY_PAGE_ALIAS.defense = "hud"
+LEGACY_PAGE_ALIAS.monitor = "general"
+LEGACY_PAGE_ALIAS.debug = "general"
 -- Legacy labels are retained for external slash/menu integrations only. They
 -- map into the eight pages above and never create duplicate navigation entries.
 local LEGACY_PAGE_LABELS = {
@@ -1100,7 +1113,7 @@ function ControlPanel:ResetDisplaySettings()
         hud.scale, hud.alpha, hud.backdropAlpha = 1, 1, 0.08
         hud.outOfCombatAlpha, hud.outOfCombatScale = 0.62, 1
         hud.showHistory, hud.showKeyLabels, hud.showStatusText, hud.showSourceTags = true, true, true, true
-        for _, key in ipairs({ "main", "burst", "interrupt", "defense" }) do
+        for _, key in ipairs({ "main", "burst" }) do
             local style = ensureModuleStyle(hud, key)
             style.show = true
         end
@@ -1637,6 +1650,69 @@ local function buildGeneral(pane)
 end
 
 local function buildHUD(pane)
+    local tactics, hud = ensureTactics()
+    do
+        local y = createSection(pane, "HUD 显示", -12)
+        createCheckbox(pane, "启用 HUD", LEFT_X, y, function() return hud.enabled end, function(value) hud.enabled = value end)
+        createCheckbox(pane, "无推荐时隐藏", RIGHT_X, y, function() return hud.hideWhenIdle end, function(value) hud.hideWhenIdle = value end)
+        y = y - 38
+        createChoice(pane, "脱战显示", LEFT_X, y, 240, {
+            { value = "show", label = "保持显示" }, { value = "dim", label = "淡化显示" }, { value = "hide", label = "隐藏 HUD" },
+        }, function() return hud.outOfCombatMode end, function(value) hud.outOfCombatMode = value end)
+        createCheckbox(pane, "简洁 HUD", RIGHT_X, y, function() return hud.compact end, function(value) hud.compact = value end)
+        y = y - 38
+        createCheckbox(pane, "显示拖动把手", LEFT_X, y, function() return hud.showDragHandle end, function(value) hud.showDragHandle = value end)
+
+        y = y - 76
+        y = createSection(pane, "主键与爆发", y)
+        local mainStyle = getModuleStyle("main")
+        local burstStyle = getModuleStyle("burst")
+        createCheckbox(pane, "显示主键", LEFT_X, y, function() return mainStyle.show ~= false end, function(value) mainStyle.show = value end)
+        createCheckbox(pane, "显示爆发", RIGHT_X, y, function() return burstStyle.show ~= false end, function(value) burstStyle.show = value end)
+        y = y - 38
+        createNumberStepper(pane, "主键图标", LEFT_X, y, 56, function() return mainStyle.iconSize end, function(value) setModuleIconSize("main", value) end, 2, 44, 120, "")
+        createNumberStepper(pane, "爆发图标", RIGHT_X, y, 56, function() return burstStyle.iconSize end, function(value) setModuleIconSize("burst", value) end, 2, 28, 88, "")
+
+        y = y - 76
+        y = createSection(pane, "队列模式", y)
+        createChoice(pane, "模式", LEFT_X, y, 260, {
+            { value = "tactical", label = "主键 + 爆发" },
+            { value = "primary", label = "仅主键" },
+        }, function()
+            return hud.queueMode == "primary" and "primary" or "tactical"
+        end, function(value)
+            hud.queueMode = value == "primary" and "primary" or "tactical"
+        end)
+        createChoice(pane, "爆发方向", RIGHT_X, y, 170, {
+            { value = "RIGHT", label = "向右" }, { value = "LEFT", label = "向左" }, { value = "UP", label = "向上" }, { value = "DOWN", label = "向下" },
+        }, function() return hud.burstGrowth end, function(value) hud.burstGrowth = value end)
+        y = y - 38
+        createChoice(pane, "主键方向", LEFT_X, y, 170, {
+            { value = "RIGHT", label = "向右" }, { value = "LEFT", label = "向左" }, { value = "UP", label = "向上" }, { value = "DOWN", label = "向下" },
+        }, function() return hud.primaryGrowth end, function(value) hud.primaryGrowth = value end)
+        createNumberStepper(pane, "图标间距", RIGHT_X, y, 56, function() return hud.gap end, function(value) hud.gap = value end, 1, 2, 24, "")
+
+        y = y - 76
+        y = createSection(pane, "外观", y)
+        createNumberStepper(pane, "全局缩放", LEFT_X, y, 64, function() return math.floor(hud.scale * 100 + 0.5) end,
+            function(value) hud.scale = value / 100 end, 5, 60, 200, "%")
+        createNumberStepper(pane, "全局透明度", RIGHT_X, y, 64, function() return math.floor(hud.alpha * 100 + 0.5) end,
+            function(value) hud.alpha = value / 100 end, 5, 20, 100, "%")
+        y = y - 38
+        createNumberStepper(pane, "底纹透明度", LEFT_X, y, 64, function() return math.floor(hud.backdropAlpha * 100 + 0.5) end,
+            function(value) hud.backdropAlpha = value / 100 end, 2, 0, 100, "%")
+        createCheckbox(pane, "显示按键标签", RIGHT_X, y, function() return hud.showKeyLabels end, function(value) hud.showKeyLabels = value end)
+        y = y - 38
+        createCheckbox(pane, "显示状态文字", LEFT_X, y, function() return hud.showStatusText end, function(value) hud.showStatusText = value end)
+        createCheckbox(pane, "显示来源标签", RIGHT_X, y, function() return hud.showSourceTags end, function(value) hud.showSourceTags = value end)
+
+        y = y - 76
+        createActionButton(pane, "锁定 / 解锁 HUD", LEFT_X, y, 138, function() hud.locked = not hud.locked; ControlPanel:ApplyVisuals(true) end)
+        createActionButton(pane, "重置 HUD 布局", 162, y, 138, function() ControlPanel:ResetTacticalLayout() end)
+        createActionButton(pane, "恢复显示默认", 310, y, 118, function() ControlPanel:ResetDisplaySettings() end)
+        createActionButton(pane, "隐藏 HUD", 438, y, 98, function() hud.enabled = false; ControlPanel:ApplyVisuals(true) end)
+        return
+    end
     local tactics, hud = ensureTactics()
     local y = createSection(pane, "HUD 显示 / 隐藏", -12)
     createCheckbox(pane, "启用战术 HUD", LEFT_X, y, function() return hud.enabled end, function(value) hud.enabled = value end)
@@ -2566,6 +2642,9 @@ local BUILDERS = {
     monitor = buildMonitor,
     profiles = buildProfiles,
 }
+BUILDERS.interrupt = nil
+BUILDERS.defense = nil
+BUILDERS.monitor = nil
 
 local function showCompactTooltip(owner, status)
     if not GameTooltip or not owner or not status then return end

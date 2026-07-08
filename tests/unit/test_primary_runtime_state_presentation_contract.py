@@ -27,7 +27,10 @@ class PrimaryRuntimeStatePresentationContractTests(unittest.TestCase):
         pause = styles.index('if runtimeState == "paused" or item.paused == true then')
         self.assertLess(casting, pause)
         self.assertIn('return "casting", "正在施放该技能"', styles)
-        self.assertIn('"casting", 1.00, "施法"', styles)
+        self.assertIn('local function castingStateLabel(item)', styles)
+        self.assertIn('return "射击"', styles)
+        self.assertIn('return "施法"', styles)
+        self.assertIn('colorKey, alpha, label = "casting", 1.00, castingStateLabel(item)', styles)
         self.assertIn('"channeling_lock", 0.94, "引导"', styles)
         self.assertNotIn('"channeling_lock", 0.94, "引导锁"', styles)
 

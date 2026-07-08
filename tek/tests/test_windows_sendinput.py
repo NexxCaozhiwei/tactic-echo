@@ -8,7 +8,7 @@ from tek.src.windows_sendinput import INPUT, VIRTUAL_KEYS, WindowsSendInputDispa
 
 class WindowsSendInputTests(unittest.TestCase):
     def test_required_p0_keys_have_virtual_key_codes(self):
-        for key in ["SHIFT", "Z", "X", "C", "G", "H", "N", "R", "T", "Y", "0"]:
+        for key in ["SHIFT", "Z", "X", "C", "G", "H", "N", "R", "T", "Y", "0", "-", "="]:
             self.assertIn(key, VIRTUAL_KEYS)
 
     def test_windows_input_structure_has_expected_size(self):
@@ -29,6 +29,15 @@ class WindowsSendInputTests(unittest.TestCase):
             [event.key for event in plan.events],
             ["SHIFT", "0", "0", "SHIFT"],
         )
+
+    def test_oem_bindings_can_be_planned_for_sendinput_backend(self):
+        for binding, key in (("SHIFT+-", "-"), ("SHIFT+=", "=")):
+            with self.subTest(binding=binding):
+                plan = plan_binding(binding)
+                self.assertEqual(
+                    [event.key for event in plan.events],
+                    ["SHIFT", key, key, "SHIFT"],
+                )
 
     def test_input_plan_rejects_duplicate_modifier(self):
         with self.assertRaisesRegex(InputPlanError, "duplicate_modifier:SHIFT"):

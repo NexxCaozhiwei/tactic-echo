@@ -18,6 +18,19 @@ class IconStateContractTests(unittest.TestCase):
         for forbidden in ("SetBinding(", "SaveBindings(", "SignalFrame:SetState", "SignalEncoder:Encode"):
             self.assertNotIn(forbidden, text)
 
+    def test_casting_match_accepts_equivalent_spell_ids_and_preserves_name(self):
+        text = (ADDON / "Tactics" / "IconState.lua").read_text(encoding="utf-8")
+        for marker in (
+            "local function spellMatchesCast(spellID, cast, options)",
+            "options and options.matchedSpellID",
+            "options and options.equivalentSpellIDs",
+            "sameBaseSpell(spellID, castSpellID)",
+            "name = plainText(source.name, nil)",
+            "castingName = cast.name",
+            "item.castingName = state.castingName",
+        ):
+            self.assertIn(marker, text)
+
     def test_icon_component_renders_all_icon_state_markers(self):
         text = (ADDON / "UI" / "TacticalIconButton.lua").read_text(encoding="utf-8")
         for marker in ("frame:SetCooldown", "card.gcdCooldown", "chargeText", "card.chargeEdge", "引导", "unknown", "触发效果：已高亮"):

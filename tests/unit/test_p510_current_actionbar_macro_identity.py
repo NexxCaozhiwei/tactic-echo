@@ -138,6 +138,65 @@ def test_cursor_trap_macro_uses_current_ctrl1_button_not_same_spell_fallback() -
     run_texlua(script)
 
 
+def test_hidden_default_action_slot_can_dispatch_but_not_manual_click() -> None:
+    resolver_text = RESOLVER.read_text(encoding="utf-8")
+    scan_start = resolver_text.index("local function scanStandardButton")
+    scan_end = resolver_text.index("local function scanStanceButton", scan_start)
+    scan_block = resolver_text[scan_start:scan_end]
+    assert "if not buttonIsVisible(button) then return end" not in scan_block
+    assert "local visible = buttonIsVisible(button)" in scan_block
+    assert "buttonVisible = visible" in scan_block
+    assert "local function manualButtonVisible(button)" in resolver_text
+    assert "manual_actionbar_button_hidden" in resolver_text
+
+    script = textwrap.dedent(
+        f'''\
+        _G.TacticEcho = {{ RegisterEventsSafe = function() end }}
+        _G.NUM_ACTIONBAR_BUTTONS = 12
+        _G.MAX_ACCOUNT_MACROS = 120
+        _G.C_Spell = {{
+            GetSpellInfo = function(value)
+                if value == 187650 then return {{ spellID = 187650, name = "Hidden Dispatch Spell" }} end
+                return nil
+            end,
+        }}
+        _G.ActionButton1 = {{
+            IsShown = function() return false end,
+            IsVisible = function() return false end,
+            GetAttribute = function(_, key) if key == "action" then return 1 end end,
+        }}
+        _G.GetActionBarPage = function() return 1 end
+        _G.GetBonusBarOffset = function() return 0 end
+        _G.GetBindingKey = function(command)
+            if command == "ACTIONBUTTON1" then return "SHIFT-3" end
+            return nil
+        end
+        _G.GetActionInfo = function(slot)
+            if slot == 1 then return "spell", 187650, nil, nil end
+            return nil
+        end
+        _G.CreateFrame = function() return {{ SetScript = function() end }} end
+        _G.GetTime = function() return 1 end
+
+        dofile({str(RESOLVER)!r})
+
+        local resolver = _G.TacticEcho.ActionBarBindingResolver
+        local result = resolver:ResolveSpell(187650)
+        if result.status ~= "Ready" or result.binding ~= "SHIFT+3" or tonumber(result.bindingToken) <= 0 then
+            error("hidden_auto_dispatch_not_ready:" .. tostring(result.status) .. ":" .. tostring(result.binding) .. ":" .. tostring(result.reason))
+        end
+        if result.buttonVisible ~= false then
+            error("hidden_visibility_not_recorded:" .. tostring(result.buttonVisible))
+        end
+        local manual = resolver:ResolveManualHudAction({{ spellID = 187650 }})
+        if manual.status ~= "Blocked" or manual.reason ~= "manual_actionbar_button_hidden" then
+            error("hidden_manual_click_not_blocked:" .. tostring(manual.status) .. ":" .. tostring(manual.reason))
+        end
+        '''
+    )
+    run_texlua(script)
+
+
 def test_recovery_rejects_macro_spell_when_current_body_does_not_reference_trap() -> None:
     script = textwrap.dedent(
         preamble()

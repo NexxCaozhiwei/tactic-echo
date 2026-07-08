@@ -17,10 +17,6 @@ Actions/ActionBarBindingResolver.lua
 Tactics/ManualActionPriority.lua
 Profiles/BindingProfile.lua
 Profiles/ProfileManager.lua
-Diagnostics/MappingExport.lua
-Tactics/HealthCompatibility.lua
-Tactics/ProtocolMonitor.lua
-Tactics/EnvironmentCompatibility.lua
 Signal/SignalEncoder.lua
 Signal/SignalFrame.lua
 Tactics/TacticalState.lua
@@ -29,20 +25,11 @@ Tactics/CooldownResolver.lua
 Tactics/IconState.lua
 Tactics/GCDGate.lua
 Tactics/AbilityProfiles.lua
-Tactics/ReactionBindings.lua
-Tactics/ReactionObservation.lua
-Tactics/ReactionInterruptEvents.lua
-Tactics/AutoReaction.lua
 Tactics/BurstProfiles.lua
 Tactics/BurstStateMachine.lua
 Tactics/BurstPlanner.lua
 Tactics/AutoBurst.lua
-Tactics/AdvisoryPlanner.lua
-Tactics/TacticalTelemetry.lua
 Tactics/TacticalAdvisors.lua
-Tactics/RecommendationQueue.lua
-Recommendation/OfficialApiProbe.lua
-UI/Diagnostics.lua
 UI/ControlPanel.lua
 UI/TacticalHudStyles.lua
 UI/TacticalHudAnimator.lua
@@ -53,4 +40,3 @@ UI/TacticalIconButton.lua
 UI/TacticalHudDragHandle.lua
 UI/TacticalHudLayout.lua
 UI/TacticalBoard.lua
-UI/TargetCastPrompt.lua

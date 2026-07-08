@@ -1241,6 +1241,9 @@ castLockWatcher:SetScript("OnEvent", function(_, event, unit, castGUID, spellID)
         -- Success alone is never authoritative for either cast kind. Waiting
         -- for matching STOP / FAILED / INTERRUPTED prevents a prior cast's
         -- late success event from clearing the next cast's safety lock.
+        if spellID and TE.TacticalBoard and type(TE.TacticalBoard.PlayCastFeedbackForSpell) == "function" then
+            pcall(TE.TacticalBoard.PlayCastFeedbackForSpell, TE.TacticalBoard, spellID)
+        end
         outcome = "ignored_success"
     end
 

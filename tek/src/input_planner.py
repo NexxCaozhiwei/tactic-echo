@@ -14,7 +14,7 @@ MODIFIER_KEYS = {
     "WINDOWS": "WIN",
 }
 
-SUPPORTED_MAIN_KEYS = {str(index) for index in range(10)} | {chr(value) for value in range(ord("A"), ord("Z") + 1)} | {f"F{index}" for index in range(1, 5)} | {"`", "MOUSEWHEELUP", "MOUSEWHEELDOWN", "BUTTON3"}
+SUPPORTED_MAIN_KEYS = {str(index) for index in range(10)} | {chr(value) for value in range(ord("A"), ord("Z") + 1)} | {f"F{index}" for index in range(1, 5)} | {"`", "-", "=", "MOUSEWHEELUP", "MOUSEWHEELDOWN", "BUTTON3"}
 
 
 @dataclass(frozen=True)

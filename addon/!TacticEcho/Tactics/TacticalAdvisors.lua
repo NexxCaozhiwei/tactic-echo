@@ -915,6 +915,70 @@ function TacticalAdvisors:Refresh(force)
         primaryDisplay = buildOutOfCombatPrimary(context)
     end
 
+    -- Product scope is intentionally narrowed to the official primary card and
+    -- AutoBurst. Retired reaction/control/defense/survival/diagnostic planners
+    -- are not sampled here, so the HUD cannot accidentally revive their polling
+    -- or display-only scan cost after their TOC entries are removed.
+    do
+        local runtime = { iconContext = primaryIconContext }
+        local advisory = emptyAdvisory("scope_primary_burst")
+        if TE.BurstPlanner and type(TE.BurstPlanner.Build) == "function" then
+            local ok, result = pcall(function() return TE.BurstPlanner:Build(primary, context, settings, runtime) end)
+            if ok and type(result) == "table" then
+                advisory.burst = result
+            else
+                advisory.burst = {
+                    active = false,
+                    state = "safe_mode",
+                    items = {},
+                    advisoryOnly = true,
+                    blockedReason = "burst_planner_safe_mode",
+                    error = tostring(result),
+                }
+            end
+        else
+            advisory.burst = {
+                active = false,
+                state = "unavailable",
+                items = {},
+                advisoryOnly = true,
+                blockedReason = "burst_planner_unavailable",
+            }
+        end
+        if primaryDisplay and advisory.burst and advisory.burst.overlayPrimary == true and settings.burstHighlightPrimary ~= false then
+            primaryDisplay.procHighlight = true
+            primaryDisplay.burstOverlay = true
+            primaryDisplay.burstState = advisory.burst.state
+            primaryDisplay.burstReason = advisory.burst.notice
+        end
+
+        decorateItem(primaryDisplay, "primary", runtime.iconContext)
+        decorateCollection((advisory.burst or {}).items, "burst", runtime.iconContext)
+        applyAutoBurstVerification(primaryDisplay, advisory)
+
+        local snapshot = {
+            primary = primary,
+            primaryDisplay = primaryDisplay,
+            history = { active = false, items = {}, source = "retired_scope", notice = "candidate queue retired" },
+            interrupt = emptyInterrupt("retired_scope"),
+            defensives = advisory.defense or { active = false, items = {}, state = "retired_scope", advisoryOnly = true },
+            advisory = advisory,
+            reaction = emptyReaction("retired_scope"),
+            context = context,
+            settings = settings,
+            hudPrimaryOnly = hud and hud.queueMode == "primary" or false,
+            observedAt = now,
+            queue = {
+                schema = 2,
+                items = {},
+                order = { "primary", "burst" },
+                source = "primary_burst_scope",
+            },
+        }
+        publish(snapshot)
+        return snapshot
+    end
+
     if primaryOnly == true then
         local advisory = emptyAdvisory("hud_primary_only")
         local interrupt = emptyInterrupt("hud_primary_only")

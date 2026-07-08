@@ -93,6 +93,8 @@ local function sanitize(item)
     item.runtimeReason = plainText(item.runtimeReason, nil)
     item.runtimeReasonText = plainText(item.runtimeReasonText, nil)
     item.displayState = plainText(item.displayState, nil)
+    item.castingName = plainText(item.castingName, nil)
+    item.castingKind = plainText(item.castingKind, nil)
     item.channelingName = plainText(item.channelingName, nil)
     item.empoweringName = plainText(item.empoweringName, nil)
     item.unusableReason = plainText(item.unusableReason, nil)
@@ -227,9 +229,47 @@ end
 function TacticalHudModel:Build(snapshot, hud)
     snapshot = snapshot or {}
     local advisory = snapshot.advisory or {}
-    local interrupt = snapshot.interrupt or {}
-    local defensives = snapshot.defensives or {}
-    local candidates = (snapshot.history or {}).items or (advisory.candidates or {}).items or {}
+    do
+
+    -- Current product scope keeps only the official primary card and the
+    -- AutoBurst queue. Retired lanes stay structurally present as empty tables
+    -- so older render code and SavedVariables cannot revive their cards.
+    local model = {
+        schema = 4,
+        primary = buildPrimary(snapshot),
+        candidates = {},
+        tactical = {
+            interrupt = nil,
+            burst = buildFixedItems((advisory.burst or {}).items, MAX_BURST_CARDS, "burst", {
+                state = (advisory.burst or {}).state,
+                profileKey = (advisory.burst or {}).profileKey,
+                source = (advisory.burst or {}).source,
+            }),
+            control = nil,
+            mobility = nil,
+        },
+        defense = {},
+        meta = {
+            paused = (snapshot.primary or {}).state == "paused" or (snapshot.primary or {}).state == "channeling" or (snapshot.primary or {}).state == "empowering",
+            observedAt = plainNumber(snapshot.observedAt),
+            source = "TacticalAdvisors primary+burst snapshot",
+            layoutPreset = hud and hud.layoutPreset or "queue_horizontal",
+            defenseDetached = false,
+        },
+    }
+
+    for index, item in ipairs(model.tactical.burst or {}) do
+        local raw = ((advisory.burst or {}).items or {})[index]
+        item.hidden = raw == nil or raw.hidden == true
+    end
+
+    local parts = { signature(model.primary) }
+    for index = 1, MAX_BURST_CARDS do
+        parts[#parts + 1] = "burst:" .. tostring(index) .. ":" .. signature(model.tactical.burst[index])
+    end
+    model.fingerprint = table.concat(parts, "|")
+    return model
+    end
 
     local model = {
         schema = 3,
