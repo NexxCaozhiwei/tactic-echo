@@ -43,7 +43,19 @@ local function queueWindowSeconds()
     return seconds
 end
 
-function Gate:BeginCycle(primary)
+function Gate:BeginCycle(primary, shared)
+    -- RuntimeSnapshot is the cycle authority. When it already owns a sanitized
+    -- GCD/cast sample, reuse it instead of calling IconState again.
+    if type(shared) == "table" and type(shared.gcdSnapshot) == "table" then
+        return {
+            schema = 1,
+            phase = nil,
+            gcdSnapshot = shared.gcdSnapshot,
+            castSnapshot = shared.castSnapshot,
+            queueSeconds = number(shared.queueSeconds) or queueWindowSeconds(),
+            shared = true,
+        }
+    end
     if not (TE.IconState and type(TE.IconState.CreateRefreshContext) == "function") then
         return { schema = 1, phase = "UNKNOWN", reason = "icon_state_unavailable" }
     end

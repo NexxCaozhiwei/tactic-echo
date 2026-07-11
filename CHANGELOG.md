@@ -1,5 +1,10 @@
 # 1.1.7 — HUD 容器可见性战斗保护收口
 
+- **AutoBurst 窗口确认防卡死**：当前窗口步骤已派发、官方推荐已离开且确认宽限期结束后，若客户端仍未提供匹配的成功事件或可信自身 CD/充能变化，则以 `window_confirmation_unobserved_released` 安全释放计划；该路径不把超时记为成功，也不推进后续步骤。
+- **覆盖技能事件确认补强**：`UNIT_SPELLCAST_SUCCEEDED` 除冻结绑定中的等效 SpellID 外，还会对当前等待步骤重新读取 Resolver 的有界基础/覆盖等效集合，兼容派发后才发生的 Retail replacement/override 身份变化。
+- **HUD CD 时间一致性**：HUD 数字优先锚定安全的 `cooldownStart + cooldownDuration`；只有 remaining 的业务快照重复绘制时不再用新的 `GetTime` 延后到期点，避免 HUD 倒计时慢于 Blizzard 动作条。
+- **主键/窗口纯 GCD 隐藏**：恢复 1.0.45 冷却展示边界，主键、Burst-window 与物品卡不绘制 `61304`/纯共享 GCD 转盘或数字；已确认的自身 CD 仍正常显示。
+
 - **容器可见性保护**：`TacticalBoard` 在战斗中不再对 `TacticEchoTacticalBoard`、`TacticEchoDefenseBoard` 或状态文本调用 `SetShown`、`Show`、`Hide`，避免 `ADDON_ACTION_BLOCKED TacticEchoDefenseBoard:SetShown()`。
 - **延迟可见性语义固化**：战斗中的 HUD 容器可见性变化只记录 `tacticEchoCombatShownPending`；脱战后再真实显示或隐藏。
 - **输入边界不变**：不新增输入通道，不修改 TEK 派发逻辑；自动打断继续硬暂停，AutoBurst 脱战硬门控、共享宏资格和 HUD `manual_hold` 规则保持不变。

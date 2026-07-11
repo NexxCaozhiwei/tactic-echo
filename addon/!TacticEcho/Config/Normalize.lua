@@ -387,6 +387,7 @@ function Normalize:All()
     settings.sessionPolicy = isEnum(settings.sessionPolicy, { manual_keep = true, pause_out_of_combat = true, close_out_of_combat = true }, defaults.sessionPolicy)
     settings.protocolMode = type(settings.protocolMode) == "string" and settings.protocolMode or defaults.protocolMode
     settings.toggleHotkey = type(settings.toggleHotkey) == "string" and settings.toggleHotkey or defaults.toggleHotkey
+    settings.performanceDiagnostics = boolean(settings.performanceDiagnostics, defaults.performanceDiagnostics == true)
 
     database.tactics = type(database.tactics) == "table" and database.tactics or {}
     local tactics = database.tactics

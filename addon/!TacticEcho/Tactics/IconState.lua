@@ -10,6 +10,11 @@ TE.IconState = IconState
 
 local lastError
 
+local function perfCount(name, amount)
+    local perf = TE.PerformanceDiagnostics
+    if perf and type(perf.Count) == "function" then perf:Count(name, amount) end
+end
+
 -- Blizzard exposes the current global cooldown through this spell ID. The
 -- observation is display-only and is never used as a recommendation, token,
 -- or input condition.
@@ -105,6 +110,7 @@ local function spellCooldown(spellID, options)
     -- public spell snapshot for this evaluation tick.
     if options.liveOnly ~= true
         and TE.CooldownResolver and type(TE.CooldownResolver.GetSpell) == "function" then
+        perfCount("cooldown_resolver_read")
         local ok, snapshot = pcall(TE.CooldownResolver.GetSpell, TE.CooldownResolver, spellID)
         if ok and type(snapshot) == "table" then
             return snapshot.remaining, snapshot.duration, snapshot.start, snapshot.enabled, nil,
@@ -119,6 +125,7 @@ local function spellCooldown(spellID, options)
     -- GCD waiting when countdown numerics are protected; no raw timing escapes.
     local isActive, isOnGCD
     if C_Spell and type(C_Spell.GetSpellCooldown) == "function" then
+        perfCount("cooldown_api_read")
         local ok, info = call(C_Spell.GetSpellCooldown, spellID)
         if ok and type(info) == "table" then
             startTime = info.startTime
@@ -129,6 +136,7 @@ local function spellCooldown(spellID, options)
             isOnGCD = plainBoolean(info.isOnGCD)
         end
     elseif type(GetSpellCooldown) == "function" then
+        perfCount("cooldown_api_read")
         local ok, a, b, c, d = call(GetSpellCooldown, spellID)
         if ok then startTime, duration, enabled, modRate = a, b, c, d end
     end
@@ -147,6 +155,7 @@ local function actionBarPublicCooldown(actionSlot, trusted)
     actionSlot = numeric(actionSlot)
     if trusted ~= true or not actionSlot or actionSlot <= 0 then return nil end
     if not (C_ActionBar and type(C_ActionBar.GetActionCooldown) == "function") then return nil end
+    perfCount("actionbar_cooldown_api_read")
     local ok, info = call(C_ActionBar.GetActionCooldown, actionSlot)
     if not ok or type(info) ~= "table" then return nil end
 
@@ -287,6 +296,7 @@ end
 local function spellCharges(spellID)
     local current, maximum, startTime, duration, modRate
     if C_Spell and type(C_Spell.GetSpellCharges) == "function" then
+        perfCount("charge_api_read")
         local ok, info = call(C_Spell.GetSpellCharges, spellID)
         if ok and type(info) == "table" then
             current = info.currentCharges
@@ -296,6 +306,7 @@ local function spellCharges(spellID)
             modRate = info.chargeModRate
         end
     elseif type(GetSpellCharges) == "function" then
+        perfCount("charge_api_read")
         local ok, a, b, c, d, e = call(GetSpellCharges, spellID)
         if ok then current, maximum, startTime, duration, modRate = a, b, c, d, e end
     end
@@ -416,6 +427,49 @@ local function cooldownBlocked(remaining, charges)
     if remaining == nil or remaining <= 0 then return false end
     if current ~= nil and current > 0 then return false end
     return true
+end
+
+-- Expand the narrow AutoBurst cooldown sample into the HUD state without
+-- touching cooldown, charge, tracker or action-bar APIs a second time.
+local SHARED_COOLDOWN_FIELDS = {
+    "cooldownRemaining", "cooldownDuration", "cooldownStart", "cooldownKnown",
+    "cooldownUnknownReason", "cooldownSource", "cooldownIdentityKey",
+    "cooldownFallback", "cooldownFallbackOrigin", "cooldownConfirmationPending",
+    "cooldownActive", "cooldownOnGCD", "cooldownGcdAlias", "cooldownGcdAliasReason",
+    "cooldownPublicActive", "cooldownPublicActiveKnown", "cooldownPublicOnGCD",
+    "cooldownPublicOnGCDKnown", "cooldownActionBarPublicActive",
+    "cooldownActionBarPublicActiveKnown", "cooldownActionBarPublicOnGCD",
+    "cooldownActionBarPublicOnGCDKnown", "cooldownActionBarDurationKnown",
+    "cooldownActionBarDurationOwnEvidence", "cooldownActionBarNumericOwnEvidence",
+    "cooldownActionBarNumericReady", "cooldownDirectActionBarEvidence",
+    "cooldownDirectActionBarReadyEvidence", "cooldownExactActionVetoEvidence",
+    "cooldownLiveRead", "charges", "maxCharges", "chargeCooldownRemaining",
+    "chargeCooldownDuration", "chargeCooldownStart", "chargeCooldownKnown",
+}
+
+local function applySharedCooldownState(state, sample, gcd)
+    for _, key in ipairs(SHARED_COOLDOWN_FIELDS) do
+        if sample[key] ~= nil then state[key] = sample[key] end
+    end
+    gcd = type(gcd) == "table" and gcd or {}
+    state.gcdRemaining = gcd.remaining
+    state.gcdDuration = gcd.duration
+    state.gcdStart = gcd.start
+    state.gcdKnown = gcd.known == true
+    state.gcdUnknownReason = gcd.reason
+    state.gcdActive = gcd.active == true
+    local charges
+    if sample.charges ~= nil or sample.maxCharges ~= nil then
+        charges = {
+            current = sample.charges,
+            maximum = sample.maxCharges,
+            cooldownRemaining = sample.chargeCooldownRemaining,
+            cooldownDuration = sample.chargeCooldownDuration,
+            cooldownStart = sample.chargeCooldownStart,
+            cooldownKnown = sample.chargeCooldownKnown == true,
+        }
+    end
+    return charges
 end
 
 -- Narrow read-only sampler used by AutoBurst.  Unlike Collect(), this path
@@ -733,6 +787,7 @@ function IconState:CollectInventoryCooldownOnly(slot, expectedItemID, options)
         state.cooldownUnknownReason = "inventory_cooldown_resolver_unavailable"
         return state
     end
+    perfCount("cooldown_inventory_api_read")
     local ok, snapshot = pcall(TE.CooldownResolver.GetInventoryLive, TE.CooldownResolver, slot, expectedItemID)
     if not ok or type(snapshot) ~= "table" then
         state.cooldownUnknownReason = "inventory_cooldown_read_failed"
@@ -763,6 +818,11 @@ function IconState:CollectInventoryCooldownOnly(slot, expectedItemID, options)
     state.cooldownUnknownReason = snapshot.reason
     state.cooldownSource = snapshot.source
     state.cooldownIdentityKey = "inventory:" .. tostring(slot) .. ":item:" .. tostring(currentItemID or expectedItemID or 0)
+    state.cooldownSlotSource = snapshot.slotSource
+    state.cooldownSlotKnown = snapshot.slotKnown
+    state.cooldownSlotActive = snapshot.slotActive
+    state.cooldownItemFallbackKnown = snapshot.itemFallbackKnown
+    state.cooldownItemFallbackActive = snapshot.itemFallbackActive
 
     local gcd = type(options.gcdSnapshot) == "table" and options.gcdSnapshot or collectGcdSnapshot()
     state.gcdKnown = gcd.known == true
@@ -855,6 +915,12 @@ function IconState:Collect(spellID, options)
         return state
     end
 
+    local charges
+    local sharedCooldown = type(options.cooldownSnapshot) == "table" and options.cooldownSnapshot or nil
+    if sharedCooldown and numeric(sharedCooldown.spellID) == spellID then
+        charges = applySharedCooldownState(state, sharedCooldown, options.gcdSnapshot)
+        state.source = "runtime_snapshot_shared_cooldown+signalframe_cast_snapshot_secret_safe"
+    else
     -- AutoBurst requests a fresh spell snapshot per state-machine tick.
     -- This avoids treating a cached shared-GCD overlay as a personal cooldown.
     local remaining, duration, start, _, _, cooldownKnown, cooldownReason, cooldownActive, cooldownOnGCD, resolverSource, resolverIdentity = spellCooldown(spellID, {
@@ -988,7 +1054,7 @@ function IconState:Collect(spellID, options)
     -- Charges use live API values first. When charge numerics become protected
     -- in combat, the same tracker maintains the pre-cached max/current/recharge
     -- state from casts and lazy recovery. It is presentation-only.
-    local charges = spellCharges(spellID)
+    charges = spellCharges(spellID)
     local trackedCharges
     if TE.CooldownTracker and type(TE.CooldownTracker.GetCharges) == "function" then
         local ok, value = pcall(TE.CooldownTracker.GetCharges, TE.CooldownTracker, spellID, trackerMeta)
@@ -1013,6 +1079,8 @@ function IconState:Collect(spellID, options)
         state.chargeCooldownStart = charges.cooldownStart
         state.chargeCooldownKnown = charges.cooldownKnown == true
         if charges.cooldownKnown == false and not state.cooldownUnknownReason then state.cooldownUnknownReason = charges.cooldownUnknownReason end
+    end
+
     end
 
     state.usableState, state.unusableReason = usableState(spellID)
@@ -1042,20 +1110,16 @@ function IconState:Collect(spellID, options)
     return state
 end
 
-function IconState:Decorate(item, options)
+function IconState:ApplyState(item, state)
     item = item or {}
-    local ok, state = pcall(function() return self:Collect(item.spellID, options) end)
-    if not ok then
-        state = {
-            schema = 6,
-            known = false,
-            availability = "unknown",
-            usableState = "unknown",
-            unusableReason = "图标状态采集失败，已启用安全模式",
-            lastError = tostring(state),
-            source = "iconstate_fail_safe",
-        }
-    end
+    state = type(state) == "table" and state or {
+        schema = 6,
+        known = false,
+        availability = "unknown",
+        usableState = "unknown",
+        unusableReason = "图标状态不可用",
+        source = "iconstate_apply_fail_safe",
+    }
     item.iconState = state
     item.cooldownRemaining = state.cooldownRemaining
     item.cooldownDuration = state.cooldownDuration
@@ -1070,9 +1134,6 @@ function IconState:Decorate(item, options)
     item.cooldownActionBarNumericOwnEvidence = state.cooldownActionBarNumericOwnEvidence == true
     item.cooldownActive = state.cooldownActive
     item.cooldownOnGCD = state.cooldownOnGCD
-    -- Preserve the collector's explicit GCD-alias classification for the
-    -- field-proven 1.0.31 renderer. This is display-only: it prevents a
-    -- primary/window card from treating a 61304 alias as its own cooldown.
     item.cooldownGcdAlias = state.cooldownGcdAlias == true
     item.cooldownGcdAliasReason = state.cooldownGcdAliasReason
     item.gcdRemaining = state.gcdRemaining
@@ -1107,4 +1168,21 @@ function IconState:Decorate(item, options)
     item.usableState = state.availability
     item.iconStateError = state.lastError
     return item
+end
+
+function IconState:Decorate(item, options)
+    item = item or {}
+    local ok, state = pcall(function() return self:Collect(item.spellID, options) end)
+    if not ok then
+        state = {
+            schema = 6,
+            known = false,
+            availability = "unknown",
+            usableState = "unknown",
+            unusableReason = "图标状态采集失败，已启用安全模式",
+            lastError = tostring(state),
+            source = "iconstate_fail_safe",
+        }
+    end
+    return self:ApplyState(item, state)
 end

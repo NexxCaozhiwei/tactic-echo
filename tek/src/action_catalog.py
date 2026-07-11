@@ -84,18 +84,25 @@ def catalog_fingerprint(version: int, actions: tuple[CatalogAction, ...]) -> str
     return hashlib.sha256(encoded).hexdigest()[:16]
 
 
-GENERIC_ACTIONS_V3: tuple[CatalogAction, ...] = ()
-
-GENERIC_V3 = ActionCatalog(
-    version=3,
-    actions=GENERIC_ACTIONS_V3,
-    fingerprint=catalog_fingerprint(3, GENERIC_ACTIONS_V3),
+RETRIBUTION_ACTIONS_V2 = (
+    CatalogAction(1, "PALADIN_RETRIBUTION_JUDGMENT", (20271,), "fallback_spell_names"),
+    CatalogAction(2, "PALADIN_RETRIBUTION_BLADE_OF_JUSTICE", (184575,), "single_spell_name"),
+    CatalogAction(3, "PALADIN_RETRIBUTION_DIVINE_STORM", (53385,), "single_spell_name"),
+    CatalogAction(4, "PALADIN_RETRIBUTION_TEMPLAR_STRIKE", (407480, 406647), "primary_spell_name_manual_verify"),
+    CatalogAction(5, "PALADIN_RETRIBUTION_HAMMER_OF_WRATH", (24275,), "fallback_spell_names"),
+    CatalogAction(6, "PALADIN_RETRIBUTION_WAKE_OF_ASHES", (255937,), "single_spell_name"),
+    CatalogAction(7, "PALADIN_RETRIBUTION_DIVINE_TOLL", (375576,), "single_spell_name"),
+    CatalogAction(8, "PALADIN_RETRIBUTION_HAMMER_OF_LIGHT", (427453,), "cast_override_spell_name"),
+    CatalogAction(9, "PALADIN_RETRIBUTION_FINAL_VERDICT", (383328,), "single_spell_name"),
+    CatalogAction(10, "PALADIN_RETRIBUTION_EXECUTION_SENTENCE", (343527,), "single_spell_name"),
 )
-GENERIC_V3.validate()
 
-# Compatibility names for older callers.  TEAP v3 now dispatches solely through
-# BindingToken, so the catalog is an empty protocol identity rather than a
-# class- or specialization-specific action list.
-RETRIBUTION_ACTIONS_V2 = GENERIC_ACTIONS_V3
-RETRIBUTION_V2 = GENERIC_V3
-RETRIBUTION_V1 = GENERIC_V3
+RETRIBUTION_V2 = ActionCatalog(
+    version=2,
+    actions=RETRIBUTION_ACTIONS_V2,
+    fingerprint=catalog_fingerprint(2, RETRIBUTION_ACTIONS_V2),
+)
+RETRIBUTION_V2.validate()
+
+# Compatibility name for older callers; v1 frames are still decoded but fail closed in the gate.
+RETRIBUTION_V1 = RETRIBUTION_V2

@@ -315,8 +315,9 @@ def test_unknown_and_cooldown_verification_icons_are_not_rendered_as_confirmed_g
 def test_fresh_dispatchable_frames_advance_teap_sequence_for_burst_and_official_candidates() -> None:
     signal = read(ADDON / "Signal" / "SignalFrame.lua")
     assert "freshDispatchableFrame" in signal
-    assert "Give every dispatchable armed frame a fresh" in signal
-    assert "if freshDispatchableFrame then" in signal
+    assert "every fresh dispatchable" in signal
+    assert "message._freshDispatchableFrame == true" in signal
+    assert "message and message._freshDispatchableFrame == true" in signal
     assert "sequence = sequence + 1" in signal
 
 

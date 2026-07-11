@@ -7,6 +7,7 @@
 
 Core/Bootstrap.lua
 Core/Context.lua
+Core/PerformanceDiagnostics.lua
 Config/Defaults.lua
 Config/Normalize.lua
 Recommendation/RecommendationResult.lua
@@ -14,6 +15,7 @@ Recommendation/RecommendationAdapter.lua
 Actions/ActionRegistry.lua
 Actions/MacroSemantics.lua
 Actions/ActionBarBindingResolver.lua
+Tactics/RuntimeSnapshot.lua
 Tactics/ManualActionPriority.lua
 Profiles/BindingProfile.lua
 Profiles/ProfileManager.lua

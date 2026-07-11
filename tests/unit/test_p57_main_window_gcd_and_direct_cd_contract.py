@@ -18,21 +18,21 @@ class P57MainWindowGcdAndDirectCooldownContractTests(unittest.TestCase):
         self.state = STATE.read_text(encoding="utf-8")
         self.model = MODEL.read_text(encoding="utf-8")
 
-    def test_main_window_can_show_unlabeled_shared_gcd_swipe(self) -> None:
+    def test_main_window_hides_pure_shared_gcd_swipe(self) -> None:
         for marker in (
             "local function suppressSharedGcdPresentation",
             'item.kind == "primary"',
             'item.burstRole == "window"',
             "local function sharedGcdOnlyForPresentation",
             "shared_gcd_suppressed",
-            "Show it only as an unlabeled Blizzard-style swipe",
+            "Hide that pure shared-GCD swipe completely",
         ):
             self.assertIn(marker, self.icon)
         self.assertIn("presentation-only", self.icon)
         self.assertIn("must never affect AutoBurst, bindings", self.icon)
 
-    def test_renderer_keeps_item_gcd_suppression_but_allows_skill_gcd_swipe(self) -> None:
-        self.assertIn("local suppressItemGcdLayer = isItemBackedCard(item)", self.icon)
+    def test_renderer_suppresses_item_and_main_window_gcd_layers(self) -> None:
+        self.assertIn("local suppressItemGcdLayer = isItemBackedCard(item) or suppressSharedGcd == true", self.icon)
         self.assertIn("local gcdCanRender = gcdEnabled", self.icon)
         self.assertIn("and suppressItemGcdLayer ~= true", self.icon)
         self.assertNotIn("and not globalOnly", self.icon[self.icon.index("local gcdCanRender = gcdEnabled"):self.icon.index("local gcdShown", self.icon.index("local gcdCanRender = gcdEnabled"))])

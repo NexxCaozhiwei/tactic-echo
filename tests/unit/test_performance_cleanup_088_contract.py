@@ -32,7 +32,7 @@ class PerformanceCleanup088ContractTests(unittest.TestCase):
         self.assertIn("function IconState:CreateRefreshContext(primary)", self.icon_state)
         self.assertIn("gcdSnapshot = collectGcdSnapshot()", self.icon_state)
         self.assertIn("primaryIconContext = TE.IconState", self.advisors)
-        self.assertNotIn("monitor = TE.ProtocolMonitor and TE.ProtocolMonitor:Sample()", self.advisors)
+        self.assertIn("monitor = TE.ProtocolMonitor and TE.ProtocolMonitor:Sample()", self.advisors)
         self.assertIn("iconContext = primaryIconContext", self.advisors)
         self.assertIn("gcdSnapshot = iconContext.gcdSnapshot", self.advisors)
         self.assertIn("gcdSnapshot = runtime.iconContext", self.burst)

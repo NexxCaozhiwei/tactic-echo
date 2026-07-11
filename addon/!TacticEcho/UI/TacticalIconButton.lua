@@ -453,7 +453,7 @@ end
 -- The HUD has a deliberate display exception for the main recommendation and
 -- the explicit Burst-window card: a shared player GCD is useful to the input
 -- gate, but it is not an own-cooldown timer on either of these two cards.
--- Show it only as an unlabeled Blizzard-style swipe; own cooldowns still win.
+-- Hide that pure shared-GCD swipe completely; confirmed own cooldowns still win.
 -- This function is presentation-only and must never affect AutoBurst, bindings,
 -- TEAP or TEK dispatch.
 local function suppressSharedGcdPresentation(item)
@@ -767,7 +767,7 @@ local function updateCooldown(card, item, spellStyle, gcdStyle)
     -- `61304` overlay enabled would still paint the same 1–1.5s GCD sweep on
     -- a ready trinket after the primary timer has been correctly suppressed.
     -- This is presentation-only and must not affect AutoBurst/CD semantics.
-    local suppressItemGcdLayer = isItemBackedCard(item)
+    local suppressItemGcdLayer = isItemBackedCard(item) or suppressSharedGcd == true
     local gcdCanRender = gcdEnabled
         and suppressItemGcdLayer ~= true
         and not spellShown
@@ -775,8 +775,8 @@ local function updateCooldown(card, item, spellStyle, gcdStyle)
     local gcdShown = showCooldown(card.gcdCooldown, gcdStart, gcdDuration, gcdCanRender)
     local nativeGcd = false
     if suppressItemGcdLayer == true then
-        -- Item cards intentionally hide the shared GCD layer; own item
-        -- cooldowns above remain visible through normalized item snapshots.
+        -- Item cards and main/window cards intentionally hide the shared GCD
+        -- layer; confirmed own cooldowns above remain visible.
         hideCooldown(card.gcdCooldown)
         setNativeCountdownNumbers(card.gcdCooldown, false)
     elseif gcdKnown ~= true and nativeSpell ~= true then
@@ -908,12 +908,31 @@ local function cachedCooldownText(card, item, ownCooldown)
     local now = GetTime and safeNumber(GetTime()) or nil
     local text, remaining = cooldownText(item)
     if ownCooldown == true and remaining ~= nil and now ~= nil then
-        card.hudCooldownLabelCache = {
-            identity = identity,
-            expiresAt = now + remaining,
-            source = safeText(item.cooldownSource, "snapshot"),
-        }
-        return text, "snapshot"
+        local start = safeNumber(item.cooldownStart)
+        local duration = safeNumber(item.cooldownDuration)
+        local snapshotExpiresAt = start and duration and duration > 0 and (start + duration) or (now + remaining)
+        local cache = card.hudCooldownLabelCache
+        -- Repeated HUD paints may reuse the same business snapshot. Never move
+        -- its expiry forward by adding the same stale `remaining` to a newer
+        -- GetTime value; that makes the HUD count down slower than the action
+        -- bar. Start a new anchor only for a new identity, an expired prior
+        -- cooldown, or an authoritative start+duration timestamp.
+        if type(cache) ~= "table" or cache.identity ~= identity
+            or safeNumber(cache.expiresAt) == nil or safeNumber(cache.expiresAt) <= now
+            or (start ~= nil and duration ~= nil and duration > 0) then
+            card.hudCooldownLabelCache = {
+                identity = identity,
+                expiresAt = snapshotExpiresAt,
+                source = safeText(item.cooldownSource, "snapshot"),
+            }
+            cache = card.hudCooldownLabelCache
+        elseif snapshotExpiresAt < cache.expiresAt then
+            -- A newer safe sample may shorten a cooldown; accept that
+            -- correction, but never extend an existing remaining-only anchor.
+            cache.expiresAt = snapshotExpiresAt
+        end
+        local anchoredRemaining = math.max(0, (safeNumber(cache.expiresAt) or now) - now)
+        return formatCooldownText(anchoredRemaining), "snapshot_anchor"
     end
 
     local cache = card.hudCooldownLabelCache

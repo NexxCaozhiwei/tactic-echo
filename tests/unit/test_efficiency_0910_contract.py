@@ -46,44 +46,21 @@ class Efficiency0910ContractTests(unittest.TestCase):
         self.assertIn("NAMEPLATE_CONTROL_SCAN_SUSPENDED = true", observation)
         self.assertIn("nameplate_control_scan_suspended", observation)
         self.assertIn("REACTION_READONLY_HIGHLIGHT_SUSPENDED = true", advisors)
-        self.assertNotIn('source = "reaction_p3_suspended"', advisors)
+        self.assertIn("reaction_p3_suspended", advisors)
 
     def test_primary_only_hud_uses_lightweight_advisor_path(self) -> None:
         advisors = (ADDON / "Tactics" / "TacticalAdvisors.lua").read_text(encoding="utf-8")
         self.assertIn('hud.queueMode == "primary"', advisors)
-        self.assertIn("local function shouldBuildBurstHud(hud)", advisors)
-        self.assertIn("local ADVISOR_REFRESH_INTERVAL = 0.35", advisors)
-        self.assertIn("if refreshElapsed < ADVISOR_REFRESH_INTERVAL then return end", advisors)
-        self.assertIn('if hud.compact == true or hud.queueMode == "primary" then return false end', advisors)
-        self.assertIn('local advisory = emptyAdvisory(primaryOnly and "hud_primary_only" or "hud_burst_hidden")', advisors)
-        self.assertIn("hudPrimaryOnly = primaryOnly == true", advisors)
+        self.assertIn('emptyAdvisory("hud_primary_only")', advisors)
+        self.assertIn("hudPrimaryOnly = true", advisors)
         self.assertLess(
-            advisors.index("if buildBurstHud ~= true then"),
-            advisors.index("TE.BurstPlanner:Build(primary, context, settings, runtime)"),
+            advisors.index("if primaryOnly == true then"),
+            advisors.index("monitor = TE.ProtocolMonitor and TE.ProtocolMonitor:Sample()"),
         )
-        self.assertNotIn("TE.AdvisoryPlanner:Build(primary, context, settings, runtime)", advisors)
-        self.assertNotIn("monitor = TE.ProtocolMonitor and TE.ProtocolMonitor:Sample()", advisors)
-
-    def test_signalframe_only_builds_autoburst_snapshot_for_reaction_consumer(self) -> None:
-        signal = (ADDON / "Signal" / "SignalFrame.lua").read_text(encoding="utf-8")
-        self.assertIn('if inCombat and TE.AutoBurst and type(TE.AutoBurst.Evaluate) == "function" then', signal)
-        reaction_gate = signal.index('if TE.AutoReaction and type(TE.AutoReaction.Evaluate) == "function" then')
-        snapshot_call = signal.index('pcall(TE.AutoBurst.GetSnapshot, TE.AutoBurst)', reaction_gate)
-        self.assertLess(reaction_gate, snapshot_call)
-
-    def test_signalframe_reuses_only_official_tick_messages_at_wr_cadence(self) -> None:
-        signal = (ADDON / "Signal" / "SignalFrame.lua").read_text(encoding="utf-8")
-        self.assertIn("local OFFICIAL_RECOMMENDATION_REBUILD_INTERVAL = 0.10", signal)
-        self.assertIn("local REUSABLE_OFFICIAL_TICK_STATES = {", signal)
-        self.assertIn("waiting = true", signal)
-        self.assertIn("armed = true", signal)
-        self.assertIn("paused = true", signal)
-        self.assertIn("blocked = true", signal)
-        self.assertIn('if message.dispatchOrigin == "burst" or message.dispatchOrigin == "reaction" then return false end', signal)
-        self.assertIn('local canReuse = reason == "tick"', signal)
-        self.assertIn('and reusableOfficialTickMessage(lastMessage)', signal)
-        self.assertIn('OFFICIAL_RECOMMENDATION_REBUILD_INTERVAL', signal)
-        self.assertIn('local message = canReuse and cloneMessageForFreshness(lastMessage) or self:BuildMessage(reason)', signal)
+        self.assertLess(
+            advisors.index("if primaryOnly == true then"),
+            advisors.index("TE.AdvisoryPlanner:Build(primary, context, settings, runtime)"),
+        )
 
     def test_primary_only_disables_unused_observer_scans(self) -> None:
         monitor = (ADDON / "Tactics" / "ProtocolMonitor.lua").read_text(encoding="utf-8")

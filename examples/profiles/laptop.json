@@ -1,9 +1,23 @@
-{
+﻿{
   "schemaVersion": 1,
-  "catalogVersion": 3,
-  "catalogFingerprint": "d005247012f71db9",
+  "catalogVersion": 2,
+  "catalogFingerprint": "648482895f1293f5",
   "profileId": "laptop",
-  "profileFingerprint": "b96c4365f2a1fbd3",
-  "displayName": "Generic BindingToken profile",
-  "bindings": {}
+  "profileFingerprint": "fa6f775d78e31239",
+  "displayName": "笔记本键盘示例",
+  "notes": "P1-08 默认示例。与 TE 游戏内隐藏安全按钮绑定保持一致；不需要用户把宏拖到动作条。",
+  "runnable": true,
+  "runtimeStatus": "runnable",
+  "bindings": {
+    "PALADIN_RETRIBUTION_JUDGMENT": "SHIFT+Z",
+    "PALADIN_RETRIBUTION_BLADE_OF_JUSTICE": "SHIFT+X",
+    "PALADIN_RETRIBUTION_DIVINE_STORM": "SHIFT+C",
+    "PALADIN_RETRIBUTION_TEMPLAR_STRIKE": "SHIFT+G",
+    "PALADIN_RETRIBUTION_HAMMER_OF_WRATH": "SHIFT+H",
+    "PALADIN_RETRIBUTION_WAKE_OF_ASHES": "SHIFT+N",
+    "PALADIN_RETRIBUTION_DIVINE_TOLL": "SHIFT+R",
+    "PALADIN_RETRIBUTION_HAMMER_OF_LIGHT": "SHIFT+T",
+    "PALADIN_RETRIBUTION_FINAL_VERDICT": "SHIFT+Y",
+    "PALADIN_RETRIBUTION_EXECUTION_SENTENCE": "SHIFT+0"
+  }
 }

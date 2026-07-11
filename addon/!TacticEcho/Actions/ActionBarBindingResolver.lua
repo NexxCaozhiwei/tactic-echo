@@ -8,7 +8,7 @@ local TE = _G.TacticEcho
 local Resolver = {}
 TE.ActionBarBindingResolver = Resolver
 
-Resolver.schemaVersion = 2
+Resolver.schemaVersion = 3
 Resolver.lastReason = "not_scanned"
 Resolver.lastScanReason = "not_scanned"
 Resolver.cache = {}
@@ -29,6 +29,46 @@ Resolver.specialActionBarState = {
     active = false, reason = nil, sources = {},
     extraActionVisible = false, extraActionSources = {},
 }
+
+-- Macro identity and semantics are structural data. They must not be rebuilt
+-- when Blizzard merely refreshes an action button's usable/highlight state.
+-- These caches are invalidated only by macro-list changes or a fresh login.
+Resolver.macroCacheGeneration = 0
+Resolver.macroLayoutCache = nil
+Resolver.macroInfoCache = {}
+Resolver.macroSpellCache = {}
+Resolver.macroSemanticCache = {}
+Resolver.opaqueMacroNameCache = {}
+Resolver.macroCatalog = nil
+
+local MACRO_FAILURE_RETRY_SECONDS = 0.35
+
+local function perfCount(name, amount)
+    local perf = TE.PerformanceDiagnostics
+    -- Avoid entering the diagnostics object on hot paths while it is disabled.
+    if not (perf and perf.enabled == true and type(perf.Count) == "function") then return end
+    perf:Count(name, amount)
+end
+
+local function perfBegin(name)
+    local perf = TE.PerformanceDiagnostics
+    if not (perf and perf.enabled == true and type(perf.Begin) == "function") then return nil end
+    return perf:Begin(name)
+end
+
+local function perfFinish(token)
+    if token == nil then return end
+    local perf = TE.PerformanceDiagnostics
+    if perf and perf.enabled == true and type(perf.Finish) == "function" then perf:Finish(token) end
+end
+
+local function resolverNow()
+    if type(GetTime) == "function" then
+        local ok, value = pcall(GetTime)
+        if ok and type(value) == "number" then return value end
+    end
+    return 0
+end
 
 -- BindingToken schema 1.  Keep this list in sync with TEK binding_tokens.py.
 local MAIN_KEYS = {
@@ -318,19 +358,32 @@ local function hasMacroBody(body)
 end
 
 local function macroIndexLayout()
+    local cached = Resolver.macroLayoutCache
+    if type(cached) == "table" and cached.generation == Resolver.macroCacheGeneration then
+        perfCount("resolver_macro_layout_hit")
+        return cached
+    end
     if type(GetNumMacros) ~= "function" then return nil end
+    perfCount("resolver_get_num_macros")
     local ok, accountCount, characterCount = safeCall(GetNumMacros)
     if not ok then return nil end
     accountCount = math.max(0, math.floor(tonumber(accountCount) or 0))
     characterCount = math.max(0, math.floor(tonumber(characterCount) or 0))
     local accountLimit = math.max(accountCount, math.floor(tonumber(MAX_ACCOUNT_MACROS) or 120))
-    return {
+    cached = {
+        generation = Resolver.macroCacheGeneration,
         accountCount = accountCount,
         characterCount = characterCount,
         accountLimit = accountLimit,
         characterStart = accountLimit + 1,
         characterEnd = accountLimit + characterCount,
+        indexes = {},
     }
+    for index = 1, accountCount do cached.indexes[#cached.indexes + 1] = index end
+    for index = cached.characterStart, cached.characterEnd do cached.indexes[#cached.indexes + 1] = index end
+    Resolver.macroLayoutCache = cached
+    perfCount("resolver_macro_layout_build")
+    return cached
 end
 
 local function isCurrentMacroIndex(value, layout)
@@ -341,18 +394,29 @@ local function isCurrentMacroIndex(value, layout)
 end
 
 local function macroIndexList(layout)
+    if not layout then return {} end
+    if type(layout.indexes) == "table" then return layout.indexes end
     local indexes = {}
-    if not layout then return indexes end
-    for index = 1, layout.accountCount do
-        indexes[#indexes + 1] = index
-    end
-    for index = layout.characterStart, layout.characterEnd do
-        indexes[#indexes + 1] = index
-    end
+    for index = 1, layout.accountCount do indexes[#indexes + 1] = index end
+    for index = layout.characterStart, layout.characterEnd do indexes[#indexes + 1] = index end
+    layout.indexes = indexes
     return indexes
 end
 
 local function readMacroInfoWithRetries(macroIndex)
+    macroIndex = normalizeMacroIndex(macroIndex)
+    local now = resolverNow()
+    local cached = macroIndex and Resolver.macroInfoCache[macroIndex] or nil
+    if type(cached) == "table" and cached.generation == Resolver.macroCacheGeneration then
+        local snapshot = cached.snapshot
+        local stable = type(snapshot) == "table" and hasMacroBody(snapshot.body)
+        local recentFailure = not stable and (now - (cached.readAt or 0)) < MACRO_FAILURE_RETRY_SECONDS
+        if stable or recentFailure then
+            perfCount("resolver_macro_snapshot_hit")
+            return snapshot
+        end
+    end
+
     local snapshot = {
         macroIndex = macroIndex,
         readAttempts = 0,
@@ -360,11 +424,20 @@ local function readMacroInfoWithRetries(macroIndex)
         firstBodyLength = 0,
         largestBodyLength = 0,
     }
+    perfCount("resolver_macro_snapshot_build")
     if type(GetMacroInfo) ~= "function" then
         snapshot.failureReason = "macro_info_api_unavailable"
+        if macroIndex then
+            Resolver.macroInfoCache[macroIndex] = {
+                generation = Resolver.macroCacheGeneration,
+                readAt = now,
+                snapshot = snapshot,
+            }
+        end
         return snapshot
     end
     for attempt = 1, MAX_MACRO_INFO_INDEX_READS do
+        perfCount("resolver_get_macro_info")
         local ok, macroName, icon, body = safeCall(GetMacroInfo, macroIndex)
         snapshot.readAttempts = attempt
         if ok then
@@ -381,22 +454,116 @@ local function readMacroInfoWithRetries(macroIndex)
                 snapshot.macroName = macroName or snapshot.firstName
                 snapshot.icon = icon or snapshot.lastIcon
                 snapshot.body = body
-                return snapshot
+                break
             end
         end
     end
-    snapshot.failureReason = "macro_body_unavailable"
+    if not hasMacroBody(snapshot.body) then snapshot.failureReason = "macro_body_unavailable" end
+    if macroIndex then
+        Resolver.macroInfoCache[macroIndex] = {
+            generation = Resolver.macroCacheGeneration,
+            readAt = now,
+            snapshot = snapshot,
+        }
+    end
     return snapshot
 end
 
 local function readMacroSpellInfo(macroIndex)
+    macroIndex = normalizeMacroIndex(macroIndex)
+    local now = resolverNow()
+    local cached = macroIndex and Resolver.macroSpellCache[macroIndex] or nil
+    if type(cached) == "table" and cached.generation == Resolver.macroCacheGeneration then
+        local stable = type(cached.result) == "table" and cached.result.success == true
+        local recentFailure = not stable and (now - (cached.readAt or 0)) < MACRO_FAILURE_RETRY_SECONDS
+        if stable or recentFailure then
+            perfCount("resolver_macro_spell_hit")
+            return cached.result
+        end
+    end
+
     local result = { macroIndex = macroIndex, success = false, spellName = nil, spellID = nil }
-    if type(GetMacroSpell) ~= "function" then return result end
-    local ok, spellName, _, spellID = safeCall(GetMacroSpell, macroIndex)
-    result.success = ok
-    result.spellName = type(spellName) == "string" and spellName or nil
-    result.spellID = normalizeSpellID(spellID)
+    perfCount("resolver_macro_spell_build")
+    if type(GetMacroSpell) == "function" then
+        perfCount("resolver_get_macro_spell")
+        local ok, spellName, _, spellID = safeCall(GetMacroSpell, macroIndex)
+        result.success = ok
+        result.spellName = type(spellName) == "string" and spellName or nil
+        result.spellID = normalizeSpellID(spellID)
+    end
+    if macroIndex then
+        Resolver.macroSpellCache[macroIndex] = {
+            generation = Resolver.macroCacheGeneration,
+            readAt = now,
+            result = result,
+        }
+    end
     return result
+end
+
+local function readMacroSemantics(macroIndex, body)
+    if not hasMacroBody(body) then return nil, nil end
+    local cached = Resolver.macroSemanticCache[body]
+    if type(cached) == "table" then
+        perfCount("resolver_macro_semantics_hit")
+        return cached.semantics, cached.summary
+    end
+    perfCount("resolver_macro_semantics_build")
+    local semantics = TE.MacroSemantics and type(TE.MacroSemantics.Analyze) == "function"
+        and TE.MacroSemantics:Analyze(body) or nil
+    local summary = TE.MacroSemantics and type(TE.MacroSemantics.Summary) == "function"
+        and TE.MacroSemantics:Summary(semantics) or nil
+    Resolver.macroSemanticCache[body] = {
+        macroIndex = macroIndex,
+        semantics = semantics,
+        summary = summary,
+    }
+    return semantics, summary
+end
+
+local function ensureMacroCatalog(layout)
+    if not layout then return { generation = Resolver.macroCacheGeneration, entries = {} } end
+    local catalog = Resolver.macroCatalog
+    if type(catalog) == "table"
+        and catalog.generation == Resolver.macroCacheGeneration
+        and catalog.accountCount == layout.accountCount
+        and catalog.characterCount == layout.characterCount
+        and catalog.accountLimit == layout.accountLimit then
+        perfCount("resolver_macro_catalog_hit")
+        return catalog
+    end
+
+    local timer = perfBegin("ActionBarBindingResolver.BuildMacroCatalog")
+    perfCount("resolver_macro_catalog_build")
+    catalog = {
+        generation = Resolver.macroCacheGeneration,
+        accountCount = layout.accountCount,
+        characterCount = layout.characterCount,
+        accountLimit = layout.accountLimit,
+        entries = {},
+        byIndex = {},
+    }
+    local indexes = macroIndexList(layout)
+    perfCount("resolver_semantic_scanned_indexes", #indexes)
+    for _, macroIndex in ipairs(indexes) do
+        local snapshot = readMacroInfoWithRetries(macroIndex)
+        if hasMacroBody(snapshot.body) then
+            local spellInfo = readMacroSpellInfo(macroIndex)
+            local semantics, summary = readMacroSemantics(macroIndex, snapshot.body)
+            local entry = {
+                macroIndex = macroIndex,
+                snapshot = snapshot,
+                spellInfo = spellInfo,
+                semantics = semantics,
+                summary = summary,
+            }
+            catalog.entries[#catalog.entries + 1] = entry
+            catalog.byIndex[macroIndex] = entry
+        end
+    end
+    Resolver.macroCatalog = catalog
+    perfFinish(timer)
+    return catalog
 end
 
 local function setResolvedMacro(diag, snapshot, spellInfo, source, identitySource)
@@ -481,7 +648,21 @@ local function readOpaqueActionInfoHandleName(actionInfoID, diag)
     if type(diag) ~= "table" or diag.actionInfoLooksLikeMacroIndex == true then return end
     local handle = normalizeMacroIndex(actionInfoID)
     if not handle or type(GetMacroInfo) ~= "function" then return end
-    local ok, macroName = safeCall(GetMacroInfo, handle)
+    local cached = Resolver.opaqueMacroNameCache[handle]
+    local ok, macroName
+    if type(cached) == "table" and cached.generation == Resolver.macroCacheGeneration then
+        perfCount("resolver_opaque_macro_name_hit")
+        ok, macroName = cached.ok, cached.name
+    else
+        perfCount("resolver_opaque_macro_name_build")
+        perfCount("resolver_get_macro_info")
+        ok, macroName = safeCall(GetMacroInfo, handle)
+        Resolver.opaqueMacroNameCache[handle] = {
+            generation = Resolver.macroCacheGeneration,
+            ok = ok == true,
+            name = type(macroName) == "string" and macroName or nil,
+        }
+    end
     diag.actionInfoLabelProbeAttempted = true
     diag.actionInfoLabelProbeSuccess = ok == true
     if type(macroName) == "string" and macroName ~= "" then
@@ -554,16 +735,24 @@ local function semanticMacroResolution(labelCandidates, representedSpellID, layo
 
     local namedMatchesByIndex, namedMatchingIndexes = {}, {}
     local displayMatchesByIndex, displayMatchingIndexes = {}, {}
-    for _, macroIndex in ipairs(macroIndexList(layout)) do
-        local snapshot = readMacroInfoWithRetries(macroIndex)
+    perfCount("resolver_semantic_full_scan")
+    local catalog = ensureMacroCatalog(layout)
+    for _, catalogEntry in ipairs(catalog.entries or {}) do
+        local macroIndex = catalogEntry.macroIndex
+        local snapshot = catalogEntry.snapshot
         if hasMacroBody(snapshot.body) then
             local labelSource = labels[snapshot.macroName] and labelSources[snapshot.macroName] or nil
-            local spellInfo = readMacroSpellInfo(macroIndex)
+            local spellInfo = catalogEntry.spellInfo or readMacroSpellInfo(macroIndex)
             local spellMatches = tonumber(spellInfo.spellID) == tonumber(representedSpellID)
             -- P5.5/P5.6 identity rule: represented SpellID and GetMacroSpell
             -- may corroborate a result, but the recovered current macro body
             -- must itself reference the requested spell.
-            local bodyMatches = macroBodyReferencesSpell(snapshot.body, expectedName, representedSpellID)
+            local bodyMatches = macroBodyReferencesSpell(
+                snapshot.body,
+                expectedName,
+                representedSpellID,
+                catalogEntry.semantics
+            )
 
             if labelSource then
                 if labelSource == "action_text" then
@@ -652,6 +841,111 @@ local function semanticMacroResolution(labelCandidates, representedSpellID, layo
     return nil
 end
 
+-- `/use 13` and `/use 14` macros have no represented SpellID. Retail may also
+-- expose an opaque action-info value rather than a current macro-list index, so
+-- the normal spell-backed semantic recovery above cannot prove their identity.
+-- Recover only the deliberately narrow equipped-trinket shape: one read-only
+-- action-slot label must name exactly one current macro whose parsed body
+-- references exactly one of slots 13/14. Duplicate same-name/same-slot bodies
+-- and dual-slot macros remain fail-closed.
+local function semanticInventoryMacroResolution(labelCandidates, layout, diag)
+    diag.inventorySemanticAttempted = true
+    diag.inventoryActionTextCandidateCount = 0
+    diag.inventoryActionInfoNameCandidateCount = 0
+    diag.inventorySemanticCandidateCount = 0
+    diag.inventorySemanticRejectedCount = 0
+    if type(labelCandidates) ~= "table" or #labelCandidates == 0 then
+        diag.inventorySemanticRelevant = false
+        return nil
+    end
+    if not layout then
+        diag.inventorySemanticRelevant = false
+        return nil
+    end
+    if not (TE.MacroSemantics and type(TE.MacroSemantics.MatchInventorySlot) == "function") then
+        diag.inventorySemanticRelevant = false
+        return nil
+    end
+
+    local labels, labelSources = {}, {}
+    for _, item in ipairs(labelCandidates) do
+        local name = type(item) == "table" and item.name or nil
+        local source = type(item) == "table" and item.source or nil
+        if type(name) == "string" and name ~= "" and not labels[name] then
+            labels[name] = true
+            labelSources[name] = source
+        end
+    end
+    if not next(labels) then
+        diag.inventorySemanticRelevant = false
+        return nil
+    end
+
+    -- Unlike a spell macro, an inventory-slot macro has no represented SpellID
+    -- from the action button to disambiguate duplicate macro names. Therefore the
+    -- read-only label itself must identify exactly one current macro index before
+    -- its body may be considered.
+    local labeledByIndex, labeledIndexes = {}, {}
+    perfCount("resolver_inventory_semantic_full_scan")
+    local catalog = ensureMacroCatalog(layout)
+    for _, catalogEntry in ipairs(catalog.entries or {}) do
+        local snapshot = catalogEntry.snapshot
+        local labelSource = type(snapshot) == "table"
+            and labels[snapshot.macroName] and labelSources[snapshot.macroName] or nil
+        if labelSource then
+            local macroIndex = catalogEntry.macroIndex
+            labeledByIndex[macroIndex] = {
+                snapshot = snapshot,
+                spellInfo = catalogEntry.spellInfo,
+                semantics = catalogEntry.semantics,
+                labelSource = labelSource,
+            }
+            labeledIndexes[#labeledIndexes + 1] = macroIndex
+            if labelSource == "action_text" then
+                diag.inventoryActionTextCandidateCount = diag.inventoryActionTextCandidateCount + 1
+            elseif labelSource == "action_info_macro_name" then
+                diag.inventoryActionInfoNameCandidateCount = diag.inventoryActionInfoNameCandidateCount + 1
+            end
+        end
+    end
+
+    diag.inventorySemanticRelevant = #labeledIndexes > 0
+    diag.inventorySemanticCandidateCount = #labeledIndexes
+    if #labeledIndexes > 1 then
+        diag.inventorySemanticCandidateIndexes = labeledIndexes
+        diag.failureReason = "macro_semantic_identity_ambiguous"
+        return nil
+    end
+    if #labeledIndexes == 0 then return nil end
+
+    local candidate = labeledByIndex[labeledIndexes[1]]
+    local semantics = candidate.semantics
+    local matchedSlot = nil
+    if hasMacroBody(candidate.snapshot.body) and type(semantics) == "table" then
+        local slot13 = TE.MacroSemantics:MatchInventorySlot(semantics, 13, "broad") == true
+        local slot14 = TE.MacroSemantics:MatchInventorySlot(semantics, 14, "broad") == true
+        if slot13 ~= slot14 then matchedSlot = slot13 and 13 or 14 end
+    end
+    if not matchedSlot then
+        diag.inventorySemanticRejectedCount = 1
+        diag.failureReason = "macro_semantic_identity_no_inventory_match"
+        return nil
+    end
+
+    local source = candidate.labelSource
+    local lookupSource = source == "action_info_macro_name"
+        and "action_info_name_unique_inventory_semantic"
+        or "action_text_unique_inventory_semantic"
+    diag.lookupByActionText = source == "action_text"
+    diag.lookupByActionInfoName = source == "action_info_macro_name"
+    diag.semanticNameSource = source
+    diag.semanticLookupName = candidate.snapshot.macroName
+    diag.semanticResolvedMacroName = candidate.snapshot.macroName
+    diag.inventorySemanticResolvedSlot = matchedSlot
+    diag.failureReason = nil
+    return setResolvedMacro(diag, candidate.snapshot, candidate.spellInfo, lookupSource, lookupSource)
+end
+
 local function resolveMacroFromActionSlot(actionSlot, actionInfoID, actionMacroSpellID)
     local diag = {
         actionSlot = actionSlot,
@@ -712,6 +1006,20 @@ local function resolveMacroFromActionSlot(actionSlot, actionInfoID, actionMacroS
     end
     local semantic = semanticMacroResolution(semanticLabels, representedSpellID, layout, diag)
     if semantic then return diag end
+
+    -- Inventory-slot macros do not have a represented SpellID. They therefore
+    -- need a separate bounded identity join after the spell-backed route fails.
+    -- This is still read-only and unique-only; it never calls GetMacroInfo(name)
+    -- and never accepts a macro that references both trinket slots.
+    local spellSemanticFailureReason = diag.failureReason
+    local inventorySemantic = semanticInventoryMacroResolution(semanticLabels, layout, diag)
+    if inventorySemantic then
+        diag.spellSemanticFailureReason = spellSemanticFailureReason
+        return diag
+    end
+    if diag.inventorySemanticRelevant ~= true then
+        diag.failureReason = spellSemanticFailureReason
+    end
 
     return diag
 end
@@ -862,9 +1170,7 @@ local function buildMacroEntry(base, actionInfoID, subType, actionMacroSpellID)
     base.macroID = diag.resolvedMacroIndex or actionInfoID
     base.macroName = diag.macroName or diag.actionText
     base.macroBody = diag.body
-    base.macroSemantics = TE.MacroSemantics and TE.MacroSemantics:Analyze(diag.body) or nil
-    base.macroSemanticSummary = TE.MacroSemantics and type(TE.MacroSemantics.Summary) == "function"
-        and TE.MacroSemantics:Summary(base.macroSemantics) or nil
+    base.macroSemantics, base.macroSemanticSummary = readMacroSemantics(base.macroID, diag.body)
     base.macroSpellID = actionMacroSpellID
     base.macroResolvedSpellID = normalizeSpellID(diag.getMacroSpellByResolvedIndex)
     -- Retail can expose a macro action as the spell it represents even when
@@ -1013,8 +1319,11 @@ local function scanStanceButton(cache, index)
     end
 end
 
-local function buildButtonCache(scanReason)
-    local specialActionBar = readSpecialActionBarState()
+local function buildButtonCache(scanReason, resolveContext)
+    local timer = perfBegin("ActionBarBindingResolver.BuildButtonCache")
+    perfCount("resolver_full_rebuild")
+    resolveContext = type(resolveContext) == "table" and resolveContext or nil
+    local specialActionBar = resolveContext and resolveContext.specialActionBar or readSpecialActionBarState()
     Resolver.specialActionBarState = specialActionBar
     local cache = {
         generation = Resolver.scanGeneration + 1,
@@ -1022,19 +1331,28 @@ local function buildButtonCache(scanReason)
         scannedAt = GetTime and GetTime() or 0,
         entries = {}, bySpell = {}, byItem = {}, macroEntries = {}, macroBySpell = {}, macroByInventorySlot = {}, diagnostics = {},
         scannedButtons = 0, visibleButtons = 0,
-        state = { mainPage = currentMainPage(), stateHash = actionBarStateSignature(), specialActionBar = specialActionBar },
+        state = {
+            mainPage = resolveContext and resolveContext.mainPage or currentMainPage(),
+            stateHash = resolveContext and resolveContext.actionBarStateHash or actionBarStateSignature(),
+            specialActionBar = specialActionBar,
+        },
     }
     if specialActionBar.active then
         cache.diagnostics[#cache.diagnostics + 1] = {
             scanReason = specialActionBar.reason,
             specialActionBar = specialActionBar,
         }
+        perfFinish(timer)
         return cache
     end
     for _, spec in ipairs(BUTTON_SPECS) do
         for index = 1, spec.count do scanStandardButton(cache, spec, index) end
     end
     for index = 1, STANCE_SPEC.count do scanStanceButton(cache, index) end
+    perfCount("resolver_scanned_buttons", cache.scannedButtons)
+    perfCount("resolver_visible_buttons", cache.visibleButtons)
+    perfCount("resolver_macro_buttons", #cache.macroEntries)
+    perfFinish(timer)
     return cache
 end
 
@@ -1071,7 +1389,21 @@ local function dedupeCandidates(entries)
     return output
 end
 
+function Resolver:InvalidateMacroSnapshots(reason)
+    self.macroCacheGeneration = (self.macroCacheGeneration or 0) + 1
+    self.macroLayoutCache = nil
+    self.macroInfoCache = {}
+    self.macroSpellCache = {}
+    self.macroSemanticCache = {}
+    self.opaqueMacroNameCache = {}
+    self.macroCatalog = nil
+    perfCount("resolver_macro_cache_invalidate")
+    perfCount("resolver_macro_cache_invalidate:" .. tostring(reason or "unknown"))
+end
+
 function Resolver:Invalidate(reason)
+    perfCount("resolver_cache_invalidate")
+    perfCount("resolver_cache_invalidate:" .. tostring(reason or "unknown"))
     self.cache = {}
     self.cacheDirty = true
     self.lastReason = reason or "invalidated"
@@ -1084,8 +1416,8 @@ function Resolver:Invalidate(reason)
     end
 end
 
-function Resolver:Rebuild(reason)
-    self.buttonCache = buildButtonCache(reason or "manual")
+function Resolver:Rebuild(reason, resolveContext)
+    self.buttonCache = buildButtonCache(reason or "manual", resolveContext)
     self.scanGeneration = self.buttonCache.generation
     self.cache = {}
     self.cacheDirty = false
@@ -1098,16 +1430,16 @@ function Resolver:IsBindingSettling()
     return (GetTime and GetTime() or 0) < (self.bindingSettlingUntil or 0)
 end
 
-function Resolver:EnsureCache(reason)
-    if self.cacheDirty or not self.buttonCache then return self:Rebuild(reason or "lazy") end
+function Resolver:EnsureCache(reason, resolveContext)
+    if self.cacheDirty or not self.buttonCache then return self:Rebuild(reason or "lazy", resolveContext) end
     -- UPDATE_BINDINGS intentionally preserves the old cache until the delayed
     -- hard invalidation below.  Do not race an incompletely committed binding.
     if self:IsBindingSettling() then return self.buttonCache end
     local cachedHash = self.buttonCache.state and self.buttonCache.state.stateHash
-    local currentHash = actionBarStateSignature()
+    local currentHash = type(resolveContext) == "table" and resolveContext.actionBarStateHash or actionBarStateSignature()
     if cachedHash ~= currentHash then
         self:Invalidate("actionbar_state_hash_changed")
-        return self:Rebuild(reason or "state_hash")
+        return self:Rebuild(reason or "state_hash", resolveContext)
     end
     return self.buttonCache
 end
@@ -1131,15 +1463,36 @@ function Resolver:BeginBindingSettlement()
     end
 end
 
-function Resolver:GetSpecialActionBarState()
+-- Build one read-only resolver context for a business sampling cycle. All spell
+-- and inventory lookups in that cycle share the same special-action-bar and
+-- action-page observations instead of repeating the same APIs.
+function Resolver:BeginResolveCycle(reason)
+    local specialActionBar = readSpecialActionBarState()
+    self.specialActionBarState = specialActionBar
+    return {
+        schema = 1,
+        reason = reason or "business_cycle",
+        sampledAt = GetTime and GetTime() or 0,
+        specialActionBar = specialActionBar,
+        actionBarStateHash = actionBarStateSignature(),
+        mainPage = currentMainPage(),
+        bindingSettling = self:IsBindingSettling(),
+        cacheGeneration = self.scanGeneration or 0,
+    }
+end
+
+function Resolver:GetSpecialActionBarState(resolveContext)
+    if type(resolveContext) == "table" and type(resolveContext.specialActionBar) == "table" then
+        return resolveContext.specialActionBar
+    end
     local state = readSpecialActionBarState()
     self.specialActionBarState = state
     return state
 end
 
-function Resolver:GetCacheSummary()
-    local cache = self:EnsureCache("summary")
-    local specialActionBar = cache.state and cache.state.specialActionBar or self:GetSpecialActionBarState()
+function Resolver:GetCacheSummary(resolveContext)
+    local cache = self:EnsureCache("summary", resolveContext)
+    local specialActionBar = cache.state and cache.state.specialActionBar or self:GetSpecialActionBarState(resolveContext)
     return {
         generation = cache.generation,
         scanReason = cache.scanReason,
@@ -1155,7 +1508,7 @@ function Resolver:GetCacheSummary()
         diagnostics = #cache.diagnostics,
         mainPage = cache.state and cache.state.mainPage or nil,
         stateHash = cache.state and cache.state.stateHash or nil,
-        bindingSettling = self:IsBindingSettling(),
+        bindingSettling = type(resolveContext) == "table" and resolveContext.bindingSettling or self:IsBindingSettling(),
         bindingSettlingUntil = self.bindingSettlingUntil,
         specialActionBar = specialActionBar,
         blockedBySpecialActionBar = specialActionBar and specialActionBar.active == true or false,
@@ -1439,13 +1792,13 @@ end
 -- Resolve a recommendation by SpellID.  v3 does not require ActionRegistry.
 -- Direct and macro candidates come from the current ButtonCache; no scan or
 -- macro API read occurs on normal recommendation ticks.
-function Resolver:ResolveSpell(spellID)
+function Resolver:ResolveSpell(spellID, resolveContext)
     spellID = tonumber(spellID)
     if not spellID or spellID <= 0 then
         return { status="NoBinding", reason="spell_missing", bindingToken=0, candidates={} }, "spell_missing"
     end
 
-    local specialActionBar = self:GetSpecialActionBarState()
+    local specialActionBar = self:GetSpecialActionBarState(resolveContext)
     if specialActionBar.active then
         self.lastReason = specialActionBar.reason
         return {
@@ -1456,10 +1809,11 @@ function Resolver:ResolveSpell(spellID)
             candidates = {},
             macroDiagnostics = {},
             specialActionBar = specialActionBar,
-            cacheSummary = self.buttonCache and self:GetCacheSummary() or nil,
+            cacheSummary = self.buttonCache and self:GetCacheSummary(resolveContext) or nil,
             requestedSpellID = spellID, matchedSpellID = nil, matchKind = "special_actionbar_blocked",
-            equivalentSpellIDs = { spellID }, stateHash = self.buttonCache and self.buttonCache.state and self.buttonCache.state.stateHash or actionBarStateSignature(),
-            bindingSettling = self:IsBindingSettling(),
+            equivalentSpellIDs = { spellID }, stateHash = self.buttonCache and self.buttonCache.state and self.buttonCache.state.stateHash
+                or (type(resolveContext) == "table" and resolveContext.actionBarStateHash or actionBarStateSignature()),
+            bindingSettling = type(resolveContext) == "table" and resolveContext.bindingSettling or self:IsBindingSettling(),
         }, specialActionBar.reason
     end
     if self.buttonCache and self.buttonCache.state and self.buttonCache.state.specialActionBar
@@ -1469,16 +1823,20 @@ function Resolver:ResolveSpell(spellID)
         self:Invalidate("special_actionbar_cleared")
     end
 
-    self:EnsureCache("resolve")
+    self:EnsureCache("resolve", resolveContext)
     local cached = self.cache[spellID]
     if cached then
+        perfCount("resolver_cache_hit")
+        perfCount("resolver_spell_cache_hit")
         -- Extra-action visibility is an observation, not a cache key. Keep
         -- the cached mapping but refresh the diagnostic state for this tick.
         cached.specialActionBar = specialActionBar
-        cached.bindingSettling = self:IsBindingSettling()
+        cached.bindingSettling = type(resolveContext) == "table" and resolveContext.bindingSettling or self:IsBindingSettling()
         cached.stateHash = self.buttonCache and self.buttonCache.state and self.buttonCache.state.stateHash or cached.stateHash
         return cached, cached.reason
     end
+    perfCount("resolver_cache_miss")
+    perfCount("resolver_spell_cache_miss")
 
     local cache = self.buttonCache
     local spellName = getSpellName(spellID)
@@ -1571,10 +1929,10 @@ function Resolver:ResolveSpell(spellID)
         result = {
             spellID=spellID, status="NoBinding", reason=reason, bindingToken=0,
             candidates=candidates, macroDiagnostics=macroDiagnostics,
-            cacheGeneration=cache.generation, cacheSummary=self:GetCacheSummary(),
+            cacheGeneration=cache.generation, cacheSummary=self:GetCacheSummary(resolveContext),
             requestedSpellID = spellID, matchedSpellID = nil, matchKind = "not_found",
             equivalentSpellIDs = equivalentSpellIDs, stateHash = cache.state and cache.state.stateHash or nil,
-            bindingSettling = self:IsBindingSettling(), directActionSlot = false,
+            bindingSettling = type(resolveContext) == "table" and resolveContext.bindingSettling or self:IsBindingSettling(), directActionSlot = false,
             specialActionBar=specialActionBar,
         }
     elseif not selected.parsed then
@@ -1590,10 +1948,10 @@ function Resolver:ResolveSpell(spellID)
             matchedSpellName=selected.matchedSpellName, matchedSpellID=selected.matchedSpellID,
             requestedSpellID = spellID, matchKind = selected.matchKind,
             equivalentSpellIDs = equivalentSpellIDs, stateHash = cache.state and cache.state.stateHash or nil,
-            bindingSettling = self:IsBindingSettling(), directActionSlot = selected.directActionSlot == true,
+            bindingSettling = type(resolveContext) == "table" and resolveContext.bindingSettling or self:IsBindingSettling(), directActionSlot = selected.directActionSlot == true,
             actionBarStateTrusted = selected.actionBarStateTrusted == true,
             candidates=candidates, macroDiagnostics=macroDiagnostics,
-            cacheGeneration=cache.generation, cacheSummary=self:GetCacheSummary(),
+            cacheGeneration=cache.generation, cacheSummary=self:GetCacheSummary(resolveContext),
             specialActionBar=specialActionBar,
         }
     else
@@ -1611,10 +1969,10 @@ function Resolver:ResolveSpell(spellID)
             matchedSpellName=selected.matchedSpellName, matchedSpellID=selected.matchedSpellID,
             requestedSpellID = spellID, matchKind = selected.matchKind,
             equivalentSpellIDs = equivalentSpellIDs, stateHash = cache.state and cache.state.stateHash or nil,
-            bindingSettling = self:IsBindingSettling(), directActionSlot = selected.directActionSlot == true,
+            bindingSettling = type(resolveContext) == "table" and resolveContext.bindingSettling or self:IsBindingSettling(), directActionSlot = selected.directActionSlot == true,
             actionBarStateTrusted = selected.actionBarStateTrusted == true,
             candidates=candidates, macroDiagnostics=macroDiagnostics,
-            cacheGeneration=cache.generation, cacheSummary=self:GetCacheSummary(),
+            cacheGeneration=cache.generation, cacheSummary=self:GetCacheSummary(resolveContext),
             specialActionBar=specialActionBar,
         }
     end
@@ -1666,24 +2024,24 @@ end
 -- identity policy as spell macros. This resolver does not create a BindingToken
 -- for an unbound macro and never creates a TEAP/TEK path; it exists for
 -- advisory display and physical HUD secure-click reuse.
-function Resolver:ResolveItem(itemID)
+function Resolver:ResolveItem(itemID, resolveContext)
     itemID = tonumber(itemID)
     if not itemID or itemID <= 0 then
         return { status = "NoBinding", reason = "item_missing", bindingToken = 0, candidates = {} }, "item_missing"
     end
-    local specialActionBar = self:GetSpecialActionBarState()
+    local specialActionBar = self:GetSpecialActionBarState(resolveContext)
     if specialActionBar.active then
         return {
             itemID = itemID, status = "NoBinding", reason = specialActionBar.reason,
             bindingToken = 0, candidates = {}, macroDiagnostics = {}, specialActionBar = specialActionBar,
         }, specialActionBar.reason
     end
-    self:EnsureCache("resolve_item")
+    self:EnsureCache("resolve_item", resolveContext)
     local cacheKey = "item:" .. tostring(itemID)
     local cached = self.cache[cacheKey]
     if cached then
         cached.specialActionBar = specialActionBar
-        cached.bindingSettling = self:IsBindingSettling()
+        cached.bindingSettling = type(resolveContext) == "table" and resolveContext.bindingSettling or self:IsBindingSettling()
         return cached, cached.reason
     end
 
@@ -1748,7 +2106,7 @@ function Resolver:ResolveItem(itemID)
         result = {
             itemID = itemID, status = "NoBinding", reason = reason, bindingToken = 0,
             candidates = candidates, macroDiagnostics = macroDiagnostics,
-            cacheGeneration = cache.generation, cacheSummary = self:GetCacheSummary(), specialActionBar = specialActionBar,
+            cacheGeneration = cache.generation, cacheSummary = self:GetCacheSummary(resolveContext), specialActionBar = specialActionBar,
             directActionSlot = false, actionBarStateTrusted = false,
         }
     elseif not selected.parsed then
@@ -1762,8 +2120,8 @@ function Resolver:ResolveItem(itemID)
             macroCommand = selected.macroCommand, macroDiagnostic = selected.macroDiagnostic,
             macroSemantics = selected.macroSemantics, matchKind = selected.matchKind,
             candidates = candidates, macroDiagnostics = macroDiagnostics,
-            cacheGeneration = cache.generation, cacheSummary = self:GetCacheSummary(), specialActionBar = specialActionBar,
-            bindingSettling = self:IsBindingSettling(),
+            cacheGeneration = cache.generation, cacheSummary = self:GetCacheSummary(resolveContext), specialActionBar = specialActionBar,
+            bindingSettling = type(resolveContext) == "table" and resolveContext.bindingSettling or self:IsBindingSettling(),
         }
     else
         result = {
@@ -1779,8 +2137,8 @@ function Resolver:ResolveItem(itemID)
             macroCommand = selected.macroCommand, macroDiagnostic = selected.macroDiagnostic,
             macroSemantics = selected.macroSemantics, matchKind = selected.matchKind,
             candidates = candidates, macroDiagnostics = macroDiagnostics,
-            cacheGeneration = cache.generation, cacheSummary = self:GetCacheSummary(), specialActionBar = specialActionBar,
-            bindingSettling = self:IsBindingSettling(),
+            cacheGeneration = cache.generation, cacheSummary = self:GetCacheSummary(resolveContext), specialActionBar = specialActionBar,
+            bindingSettling = type(resolveContext) == "table" and resolveContext.bindingSettling or self:IsBindingSettling(),
         }
     end
     self.cache[cacheKey] = result
@@ -1858,7 +2216,7 @@ local function makeInventoryCandidate(entry, slot, itemID, association)
     }
 end
 
-function Resolver:ResolveInventorySlot(slot, expectedItemID)
+function Resolver:ResolveInventorySlot(slot, expectedItemID, resolveContext)
     slot = tonumber(slot)
     if slot ~= 13 and slot ~= 14 then
         return { status = "NoBinding", reason = "inventory_slot_invalid", bindingToken = 0, candidates = {} }, "inventory_slot_invalid"
@@ -1878,7 +2236,7 @@ function Resolver:ResolveInventorySlot(slot, expectedItemID)
             status = "NoBinding", reason = "inventory_equipment_changed", bindingToken = 0, candidates = {},
         }, "inventory_equipment_changed"
     end
-    local specialActionBar = self:GetSpecialActionBarState()
+    local specialActionBar = self:GetSpecialActionBarState(resolveContext)
     if specialActionBar.active then
         return {
             inventorySlot = slot, expectedItemID = currentItemID, itemID = currentItemID,
@@ -1886,12 +2244,12 @@ function Resolver:ResolveInventorySlot(slot, expectedItemID)
             candidates = {}, specialActionBar = specialActionBar,
         }, specialActionBar.reason
     end
-    self:EnsureCache("resolve_inventory_slot")
+    self:EnsureCache("resolve_inventory_slot", resolveContext)
     local cacheKey = "inventory_slot:" .. tostring(slot) .. ":" .. tostring(currentItemID)
     local cached = self.cache[cacheKey]
     if cached then
         cached.specialActionBar = specialActionBar
-        cached.bindingSettling = self:IsBindingSettling()
+        cached.bindingSettling = type(resolveContext) == "table" and resolveContext.bindingSettling or self:IsBindingSettling()
         return cached, cached.reason
     end
 
@@ -1944,7 +2302,7 @@ function Resolver:ResolveInventorySlot(slot, expectedItemID)
             inventorySlot = slot, expectedItemID = currentItemID, itemID = currentItemID,
             status = "NoBinding", reason = "actionbar_inventory_slot_not_found", bindingToken = 0,
             candidates = candidates, macroDiagnostics = macroDiagnostics,
-            cacheGeneration = cache.generation, cacheSummary = self:GetCacheSummary(), specialActionBar = specialActionBar,
+            cacheGeneration = cache.generation, cacheSummary = self:GetCacheSummary(resolveContext), specialActionBar = specialActionBar,
         }
     elseif not selected.parsed then
         result = {
@@ -1958,7 +2316,7 @@ function Resolver:ResolveInventorySlot(slot, expectedItemID)
             macroDiagnostic = selected.macroDiagnostic, macroSemantics = selected.macroSemantics,
             directActionSlot = selected.directActionSlot == true, actionBarStateTrusted = selected.actionBarStateTrusted == true,
             candidates = candidates, macroDiagnostics = macroDiagnostics, cacheGeneration = cache.generation,
-            cacheSummary = self:GetCacheSummary(), specialActionBar = specialActionBar,
+            cacheSummary = self:GetCacheSummary(resolveContext), specialActionBar = specialActionBar,
         }
     else
         result = {
@@ -1973,7 +2331,7 @@ function Resolver:ResolveInventorySlot(slot, expectedItemID)
             macroDiagnostic = selected.macroDiagnostic, macroSemantics = selected.macroSemantics,
             directActionSlot = selected.directActionSlot == true, actionBarStateTrusted = selected.actionBarStateTrusted == true,
             candidates = candidates, macroDiagnostics = macroDiagnostics, cacheGeneration = cache.generation,
-            cacheSummary = self:GetCacheSummary(), specialActionBar = specialActionBar,
+            cacheSummary = self:GetCacheSummary(resolveContext), specialActionBar = specialActionBar,
         }
     end
     self.cache[cacheKey] = result
@@ -2270,9 +2628,13 @@ function Resolver:ResolveManualHudAction(item)
 end
 
 
+-- ACTIONBAR_UPDATE_STATE is intentionally not registered. It reports transient
+-- usable/highlight presentation changes, not structural slot/macro/binding
+-- identity changes. Registering it previously caused active combat rotations to
+-- invalidate and rebuild the complete resolver cache continuously.
 local events = {
     "PLAYER_ENTERING_WORLD", "UPDATE_BINDINGS", "ACTIONBAR_SLOT_CHANGED",
-    "ACTIONBAR_PAGE_CHANGED", "ACTIONBAR_UPDATE_STATE", "UPDATE_MACROS",
+    "ACTIONBAR_PAGE_CHANGED", "UPDATE_MACROS",
     "PLAYER_SPECIALIZATION_CHANGED", "SPELLS_CHANGED", "UPDATE_SHAPESHIFT_FORM",
     "UPDATE_BONUS_ACTIONBAR", "UPDATE_SHAPESHIFT_FORMS", "UPDATE_VEHICLE_ACTIONBAR", "UPDATE_OVERRIDE_ACTIONBAR",
     "UPDATE_EXTRA_ACTIONBAR", "UPDATE_POSSESS_BAR", "UNIT_ENTERED_VEHICLE",
@@ -2281,10 +2643,26 @@ local events = {
 }
 local watcher = CreateFrame("Frame")
 TE:RegisterEventsSafe(watcher, events)
-watcher:SetScript("OnEvent", function(_, event)
+watcher:SetScript("OnEvent", function(_, event, arg1)
+    perfCount("resolver_event:" .. tostring(event or "unknown"))
+
     if event == "UPDATE_BINDINGS" then
         Resolver:BeginBindingSettlement()
         return
+    end
+
+    if event == "UPDATE_MACROS" or event == "PLAYER_ENTERING_WORLD" then
+        Resolver:InvalidateMacroSnapshots(event)
+    end
+
+    if event == "ACTIONBAR_SLOT_CHANGED" then
+        -- Slot notifications may be emitted while the client is still updating
+        -- action/macro presentation. Never mutate the live button cache inside
+        -- this event callback: AutoBurst may be consuming that cache for the
+        -- current sequence. Mark it dirty and rebuild atomically in the next
+        -- resolver business cycle instead.
+        perfCount("resolver_slot_changed")
+        perfCount("resolver_slot_changed:" .. tostring(arg1 or "unknown"))
     end
     Resolver:Invalidate(event)
 end)

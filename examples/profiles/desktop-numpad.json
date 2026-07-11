@@ -1,9 +1,23 @@
-{
+﻿{
   "schemaVersion": 1,
-  "catalogVersion": 3,
-  "catalogFingerprint": "d005247012f71db9",
+  "catalogVersion": 2,
+  "catalogFingerprint": "648482895f1293f5",
   "profileId": "desktop-numpad",
-  "profileFingerprint": "ce48c0294c3fccfc",
-  "displayName": "Generic BindingToken profile",
-  "bindings": {}
+  "profileFingerprint": "97cc730f90eee0f4",
+  "displayName": "全尺寸键盘示例",
+  "notes": "不可运行示例：当前 TE 游戏内隐藏绑定仍是 SHIFT+字母，尚未实现 TE 侧 Profile 切换，因此 live / SendInput 路径必须阻断此 Profile。",
+  "runnable": false,
+  "runtimeStatus": "example_only_binding_mismatch",
+  "bindings": {
+    "PALADIN_RETRIBUTION_JUDGMENT": "CTRL+NUMPAD1",
+    "PALADIN_RETRIBUTION_BLADE_OF_JUSTICE": "CTRL+NUMPAD2",
+    "PALADIN_RETRIBUTION_DIVINE_STORM": "CTRL+NUMPAD3",
+    "PALADIN_RETRIBUTION_TEMPLAR_STRIKE": "CTRL+NUMPAD4",
+    "PALADIN_RETRIBUTION_HAMMER_OF_WRATH": "CTRL+NUMPAD5",
+    "PALADIN_RETRIBUTION_WAKE_OF_ASHES": "CTRL+NUMPAD6",
+    "PALADIN_RETRIBUTION_DIVINE_TOLL": "CTRL+NUMPAD7",
+    "PALADIN_RETRIBUTION_HAMMER_OF_LIGHT": "CTRL+NUMPAD8",
+    "PALADIN_RETRIBUTION_FINAL_VERDICT": "CTRL+NUMPAD9",
+    "PALADIN_RETRIBUTION_EXECUTION_SENTENCE": "CTRL+NUMPAD0"
+  }
 }

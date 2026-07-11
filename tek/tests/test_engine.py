@@ -54,7 +54,7 @@ class TEKEngineTests(unittest.TestCase):
 
         self.assertTrue(trace.accepted)
         self.assertEqual(trace.reason, "dry_run_planned")
-        self.assertIsNone(trace.action_id)
+        self.assertEqual(trace.action_id, "PALADIN_RETRIBUTION_JUDGMENT")
         self.assertEqual(trace.binding, "Q")
         self.assertEqual(trace.dispatcher_backend, "dry_run")
         self.assertEqual(trace.raw_fields, tuple(frame_fields(action_code=1, sequence=10)))

@@ -19,6 +19,21 @@ local nodes = {}
 local slotStates = {}
 local MAX_BURST_CARDS = 5
 
+local function perfCount(name, amount)
+    local perf = TE.PerformanceDiagnostics
+    if perf and type(perf.Count) == "function" then perf:Count(name, amount) end
+end
+
+local function perfBegin(name)
+    local perf = TE.PerformanceDiagnostics
+    return perf and type(perf.Begin) == "function" and perf:Begin(name) or nil
+end
+
+local function perfFinish(token)
+    local perf = TE.PerformanceDiagnostics
+    if perf and type(perf.Finish) == "function" then perf:Finish(token) end
+end
+
 local function clamp(value, minimum, maximum)
     value = tonumber(value) or minimum
     if value < minimum then return minimum end
@@ -115,33 +130,7 @@ local function restorePoint(frame, prefix)
     end
 end
 
-local function beginContainerMove(frame)
-    if not frame then return false end
-    if inCombatLockdown() then
-        frame.tacticEchoCombatDragBlocked = true
-        return false
-    end
-    frame.tacticEchoCombatDragBlocked = nil
-    frame.tacticEchoMoving = true
-    frame:StartMoving()
-    return true
-end
-
-local function finishContainerMove(frame, prefix)
-    if not frame then return false end
-    if inCombatLockdown() then
-        frame.tacticEchoCombatDragBlocked = nil
-        frame.tacticEchoMoving = nil
-        return false
-    end
-    frame:StopMovingOrSizing()
-    frame.tacticEchoMoving = nil
-    savePoint(frame, prefix)
-    return true
-end
-
 local function statusText(primary)
-    if primary and primary.dispatchAllowed == true then return "HAD" end
     local visual = primary and primary.visual or {}
     local labels = {
         dispatchable = "HAD",
@@ -229,17 +218,23 @@ local function applyCard(key, card, item, hud, moduleKey)
     if not fingerprintOK then fingerprint = "safe-slot:" .. safeFingerprintText(key, "unknown") end
     local urgent = key == "primary" or isUrgent(item)
     if TacticalHudAnimator:ShouldCommit(slotStates[key], fingerprint, urgent) then
+        perfCount("hud_full_apply")
+        local timer = perfBegin("TacticalIconButton.Apply")
         local ok = pcall(TacticalIconButton.Apply, TacticalIconButton, card, item, hud, moduleKey)
+        perfFinish(timer)
         if not ok then
             -- Fail-soft: a single icon cannot take the full HUD down.
             pcall(TacticalIconButton.SetVisible, TacticalIconButton, card, false)
             return
         end
     else
+        perfCount("hud_light_refresh")
+        local timer = perfBegin("TacticalIconButton.RefreshDynamic")
         -- Advisor snapshots already arrive at 0.20s. Native Cooldown/Animation
         -- frames advance themselves, so only unchanged visible cards receive
         -- this light update; no second Board OnUpdate polling loop is needed.
         pcall(TacticalIconButton.RefreshDynamic, TacticalIconButton, card, item)
+        perfFinish(timer)
     end
 end
 
@@ -292,11 +287,12 @@ end
 local function bindPrimaryDrag(card)
     card:RegisterForDrag("LeftButton")
     card:SetScript("OnDragStart", function(self)
-        self.tacticEchoDragging = false
-        if not db().locked then self.tacticEchoDragging = beginContainerMove(board) end
+        self.tacticEchoDragging = true
+        if not db().locked then board:StartMoving() end
     end)
     card:SetScript("OnDragStop", function(self)
-        if self.tacticEchoDragging == true then finishContainerMove(board) end
+        board:StopMovingOrSizing()
+        savePoint(board)
         self.tacticEchoDragging = false
         self.tacticEchoSuppressClickUntil = (type(GetTime) == "function" and GetTime() or 0) + 0.15
     end)
@@ -324,15 +320,15 @@ local function ensureBoard()
     createBackdrop(defenseFrame)
 
     board.handle = TacticalHudDragHandle:Create(board,
-        function() if not db().locked then beginContainerMove(board) end end,
-        function() finishContainerMove(board) end,
+        function() if not db().locked then board:StartMoving() end end,
+        function() board:StopMovingOrSizing(); savePoint(board) end,
         function() if TE.ControlPanel then TE.ControlPanel:Show("general") end end,
         "主队列抓手")
     board.handle:SetPoint("LEFT", board, "LEFT", -18, 0)
 
     defenseFrame.handle = TacticalHudDragHandle:Create(defenseFrame,
-        function() if not db().defenseLocked then beginContainerMove(defenseFrame) end end,
-        function() finishContainerMove(defenseFrame, "defense") end,
+        function() if not db().defenseLocked then defenseFrame:StartMoving() end end,
+        function() defenseFrame:StopMovingOrSizing(); savePoint(defenseFrame, "defense") end,
         function() if TE.ControlPanel then TE.ControlPanel:Show("defense") end end,
         "防御队列抓手")
     defenseFrame.handle:SetPoint("LEFT", defenseFrame, "LEFT", -18, 0)
@@ -393,34 +389,18 @@ local function renderInternal(self, snapshot)
         model.tactical = { burst = {} }
     end
 
-    for _, item in ipairs(model.candidates or {}) do item.hidden = true end
-    if model.tactical then
-        if model.tactical.interrupt then model.tactical.interrupt.hidden = true end
-        if model.tactical.control then model.tactical.control.hidden = true end
-        if model.tactical.mobility then model.tactical.mobility.hidden = true end
-        if hud.compact == true or hud.queueMode == "primary" then
-            for _, item in ipairs(model.tactical.burst or {}) do item.hidden = true end
-        end
+    if model.tactical and (hud.compact == true or hud.queueMode == "primary") then
+        for _, item in ipairs(model.tactical.burst or {}) do item.hidden = true end
     end
-    for _, item in ipairs(model.defense or {}) do item.hidden = true end
 
     -- Per-module HUD switches affect only presentation.  They deliberately run
     -- after queue-mode filtering so queue policy remains independent from what
     -- the player chooses to see.
     if not moduleShown(hud, "main") then
         if model.primary then model.primary.hidden = true end
-        for _, item in ipairs(model.candidates or {}) do item.hidden = true end
     end
     if not moduleShown(hud, "burst") and model.tactical then
         for _, item in ipairs(model.tactical.burst or {}) do item.hidden = true end
-    end
-    if not moduleShown(hud, "interrupt") and model.tactical then
-        if model.tactical.interrupt then model.tactical.interrupt.hidden = true end
-        if model.tactical.control then model.tactical.control.hidden = true end
-        if model.tactical.mobility then model.tactical.mobility.hidden = true end
-    end
-    if not moduleShown(hud, "defense") then
-        for _, item in ipairs(model.defense or {}) do item.hidden = true end
     end
 
     local primary = model.primary
@@ -431,17 +411,9 @@ local function renderInternal(self, snapshot)
     end
     local function hasVisibleCard()
         if primary and primary.hidden ~= true and primary.spellID then return true end
-        for _, item in ipairs(model.candidates or {}) do if item and item.hidden ~= true and item.spellID then return true end end
-        local interrupt = model.tactical and model.tactical.interrupt
-        if interrupt and interrupt.hidden ~= true and (interrupt.spellID or interrupt.itemID) then return true end
         for _, item in ipairs(model.tactical and model.tactical.burst or {}) do
             if item and item.hidden ~= true and (item.spellID or item.itemID) then return true end
         end
-        local control = model.tactical and model.tactical.control
-        if control and control.hidden ~= true and (control.spellID or control.itemID) then return true end
-        local mobility = model.tactical and model.tactical.mobility
-        if mobility and mobility.hidden ~= true and (mobility.spellID or mobility.itemID) then return true end
-        for _, item in ipairs(model.defense or {}) do if item and item.hidden ~= true and (item.spellID or item.itemID) then return true end end
         return false
     end
     if hud.hideWhenIdle == true and not hasVisibleCard() then
@@ -465,17 +437,8 @@ local function renderInternal(self, snapshot)
     end
 
     applyCard("primary", nodes.primary, primary, hud, "main")
-    for index, card in ipairs(nodes.candidates or {}) do
-        applyCard("candidate:" .. index, card, (model.candidates or {})[index], hud, "main")
-    end
-    applyCard("tactical:interrupt", nodes.tactical.interrupt, model.tactical and model.tactical.interrupt, hud, "interrupt")
     for index, card in ipairs(nodes.tactical.burst or {}) do
         applyCard("tactical:burst:" .. index, card, (model.tactical and model.tactical.burst or {})[index], hud, "burst")
-    end
-    applyCard("tactical:control", nodes.tactical.control, model.tactical and model.tactical.control, hud, "interrupt")
-    applyCard("tactical:mobility", nodes.tactical.mobility, model.tactical and model.tactical.mobility, hud, "interrupt")
-    for index, card in ipairs(nodes.defense or {}) do
-        applyCard("defense:" .. index, card, (model.defense or {})[index], hud, "defense")
     end
 
     board.statusText:SetText(statusText(primary))
@@ -491,9 +454,7 @@ local function renderInternal(self, snapshot)
         applyContainerPresentation(defenseFrame, 1, 1)
     end
 
-    local hasDefense = false
-    for _, item in ipairs(model.defense) do if item and item.hidden ~= true then hasDefense = true; break end end
-    applyFrameShown(defenseFrame, hasDefense)
+    applyFrameShown(defenseFrame, false)
     applyFrameShown(panel, true)
 end
 

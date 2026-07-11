@@ -11,8 +11,21 @@ local lastSnapshot
 local subscribers = {}
 local subscriberSequence = 0
 local nextRefreshAt = 0
-local REACTION_READONLY_HIGHLIGHT_SUSPENDED = true
-local ADVISOR_REFRESH_INTERVAL = 0.35
+
+local function perfCount(name, amount)
+    local perf = TE.PerformanceDiagnostics
+    if perf and type(perf.Count) == "function" then perf:Count(name, amount) end
+end
+
+local function perfBegin(name)
+    local perf = TE.PerformanceDiagnostics
+    return perf and type(perf.Begin) == "function" and perf:Begin(name) or nil
+end
+
+local function perfFinish(token)
+    local perf = TE.PerformanceDiagnostics
+    if perf and type(perf.Finish) == "function" then perf:Finish(token) end
+end
 
 local function ensureSettings()
     -- 规范器拥有 interruptDisplayMode / controlDisplayMode / defensiveDisplayMode
@@ -38,18 +51,6 @@ local function ensureHudSettings()
     TacticEchoDB.tactics = type(TacticEchoDB.tactics) == "table" and TacticEchoDB.tactics or {}
     TacticEchoDB.tactics.hud = type(TacticEchoDB.tactics.hud) == "table" and TacticEchoDB.tactics.hud or {}
     return TacticEchoDB.tactics.hud
-end
-
-local function hudModuleShown(hud, key)
-    local module = type(hud and hud.modules) == "table" and hud.modules[key] or nil
-    return not module or module.show ~= false
-end
-
-local function shouldBuildBurstHud(hud)
-    if type(hud) ~= "table" then return false end
-    if hud.enabled ~= true then return false end
-    if hud.compact == true or hud.queueMode == "primary" then return false end
-    return hudModuleShown(hud, "burst")
 end
 
 local function emptyAdvisory(reason)
@@ -707,30 +708,49 @@ end
 -- it queries the official recommendation and the current visible action-bar
 -- map solely for HUD presentation.  It never publishes TEAP, writes a token,
 -- changes SignalFrame state, or requests TEK input.
-local function buildOutOfCombatPrimary(context)
+local function buildOutOfCombatPrimary(context, runtimeSnapshot)
     if context and context.inCombat == true then return nil end
-    if not TE.RecommendationAdapter or type(TE.RecommendationAdapter.ReadOfficial) ~= "function" then return nil end
-    local ok, result = pcall(TE.RecommendationAdapter.ReadOfficial, TE.RecommendationAdapter)
-    if not ok or type(result) ~= "table" then return nil end
+    local runtime = TE.RuntimeSnapshot
+    local result = type(runtimeSnapshot) == "table" and runtimeSnapshot.official or nil
+    if type(result) ~= "table" and TE.RecommendationAdapter and type(TE.RecommendationAdapter.ReadOfficial) == "function" then
+        local ok, value = pcall(TE.RecommendationAdapter.ReadOfficial, TE.RecommendationAdapter, context)
+        if ok and type(value) == "table" then result = value end
+    end
+    if type(result) ~= "table" then return nil end
     local spellID = tonumber(result.spellID)
     if not spellID or spellID <= 0 then return nil end
 
     local bindingInfo, bindingReason
-    if TE.ActionBarBindingResolver and type(TE.ActionBarBindingResolver.ResolveSpell) == "function" then
-        local resolveOK, resolved, reason = pcall(TE.ActionBarBindingResolver.ResolveSpell, TE.ActionBarBindingResolver, spellID)
-        if resolveOK and type(resolved) == "table" then
-            bindingInfo, bindingReason = resolved, reason
-        end
+    if type(runtimeSnapshot) == "table" and runtime and type(runtime.ResolveSpell) == "function" then
+        bindingInfo, bindingReason = runtime:ResolveSpell(runtimeSnapshot, spellID)
+    elseif TE.ActionBarBindingResolver and type(TE.ActionBarBindingResolver.ResolveSpell) == "function" then
+        local ok, resolved, reason = pcall(TE.ActionBarBindingResolver.ResolveSpell, TE.ActionBarBindingResolver, spellID)
+        if ok and type(resolved) == "table" then bindingInfo, bindingReason = resolved, reason end
     end
-    local spellName, spellIcon = spellInfo(spellID)
+    local spellName, spellIcon
+    if type(runtimeSnapshot) == "table" and runtime and type(runtime.GetSpellInfo) == "function" then
+        spellName, spellIcon = runtime:GetSpellInfo(runtimeSnapshot, spellID)
+    else
+        spellName, spellIcon = spellInfo(spellID)
+    end
     return {
         spellID = spellID,
-        spellName = spellName or tostring(spellID),
-        spellIcon = spellIcon,
+        spellName = spellName or result.spellName or tostring(spellID),
+        spellIcon = spellIcon or result.spellIcon,
         binding = bindingInfo and (bindingInfo.binding or bindingInfo.rawBinding) or nil,
-        bindingToken = 0, -- display observer never exposes dispatch eligibility.
+        rawBinding = bindingInfo and bindingInfo.rawBinding or nil,
+        bindingToken = 0,
         bindingSource = bindingInfo and bindingInfo.source or nil,
         bindingSourceIndex = bindingInfo and bindingInfo.bindingSourceIndex or nil,
+        buttonName = bindingInfo and bindingInfo.buttonName or nil,
+        actionSlot = bindingInfo and (bindingInfo.actionSlot or bindingInfo.slot) or nil,
+        slot = bindingInfo and (bindingInfo.actionSlot or bindingInfo.slot) or nil,
+        directActionSlot = bindingInfo and bindingInfo.directActionSlot == true or false,
+        actionBarStateTrusted = bindingInfo and bindingInfo.actionBarStateTrusted == true or false,
+        requestedSpellID = bindingInfo and (bindingInfo.requestedSpellID or spellID) or spellID,
+        matchedSpellID = bindingInfo and bindingInfo.matchedSpellID or nil,
+        equivalentSpellIDs = bindingInfo and bindingInfo.equivalentSpellIDs or nil,
+        bindingInfo = bindingInfo,
         bindingStatus = bindingInfo and bindingInfo.status or "NoBinding",
         state = "display_only",
         reason = bindingReason,
@@ -740,7 +760,7 @@ local function buildOutOfCombatPrimary(context)
         inCombat = false,
         usableState = "unknown",
         cooldownRemaining = nil,
-        source = "out_of_combat_display_observer",
+        source = "runtime_snapshot_out_of_combat_primary",
     }
 end
 
@@ -751,7 +771,32 @@ local function primaryDisplayFromState(primary, context)
         spellName = primary.spellName,
         spellIcon = primary.spellIcon,
         binding = primary.binding or primary.rawBinding,
+        rawBinding = primary.rawBinding,
         bindingToken = primary.bindingToken,
+        bindingSource = primary.bindingSource,
+        bindingSourceIndex = primary.bindingSourceIndex,
+        buttonName = primary.bindingButton or primary.buttonName,
+        actionSlot = primary.actionSlot or primary.bindingSlot or primary.slot,
+        slot = primary.actionSlot or primary.bindingSlot or primary.slot,
+        directActionSlot = primary.directActionSlot == true,
+        actionBarStateTrusted = primary.actionBarStateTrusted == true,
+        requestedSpellID = primary.requestedSpellID or primary.spellID,
+        matchedSpellID = primary.matchedSpellID,
+        equivalentSpellIDs = primary.equivalentSpellIDs,
+        bindingInfo = {
+            binding = primary.binding or primary.rawBinding,
+            rawBinding = primary.rawBinding,
+            source = primary.bindingSource,
+            bindingSourceIndex = primary.bindingSourceIndex,
+            buttonName = primary.bindingButton or primary.buttonName,
+            actionSlot = primary.actionSlot or primary.bindingSlot or primary.slot,
+            slot = primary.actionSlot or primary.bindingSlot or primary.slot,
+            directActionSlot = primary.directActionSlot == true,
+            actionBarStateTrusted = primary.actionBarStateTrusted == true,
+            requestedSpellID = primary.requestedSpellID or primary.spellID,
+            matchedSpellID = primary.matchedSpellID,
+            equivalentSpellIDs = primary.equivalentSpellIDs,
+        },
         state = primary.state,
         reason = primary.reason,
         reasonText = primary.reasonText,
@@ -814,71 +859,61 @@ local ROLE_OPTIONS = {
     mobility = { requiresHostileTarget = false },
 }
 
-local function normalizeCooldownIdentity(item)
-    if type(item) ~= "table" or item.itemID then return item end
-    local binding = type(item.bindingInfo) == "table" and item.bindingInfo or nil
-    if not binding and item.spellID and TE.ActionBarBindingResolver and type(TE.ActionBarBindingResolver.ResolveSpell) == "function" then
-        local ok, resolved = pcall(TE.ActionBarBindingResolver.ResolveSpell, TE.ActionBarBindingResolver, item.spellID)
-        if ok and type(resolved) == "table" then binding = resolved; item.bindingInfo = resolved end
-    end
-    if binding then
-        local slot = binding.actionSlot or binding.slot
-        if slot then item.actionSlot, item.slot = slot, slot end
-        item.directActionSlot = binding.directActionSlot == true
-        item.actionBarStateTrusted = binding.actionBarStateTrusted == true
-        item.requestedSpellID = binding.requestedSpellID or item.requestedSpellID or item.spellID
-        item.matchedSpellID = binding.matchedSpellID or item.matchedSpellID
-        item.equivalentSpellIDs = binding.equivalentSpellIDs or item.equivalentSpellIDs
-    end
-    return item
-end
-
-local function decorateItem(item, role, iconContext)
-    if item and item.itemID then
-        -- Item cards are read-only survival observations, not spell state probes.
+local function decorateItem(item, role, runtimeSnapshot)
+    if type(item) ~= "table" then return item end
+    if item.itemID then
         item.usableState = item.usableState or "unknown"
         return item
     end
-    -- BurstPlanner already collects the same schema while ranking its cards.
-    -- Reusing that state avoids a second cooldown/charge/range/API pass.
-    if item and type(item.iconState) == "table" and item.iconState.schema >= 5 then
+    if type(item.iconState) == "table" and item.iconState.schema >= 5 then return item end
+
+    local options = {}
+    for key, value in pairs(ROLE_OPTIONS[role] or {}) do options[key] = value end
+    if item.reactionObservedTarget == true or item.reactionAoe == true then
+        options.requiresHostileTarget = false
+    end
+
+    local runtime = TE.RuntimeSnapshot
+    if type(runtimeSnapshot) == "table" and runtime
+        and type(runtime.ResolveSpell) == "function"
+        and type(runtime.CollectSpellState) == "function" then
+        local binding = type(item.bindingInfo) == "table" and item.bindingInfo or nil
+        if not binding and item.spellID then
+            binding = runtime:ResolveSpell(runtimeSnapshot, item.spellID)
+            item.bindingInfo = binding
+        end
+        if type(binding) == "table" then
+            local slot = binding.actionSlot or binding.slot
+            item.actionSlot, item.slot = slot, slot
+            item.directActionSlot = binding.directActionSlot == true
+            item.actionBarStateTrusted = binding.actionBarStateTrusted == true
+            item.requestedSpellID = binding.requestedSpellID or item.requestedSpellID or item.spellID
+            item.matchedSpellID = binding.matchedSpellID or item.matchedSpellID
+            item.equivalentSpellIDs = binding.equivalentSpellIDs or item.equivalentSpellIDs
+        end
+        local state, reason = runtime:CollectSpellState(runtimeSnapshot, item.spellID, binding, options)
+        if type(state) == "table" and TE.IconState and type(TE.IconState.ApplyState) == "function" then
+            return TE.IconState:ApplyState(item, state)
+        end
+        item.iconState = { schema = 6, availability = "unknown", source = "runtime_snapshot_fail_safe", lastError = reason }
+        item.usableState = "unknown"
+        item.unusableReason = reason or "统一周期图标状态读取失败"
         return item
     end
-    if item and TE.IconState and type(TE.IconState.Decorate) == "function" then
-        item = normalizeCooldownIdentity(item)
-        local options = {
-            actionSlot = item.actionSlot or item.slot,
-            directActionSlot = item.directActionSlot == true,
-            actionBarStateTrusted = item.actionBarStateTrusted == true,
-            requestedSpellID = item.requestedSpellID or item.spellID,
-            matchedSpellID = item.matchedSpellID,
-            equivalentSpellIDs = item.equivalentSpellIDs,
-        }
-        for key, value in pairs(ROLE_OPTIONS[role] or {}) do options[key] = value end
-        -- P3 has already verified the actual focus/mouseover/nameplate source
-        -- in ReactionObservation. IconState's generic target-only probe must
-        -- not overwrite that result with a missing/current-target warning.
-        if item.reactionObservedTarget == true or item.reactionAoe == true then
-            options.requiresHostileTarget = false
-        end
-        if iconContext and type(iconContext.gcdSnapshot) == "table" then
-            options.gcdSnapshot = iconContext.gcdSnapshot
-        end
-        local ok, err = pcall(function()
-            TE.IconState:Decorate(item, options)
-        end)
+
+    if TE.IconState and type(TE.IconState.Decorate) == "function" then
+        local ok, err = pcall(TE.IconState.Decorate, TE.IconState, item, options)
         if not ok then
             item.iconState = { availability = "unknown", unusableReason = "图标状态安全模式", lastError = tostring(err), source = "tactical_advisors_fail_safe" }
             item.usableState = "unknown"
             item.unusableReason = "图标状态采集中断，战术面板已跳过该状态"
-            item.iconStateError = tostring(err)
         end
     end
     return item
 end
 
-local function decorateCollection(items, role, iconContext)
-    for _, item in ipairs(items or {}) do decorateItem(item, role, iconContext) end
+local function decorateCollection(items, role, runtimeSnapshot)
+    for _, item in ipairs(items or {}) do decorateItem(item, role, runtimeSnapshot) end
     return items
 end
 
@@ -888,9 +923,8 @@ end
 -- own-CD skip). This is read-only HUD data and never changes a candidate,
 -- binding token, TEAP message or input decision.
 local function applyAutoBurstVerification(primaryDisplay, advisory)
-    if not (TE.AutoBurst and type(TE.AutoBurst.GetSnapshot) == "function") then return end
-    local ok, plan = pcall(TE.AutoBurst.GetSnapshot, TE.AutoBurst)
-    if not ok or type(plan) ~= "table" or plan.active ~= true then return end
+    local plan = advisory and advisory.burst and advisory.burst.autoBurst or nil
+    if type(plan) ~= "table" or plan.active ~= true then return end
     local pending = plan.waitingForConfirmation == true
         or plan.preInjectionSkipStatus == "confirming_own_cooldown"
     local spellID = tonumber(plan.currentSpellID)
@@ -901,12 +935,12 @@ local function applyAutoBurstVerification(primaryDisplay, advisory)
         item.burstVerificationPending = true
         item.burstVerificationRole = plan.currentRole
     end
-
     mark(primaryDisplay)
     for _, item in ipairs((advisory and advisory.burst and advisory.burst.items) or {}) do mark(item) end
 end
 
 local function publish(snapshot)
+    perfCount("hud_submit")
     lastSnapshot = snapshot
     for _, callback in pairs(subscribers) do pcall(callback, snapshot) end
 end
@@ -914,111 +948,98 @@ end
 function TacticalAdvisors:Refresh(force)
     local now = type(GetTime) == "function" and GetTime() or 0
     if not force and now < nextRefreshAt then return lastSnapshot end
-    nextRefreshAt = now + ADVISOR_REFRESH_INTERVAL
+    nextRefreshAt = now + 0.10
+    perfCount("tactical_advisors_refresh")
+    local timer = perfBegin("TacticalAdvisors.Refresh")
 
+    local runtimeSnapshot = TE.RuntimeSnapshot and type(TE.RuntimeSnapshot.GetLatest) == "function"
+        and TE.RuntimeSnapshot:GetLatest() or nil
     local primary = TE.TacticalState and TE.TacticalState:GetSnapshot() or nil
-    local context = TE.Context and TE.Context:GetPlayer() or {}
+    local context = type(runtimeSnapshot) == "table" and type(runtimeSnapshot.context) == "table"
+        and runtimeSnapshot.context or (TE.Context and TE.Context:GetPlayer() or {})
     local settings = ensureSettings()
     local hud = ensureHudSettings()
-    local primaryOnly = hud and hud.queueMode == "primary"
-    local buildBurstHud = shouldBuildBurstHud(hud)
-    local primaryIconContext = TE.IconState and type(TE.IconState.CreateRefreshContext) == "function"
-        and TE.IconState:CreateRefreshContext(primary) or {}
     local primaryDisplay = primaryDisplayFromState(primary, context)
     if not primaryDisplay and context.inCombat ~= true then
-        primaryDisplay = buildOutOfCombatPrimary(context)
+        primaryDisplay = buildOutOfCombatPrimary(context, runtimeSnapshot)
     end
 
-    if buildBurstHud ~= true then
-        local advisory = emptyAdvisory(primaryOnly and "hud_primary_only" or "hud_burst_hidden")
-        decorateItem(primaryDisplay, "primary", primaryIconContext)
-        applyAutoBurstVerification(primaryDisplay, advisory)
-        local snapshot = {
-            primary = primary,
-            primaryDisplay = primaryDisplay,
-            history = { active = false, items = {}, source = advisory.candidates.state, notice = "candidate queue retired" },
-            interrupt = emptyInterrupt(advisory.candidates.state),
-            defensives = advisory.defense,
-            advisory = advisory,
-            reaction = emptyReaction(advisory.candidates.state),
-            context = context,
-            settings = settings,
-            hudPrimaryOnly = primaryOnly == true,
-            observedAt = now,
-            queue = {
-                schema = 2,
-                items = {},
-                order = { "primary" },
-                source = advisory.candidates.state,
-            },
-        }
-        publish(snapshot)
-        return snapshot
-    end
-
-    -- Product scope is intentionally narrowed to the official primary card and
-    -- AutoBurst. Retired reaction/control/defense/survival/diagnostic planners
-    -- are not sampled here, so the HUD cannot accidentally revive their polling
-    -- or display-only scan cost after their TOC entries are removed.
-    do
-        local runtime = { iconContext = primaryIconContext }
-        local advisory = emptyAdvisory("scope_primary_burst")
-        if TE.BurstPlanner and type(TE.BurstPlanner.Build) == "function" then
-            local ok, result = pcall(function() return TE.BurstPlanner:Build(primary, context, settings, runtime) end)
-            if ok and type(result) == "table" then
-                advisory.burst = result
-            else
-                advisory.burst = {
-                    active = false,
-                    state = "safe_mode",
-                    items = {},
-                    advisoryOnly = true,
-                    blockedReason = "burst_planner_safe_mode",
-                    error = tostring(result),
-                }
-            end
+    local runtime = {
+        runtimeSnapshot = runtimeSnapshot,
+        iconContext = type(runtimeSnapshot) == "table" and {
+            gcdSnapshot = runtimeSnapshot.gcdSnapshot,
+            castSnapshot = runtimeSnapshot.castSnapshot,
+        } or {},
+    }
+    local advisory = emptyAdvisory("scope_primary_burst")
+    if TE.BurstPlanner and type(TE.BurstPlanner.Build) == "function" then
+        local perf = TE.PerformanceDiagnostics
+        local ok, result
+        if perf and type(perf.Guard) == "function" then
+            ok, result = perf:Guard("BurstPlanner.Build", TE.BurstPlanner.Build,
+                TE.BurstPlanner, primary, context, settings, runtime)
+        else
+            ok, result = pcall(TE.BurstPlanner.Build, TE.BurstPlanner, primary, context, settings, runtime)
+        end
+        if ok and type(result) == "table" then
+            advisory.burst = result
         else
             advisory.burst = {
                 active = false,
-                state = "unavailable",
+                state = "safe_mode",
                 items = {},
                 advisoryOnly = true,
-                blockedReason = "burst_planner_unavailable",
+                blockedReason = "burst_planner_safe_mode",
+                error = tostring(result),
             }
         end
-        if primaryDisplay and advisory.burst and advisory.burst.overlayPrimary == true and settings.burstHighlightPrimary ~= false then
-            primaryDisplay.procHighlight = true
-            primaryDisplay.burstOverlay = true
-            primaryDisplay.burstState = advisory.burst.state
-            primaryDisplay.burstReason = advisory.burst.notice
-        end
-
-        decorateItem(primaryDisplay, "primary", runtime.iconContext)
-        decorateCollection((advisory.burst or {}).items, "burst", runtime.iconContext)
-        applyAutoBurstVerification(primaryDisplay, advisory)
-
-        local snapshot = {
-            primary = primary,
-            primaryDisplay = primaryDisplay,
-            history = { active = false, items = {}, source = "retired_scope", notice = "candidate queue retired" },
-            interrupt = emptyInterrupt("retired_scope"),
-            defensives = advisory.defense or { active = false, items = {}, state = "retired_scope", advisoryOnly = true },
-            advisory = advisory,
-            reaction = emptyReaction("retired_scope"),
-            context = context,
-            settings = settings,
-            hudPrimaryOnly = hud and hud.queueMode == "primary" or false,
-            observedAt = now,
-            queue = {
-                schema = 2,
-                items = {},
-                order = { "primary", "burst" },
-                source = "primary_burst_scope",
-            },
+    else
+        advisory.burst = {
+            active = false,
+            state = "unavailable",
+            items = {},
+            advisoryOnly = true,
+            blockedReason = "burst_planner_unavailable",
         }
-        publish(snapshot)
-        return snapshot
     end
+
+    if primaryDisplay and advisory.burst and advisory.burst.overlayPrimary == true and settings.burstHighlightPrimary ~= false then
+        primaryDisplay.procHighlight = true
+        primaryDisplay.burstOverlay = true
+        primaryDisplay.burstState = advisory.burst.state
+        primaryDisplay.burstReason = advisory.burst.notice
+    end
+
+    decorateItem(primaryDisplay, "primary", runtimeSnapshot)
+    -- AutoBurst already materializes Burst cards from this exact cycle. This is
+    -- intentionally a schema check only; no second binding/cooldown pass occurs.
+    decorateCollection((advisory.burst or {}).items, "burst", runtimeSnapshot)
+    applyAutoBurstVerification(primaryDisplay, advisory)
+
+    local snapshot = {
+        schema = 3,
+        primary = primary,
+        primaryDisplay = primaryDisplay,
+        history = { active = false, items = {}, source = "retired_scope", notice = "candidate queue retired" },
+        interrupt = emptyInterrupt("retired_scope"),
+        defensives = advisory.defense or { active = false, items = {}, state = "retired_scope", advisoryOnly = true },
+        advisory = advisory,
+        reaction = emptyReaction("retired_scope"),
+        context = context,
+        settings = settings,
+        hudPrimaryOnly = hud and hud.queueMode == "primary" or false,
+        observedAt = now,
+        runtimeCycleId = runtimeSnapshot and runtimeSnapshot.cycleId or nil,
+        queue = {
+            schema = 2,
+            items = {},
+            order = { "primary", "burst" },
+            source = "primary_burst_scope",
+        },
+    }
+    publish(snapshot)
+    perfFinish(timer)
+    return snapshot
 end
 
 function TacticalAdvisors:GetSnapshot()
@@ -1042,7 +1063,20 @@ local watcher = CreateFrame("Frame")
 local refreshElapsed = 0
 watcher:SetScript("OnUpdate", function(_, delta)
     refreshElapsed = refreshElapsed + (tonumber(delta) or 0)
-    if refreshElapsed < ADVISOR_REFRESH_INTERVAL then return end
+    if refreshElapsed < 0.20 then return end
     refreshElapsed = 0
-    TacticalAdvisors:Refresh(true)
+    -- The tactical HUD is the only consumer of this display snapshot in the
+    -- current primary+burst product scope.  Do not keep rebuilding BurstPlanner
+    -- and cooldown presentation data while the HUD is disabled.  SignalFrame /
+    -- AutoBurst own the TEAP/TEK path and continue running independently.
+    local hud = type(TacticEchoDB) == "table"
+        and type(TacticEchoDB.tactics) == "table"
+        and type(TacticEchoDB.tactics.hud) == "table"
+        and TacticEchoDB.tactics.hud or nil
+    -- Defaults enable the HUD, so a missing pre-normalization table must keep
+    -- the first refresh alive. Only an explicit persisted false stops polling.
+    if type(hud) == "table" and hud.enabled == false then return end
+    -- Respect Refresh's own freshness gate.  Passing force=true here made the
+    -- internal nextRefreshAt contract ineffective for the permanent watcher.
+    TacticalAdvisors:Refresh(false)
 end)

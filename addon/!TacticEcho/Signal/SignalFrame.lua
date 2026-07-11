@@ -10,13 +10,11 @@ local DEFAULT_BLOCK_SIZE = 10
 local DEFAULT_BLOCK_GAP = 2
 local CLIENT_ANCHOR_MARGIN_PX = 8
 local MIN_BLOCK_SIZE_PX = 8
--- TEK samples at 50 ms by default. Keep TEAP freshness at the same cadence so
--- startup, manual-release recovery and combat-policy transitions do not spend
--- multiple 200 ms UI ticks waiting for a new frame.
-local UPDATE_INTERVAL = 0.05
--- Match WR's practical Assisted Combat cadence for expensive recommendation
--- and binding work while keeping TEAP freshness at 50 ms for TEK sampling.
-local OFFICIAL_RECOMMENDATION_REBUILD_INTERVAL = 0.10
+-- TEK samples at 50 ms by default. Transport freshness remains 20 Hz, while
+-- stable business parsing is reused for up to 100 ms. A live AutoBurst plan or
+-- event-driven safety transition still forces the original 20 Hz business path.
+local TRANSPORT_INTERVAL = 0.05
+local BUSINESS_INTERVAL = 0.10
 local SESSION_POLICIES = {
     manual_keep = true,
     pause_out_of_combat = true,
@@ -25,7 +23,22 @@ local SESSION_POLICIES = {
 
 local frame
 local blocks = {}
-local elapsedSinceUpdate = 0
+local elapsedSinceTransport = 0
+local lastBusinessSampleAt = -math.huge
+local businessDirty = true
+local businessRevision = 0
+local lastBusinessMessage
+local lastSequenceState
+local officialBindingCache = {
+    spellID = nil,
+    result = nil,
+    reason = nil,
+    cacheGeneration = nil,
+    stateHash = nil,
+    specialActionActive = nil,
+    specialActionReason = nil,
+    extraActionVisible = nil,
+}
     -- `state` is the user/session intent. The encoded state may temporarily be
     -- non-dispatchable by auto start/stop policy or a focused text input without
     -- altering that intent.
@@ -33,20 +46,36 @@ local state = "waiting"
 local sequence = 0
 local frameFreshnessCounter = 0
 local sessionEpoch
-local lastSignature
-local lastRememberedSignature
+local lastRememberedSequence
+local lastRememberedState
+local lastRememberedReason
 local lastMessage
 local lastEncoded
 local lastPaintedFields
 local lastGeometrySignature
 local activeBlockSize = DEFAULT_BLOCK_SIZE
 local activeBlockGap = DEFAULT_BLOCK_GAP
-local lastFullBuildAt = 0
 local activeAnchorMargin = CLIENT_ANCHOR_MARGIN_PX
 local STATE_SOUND_FILES = {
     armed = "Interface\\AddOns\\!TacticEcho\\Media\\te-armed-123.wav",
     paused = "Interface\\AddOns\\!TacticEcho\\Media\\te-paused-321.wav",
 }
+
+
+local function perfCount(name, amount)
+    local perf = TE.PerformanceDiagnostics
+    if perf and type(perf.Count) == "function" then perf:Count(name, amount) end
+end
+
+local function perfBegin(name)
+    local perf = TE.PerformanceDiagnostics
+    return perf and type(perf.Begin) == "function" and perf:Begin(name) or nil
+end
+
+local function perfFinish(token)
+    local perf = TE.PerformanceDiagnostics
+    if perf and type(perf.Finish) == "function" then perf:Finish(token) end
+end
 
 local function newSessionEpoch()
     local seconds = 1
@@ -113,13 +142,15 @@ end
 local MAX_SIGNAL_FRAMES = 60
 
 local function remember(encoded, reason)
-    local signature = table.concat({
-        tostring(encoded.sequence or 0),
-        tostring(encoded.state or "unknown"),
-        tostring(reason or "tick"),
-    }, ":")
-    if signature == lastRememberedSignature then return end
-    lastRememberedSignature = signature
+    local rememberedSequence = tonumber(encoded.sequence) or 0
+    local rememberedState = encoded.state or "unknown"
+    local rememberedReason = reason or "tick"
+    if rememberedSequence == lastRememberedSequence
+        and rememberedState == lastRememberedState
+        and rememberedReason == lastRememberedReason then return end
+    lastRememberedSequence = rememberedSequence
+    lastRememberedState = rememberedState
+    lastRememberedReason = rememberedReason
 
     local store = ensureStore()
     local record = {
@@ -264,9 +295,12 @@ local function createFrame()
     end
     applyGeometry()
     frame:SetScript("OnUpdate", function(_, elapsed)
-        elapsedSinceUpdate = elapsedSinceUpdate + elapsed
-        if elapsedSinceUpdate < UPDATE_INTERVAL then return end
-        elapsedSinceUpdate = 0
+        elapsedSinceTransport = elapsedSinceTransport + elapsed
+        if elapsedSinceTransport < TRANSPORT_INTERVAL then return end
+        -- Preserve fractional overshoot so low/uneven frame rates do not drift
+        -- the transport cadence farther than necessary.
+        elapsedSinceTransport = elapsedSinceTransport - TRANSPORT_INTERVAL
+        if elapsedSinceTransport > TRANSPORT_INTERVAL then elapsedSinceTransport = 0 end
         SignalFrame:Refresh("tick")
     end)
     return frame
@@ -365,17 +399,19 @@ local function frameHasKeyboardFocus(candidate)
     return false
 end
 
-isTextInputActive = function()
-    if type(ChatEdit_GetActiveWindow) == "function" then
-        local active = ChatEdit_GetActiveWindow()
-        if active then return true, "chat_input_active" end
-    end
-    for _, focusApi in ipairs({ GetCurrentKeyBoardFocus, GetCurrentKeyboardFocus }) do
-        if type(focusApi) == "function" then
-            local focused = focusApi()
-            if focused then return true, "keyboard_focus_active" end
-        end
-    end
+local inputFocusCache = {
+    active = false,
+    reason = nil,
+    checkedAt = -math.huge,
+}
+
+local function currentKeyboardFocusActive()
+    if type(GetCurrentKeyBoardFocus) == "function" and GetCurrentKeyBoardFocus() then return true end
+    if type(GetCurrentKeyboardFocus) == "function" and GetCurrentKeyboardFocus() then return true end
+    return false
+end
+
+local function scanDeepTextInputActive()
     for index = 1, 10 do
         if frameHasKeyboardFocus(_G["ChatFrame" .. index .. "EditBox"]) then return true, "chat_editbox_active" end
     end
@@ -388,6 +424,33 @@ isTextInputActive = function()
         if popup and type(popup.IsShown) == "function" and popup:IsShown() then return true, "static_popup_active" end
     end
     return false, nil
+end
+
+isTextInputActive = function(forceDeep)
+    local now = GetTime and GetTime() or 0
+    -- Chat and direct keyboard focus are cheap and safety-critical. Probe these
+    -- on every transport tick so entering an edit box cannot wait for the 10 Hz
+    -- deep scan of all known UI frames.
+    if type(ChatEdit_GetActiveWindow) == "function" and ChatEdit_GetActiveWindow() then
+        inputFocusCache.active = true
+        inputFocusCache.reason = "chat_input_active"
+        inputFocusCache.checkedAt = now
+        return true, inputFocusCache.reason
+    end
+    if currentKeyboardFocusActive() then
+        inputFocusCache.active = true
+        inputFocusCache.reason = "keyboard_focus_active"
+        inputFocusCache.checkedAt = now
+        return true, inputFocusCache.reason
+    end
+    if forceDeep ~= true and (now - (inputFocusCache.checkedAt or -math.huge)) < BUSINESS_INTERVAL then
+        return inputFocusCache.active == true, inputFocusCache.reason
+    end
+    local active, reason = scanDeepTextInputActive()
+    inputFocusCache.active = active == true
+    inputFocusCache.reason = reason
+    inputFocusCache.checkedAt = now
+    return inputFocusCache.active, inputFocusCache.reason
 end
 
 function SignalFrame:IsInputFocusActive()
@@ -773,7 +836,63 @@ function SignalFrame:GetCastLockInfo()
     return getPlayerCastLockInfo()
 end
 
-function SignalFrame:BuildMessage(reason)
+local INACTIVE_STATE = { active = false }
+
+local function rememberOfficialBinding(spellID, result, reason, resolveContext)
+    local resolver = TE.ActionBarBindingResolver
+    officialBindingCache.spellID = spellID
+    officialBindingCache.result = result
+    officialBindingCache.reason = reason
+    officialBindingCache.cacheGeneration = resolver and resolver.scanGeneration or nil
+    officialBindingCache.stateHash = type(resolveContext) == "table" and resolveContext.actionBarStateHash or nil
+    local special = type(resolveContext) == "table" and resolveContext.specialActionBar or nil
+    officialBindingCache.specialActionActive = type(special) == "table" and special.active == true or false
+    officialBindingCache.specialActionReason = type(special) == "table" and special.reason or nil
+    officialBindingCache.extraActionVisible = type(special) == "table" and special.extraActionVisible == true or false
+end
+
+local function resolveOfficialBinding(spellID, dispatchSpellID, dispatchBinding, dispatchReason, resolveContext, runtimeSnapshot)
+    spellID = tonumber(spellID)
+    if not spellID or spellID <= 0 then
+        rememberOfficialBinding(nil, nil, nil, nil)
+        return nil, nil
+    end
+    if tonumber(dispatchSpellID) == spellID and type(dispatchBinding) == "table" then
+        rememberOfficialBinding(spellID, dispatchBinding, dispatchReason, resolveContext)
+        return dispatchBinding, dispatchReason
+    end
+
+    local resolver = TE.ActionBarBindingResolver
+    if not resolver or type(resolver.ResolveSpell) ~= "function" then
+        return nil, "binding_resolver_unavailable"
+    end
+    local special = type(resolveContext) == "table" and resolveContext.specialActionBar or nil
+    local specialActive = type(special) == "table" and special.active == true or false
+    local specialReason = type(special) == "table" and special.reason or nil
+    local extraActionVisible = type(special) == "table" and special.extraActionVisible == true or false
+    local reusable = specialActive ~= true
+        and resolver.cacheDirty ~= true
+        and officialBindingCache.spellID == spellID
+        and type(officialBindingCache.result) == "table"
+        and officialBindingCache.cacheGeneration == resolver.scanGeneration
+        and officialBindingCache.stateHash == (resolveContext and resolveContext.actionBarStateHash or nil)
+        and officialBindingCache.specialActionActive == specialActive
+        and officialBindingCache.specialActionReason == specialReason
+        and officialBindingCache.extraActionVisible == extraActionVisible
+    if reusable then return officialBindingCache.result, officialBindingCache.reason end
+
+    local result, reason
+    if type(runtimeSnapshot) == "table" and TE.RuntimeSnapshot
+        and type(TE.RuntimeSnapshot.ResolveSpell) == "function" then
+        result, reason = TE.RuntimeSnapshot:ResolveSpell(runtimeSnapshot, spellID)
+    else
+        result, reason = resolver:ResolveSpell(spellID, resolveContext)
+    end
+    rememberOfficialBinding(spellID, result, reason, resolveContext)
+    return result, reason
+end
+
+function SignalFrame:BuildBusinessMessage(reason, sampledSpellID, sampledStatus, sampledError)
     -- All dispatchable candidates use one scheduler contract: each fresh
     -- `armed` TEAP frame can reach TEK, where the shared global rate limiter
     -- decides the physical input frequency. AutoBurst only changes the selected
@@ -784,22 +903,26 @@ function SignalFrame:BuildMessage(reason)
     -- The official recommendation is preserved as immutable source metadata.
     -- AutoBurst may provide a separate DispatchCandidate, but it never mutates
     -- this result or creates a parallel binding/token path.
-    local official = TE.RecommendationAdapter:ReadOfficial()
+    local context = TE.Context and TE.Context:GetPlayer() or {}
+    local official = TE.RecommendationAdapter:ReadOfficial(context, sampledSpellID, sampledStatus, sampledError)
     local officialSpellID = official and tonumber(official.spellID) or nil
-    local inCombat = InCombatLockdown and InCombatLockdown() or false
+    local inCombat = context.inCombat == true
     local outputState = state
     local sessionPolicy = getSessionPolicy()
     local sessionPolicyReason = nil
-    local inputFocusActive, inputFocusReason = isTextInputActive()
+    local inputFocusActive, inputFocusReason = isTextInputActive(true)
     local castLock = getPlayerCastLockInfo()
     local castDisplay = getPlayerCastDisplayInfo(castLock)
     lastCastDisplayInfo = castDisplay
-    local channeling = castLock.active == true and castLock.kind == "channel" and castLock or { active = false }
-    local empowering = castLock.active == true and castLock.kind == "empower" and castLock or { active = false }
+    local channeling = castLock.active == true and castLock.kind == "channel" and castLock or INACTIVE_STATE
+    local empowering = castLock.active == true and castLock.kind == "empower" and castLock or INACTIVE_STATE
     local monitor = TE.ProtocolMonitor and TE.ProtocolMonitor:Sample() or nil
     local runtimeReason = nil
     local manualPriority = TE.ManualActionPriority and type(TE.ManualActionPriority.GetActive) == "function"
-        and TE.ManualActionPriority:GetActive() or { active = false }
+        and TE.ManualActionPriority:GetActive() or INACTIVE_STATE
+    local resolver = TE.ActionBarBindingResolver
+    local resolveContext = resolver and type(resolver.BeginResolveCycle) == "function"
+        and resolver:BeginResolveCycle(reason) or nil
 
     if state == "armed" then
         if manualPriority.active == true then
@@ -821,10 +944,27 @@ function SignalFrame:BuildMessage(reason)
         end
     end
 
+    local runtimeSnapshot
+    if TE.RuntimeSnapshot and type(TE.RuntimeSnapshot.Begin) == "function" then
+        runtimeSnapshot = TE.RuntimeSnapshot:Begin(reason, {
+            context = context,
+            official = official,
+            inCombat = inCombat,
+            intentState = state,
+            effectiveState = outputState,
+            runtimeReason = runtimeReason or inputFocusReason or sessionPolicyReason,
+            inputFocusActive = inputFocusActive,
+            inputFocusReason = inputFocusReason,
+            manualPriority = manualPriority,
+            castLock = castLock,
+            castDisplay = castDisplay,
+            resolveContext = resolveContext,
+        })
+    end
+
     local autoDecision
-    if inCombat and TE.AutoBurst and type(TE.AutoBurst.Evaluate) == "function" then
-        local context = TE.Context and TE.Context:GetPlayer() or {}
-        local ok, decision = pcall(TE.AutoBurst.Evaluate, TE.AutoBurst, official, {
+    if TE.AutoBurst and type(TE.AutoBurst.Evaluate) == "function" then
+        local evaluateRuntime = {
             context = context,
             inCombat = inCombat,
             intentState = state,
@@ -835,7 +975,18 @@ function SignalFrame:BuildMessage(reason)
             -- compress a multi-frame TEK freshness fence into a few milliseconds.
             transportHandoffTick = reason == "tick",
             primary = official,
-        })
+            resolveContext = resolveContext,
+            runtimeSnapshot = runtimeSnapshot,
+        }
+        local perf = TE.PerformanceDiagnostics
+        local autoBurstTimer = perfBegin("AutoBurst.Evaluate")
+        local ok, decision
+        if perf and type(perf.Guard) == "function" then
+            ok, decision = perf:Guard("AutoBurst.Evaluate", TE.AutoBurst.Evaluate, TE.AutoBurst, official, evaluateRuntime)
+        else
+            ok, decision = pcall(TE.AutoBurst.Evaluate, TE.AutoBurst, official, evaluateRuntime)
+        end
+        perfFinish(autoBurstTimer)
         if ok and type(decision) == "table" then
             autoDecision = decision
         elseif not ok and TE.AutoBurst and type(TE.AutoBurst.ReportFault) == "function" then
@@ -879,14 +1030,23 @@ function SignalFrame:BuildMessage(reason)
         end
     end
 
+    if runtimeSnapshot and TE.RuntimeSnapshot and type(TE.RuntimeSnapshot.SetAutoBurst) == "function" then
+        local stateSnapshot
+        if TE.AutoBurst and type(TE.AutoBurst.GetRuntimeState) == "function" then
+            local ok, value = pcall(TE.AutoBurst.GetRuntimeState, TE.AutoBurst)
+            if ok and type(value) == "table" then stateSnapshot = value end
+        end
+        TE.RuntimeSnapshot:SetAutoBurst(runtimeSnapshot, autoDecision, stateSnapshot)
+    end
+
     -- P4 automatic interrupts are a separate ordinary scheduler decision.
     -- AutoReaction never sends input itself: it only selects an already
     -- validated P2 binding route. SignalFrame keeps AutoBurst ownership first;
     -- the user-selected policy is that a live Burst plan/pre-window capture
     -- suppresses automatic interrupt attempts and leaves P3 highlighting only.
+    local autoBurstSnapshot
     local reactionDecision
     if TE.AutoReaction and type(TE.AutoReaction.Evaluate) == "function" then
-        local autoBurstSnapshot
         if TE.AutoBurst and type(TE.AutoBurst.GetSnapshot) == "function" then
             local snapshotOK, snapshot = pcall(TE.AutoBurst.GetSnapshot, TE.AutoBurst)
             if snapshotOK and type(snapshot) == "table" then autoBurstSnapshot = snapshot end
@@ -915,7 +1075,7 @@ function SignalFrame:BuildMessage(reason)
     -- its own bounded plan waits for GCD/confirmation/revalidation.  It is not
     -- a user pause.  Encoding the old hold as state="paused" caused TEK to
     -- reject it and, worse, fed that paused state back into AutoBurst on the
-    -- next BuildMessage call, permanently self-latching the plan.
+    -- next business-snapshot build, permanently self-latching the plan.
     local burstHoldObservation = autoDecision and autoDecision.kind == "hold"
         and autoDecision.observationOnly == true
     local reactionHoldObservation = reactionDecision and reactionDecision.kind == "hold"
@@ -981,80 +1141,87 @@ function SignalFrame:BuildMessage(reason)
         runtimeReason = manualPriority.reason or "manual_click_priority"
     end
 
-    if dispatchSpellID and not bindingInfo then
-        bindingInfo, bindingReason = TE.ActionBarBindingResolver:ResolveSpell(dispatchSpellID)
-    end
-    if officialSpellID then
-        if dispatchOrigin == "official" and bindingInfo then
-            officialBindingInfo, officialBindingReason = bindingInfo, bindingReason
+    local ordinaryOfficialDispatch = dispatchOrigin == "official"
+        and dispatchSpellID ~= nil and dispatchSpellID == officialSpellID
+    if ordinaryOfficialDispatch and not bindingInfo then
+        -- Stable ordinary recommendations reuse the same verified resolver result
+        -- across business cycles. Action-bar events, page-state changes and cache
+        -- generation changes invalidate this result immediately.
+        officialBindingInfo, officialBindingReason = resolveOfficialBinding(
+            officialSpellID, nil, nil, nil, resolveContext, runtimeSnapshot
+        )
+        bindingInfo, bindingReason = officialBindingInfo, officialBindingReason
+    else
+        if dispatchSpellID and not bindingInfo and resolver and type(resolver.ResolveSpell) == "function" then
+            if type(runtimeSnapshot) == "table" and TE.RuntimeSnapshot
+                and type(TE.RuntimeSnapshot.ResolveSpell) == "function" then
+                bindingInfo, bindingReason = TE.RuntimeSnapshot:ResolveSpell(runtimeSnapshot, dispatchSpellID)
+            else
+                bindingInfo, bindingReason = resolver:ResolveSpell(dispatchSpellID, resolveContext)
+            end
+        end
+        if officialSpellID then
+            -- The same SpellID shares one resolver result in this business cycle.
+            -- Otherwise the official HUD binding is reused until either the official
+            -- spell or the resolver cache generation/page state changes.
+            officialBindingInfo, officialBindingReason = resolveOfficialBinding(
+                officialSpellID, dispatchSpellID, bindingInfo, bindingReason, resolveContext, runtimeSnapshot
+            )
         else
-            -- A Burst/Reaction candidate or observation hold must not replace
-            -- the normal recommendation's read-only HUD binding metadata.
-            officialBindingInfo, officialBindingReason = TE.ActionBarBindingResolver:ResolveSpell(officialSpellID)
+            rememberOfficialBinding(nil, nil, nil, nil)
         end
     end
-    local legacyCatalogReason = dispatchSpellID and "generic_binding_token_path" or nil
+    local action, legacyCatalogReason
+    if dispatchSpellID then
+        action, legacyCatalogReason = TE.ActionRegistry:ResolveRecommendation({ spellID = dispatchSpellID })
+    end
 
     if outputState == "armed" and not observationOnly
         and (not bindingInfo or bindingInfo.status ~= "Ready" or (tonumber(bindingInfo.bindingToken) or 0) == 0) then
         outputState = "blocked"
     end
 
-    local actionCode = 0
-    local actionId = nil
+    local actionCode = action and action.actionCode or 0
+    local actionId = action and action.actionId or nil
     if explicitObservationOnly then outputState = "paused" end
 
     runtimeReason = runtimeReason or inputFocusReason or sessionPolicyReason or bindingReason
-    -- `sequence` identifies a fresh dispatch opportunity, not a logical Burst
-    -- step.  A waiting AutoBurst plan can legitimately need several physical
-    -- attempts while its exact confirmation remains pending (for example an
-    -- inventory action presented during a GCD).  Older TEK builds deduped Burst
-    -- candidates by sequence even though their freshness changed, so retaining a
-    -- stable sequence silently converted a configured 5 Hz/20 Hz delivery policy
-    -- into one physical press.  Give every dispatchable armed frame a fresh
-    -- sequence for both official and Burst candidates; the current TEK global
-    -- rate limiter remains the only physical-input frequency governor.
+    -- Sequence comparison is performed by the 20 Hz transport layer. Keep a
+    -- compact field vector on the business snapshot instead of rebuilding and
+    -- concatenating a large signature string on every transport frame.
     local signatureOfficialSpellID = officialSpellID
     if (autoDecision and autoDecision.kind == "candidate" and dispatchOrigin == "burst")
         or (reactionDecision and reactionDecision.kind == "candidate" and dispatchOrigin == "reaction") then
         signatureOfficialSpellID = 0
     end
-    local signature = table.concat({
-        tostring(outputState), tostring(dispatchOrigin), tostring(dispatchActionKind), tostring(actionCode), tostring(signatureOfficialSpellID), tostring(dispatchSpellID),
-        tostring(dispatchInventorySlot or 0), tostring(dispatchItemID or 0), tostring(bindingInfo and bindingInfo.bindingToken or 0), tostring(inCombat),
-        tostring(inputFocusActive), tostring(sessionPolicy), tostring(runtimeReason),
-        tostring(castLock.active == true), tostring(castLock.kind or "none"), tostring(castLock.spellID or 0),
-        tostring(autoDecision and autoDecision.planId or 0), tostring(autoDecision and autoDecision.stepRole or "none"),
-        tostring(autoDecision and autoDecision.dispatchAttempt or 0), tostring(observationOnly),
-        tostring(reactionDecision and reactionDecision.reactionKind or "none"), tostring(reactionDecision and reactionDecision.source or "none"),
-        tostring(reactionDecision and reactionDecision.castKey or "none"), tostring(reactionDecision and reactionDecision.routeMode or "none"),
-        tostring(manualPriorityObservation), tostring(manualPriority and manualPriority.kind or "none"), tostring(manualPriority and manualPriority.source or "none"),
-    }, ":")
-    -- P4.4 reaction candidates intentionally retain one stable sequence while
-    -- the observed cast remains active. TEK records a successful reaction
-    -- sequence and suppresses only its duplicate frames; this keeps the request
-    -- visible long enough for cross-process sampling without producing repeated
-    -- physical-output calls. Official and Burst candidates retain their fresh-frame
-    -- delivery policy.
     local stableReactionCandidate = reactionDecision and reactionDecision.kind == "candidate"
         and dispatchOrigin == "reaction"
         and reactionDecision.deliveryStable == true
+    -- TEAP v3 dispatch authority is the verified BindingToken, not the legacy
+    -- action catalog code.  Inventory steps intentionally have no SpellID and
+    -- therefore ActionCode=0; unregistered-but-bound spell candidates can also
+    -- legitimately carry zero.  TEK v3 validates the catalog envelope plus the
+    -- BindingToken and accepts ActionCode=0, so every armed token-bearing frame
+    -- must receive the same fresh 20 Hz sequence cadence.  Keeping the old
+    -- ActionCode gate converted trinkets into a one-sequence candidate and made
+    -- them easy to miss or suppress during the cross-process handoff.
     local freshDispatchableFrame = outputState == "armed"
         and observationOnly ~= true
         and bindingInfo ~= nil
         and bindingInfo.status == "Ready"
         and (tonumber(bindingInfo.bindingToken) or 0) ~= 0
         and stableReactionCandidate ~= true
-    if freshDispatchableFrame then
-        sequence = sequence + 1
-        lastSignature = signature
-    elseif signature ~= lastSignature then
-        sequence = sequence + 1
-        lastSignature = signature
-    elseif reason == "manual" then
-        sequence = sequence + 1
-        lastSignature = signature
-    end
+    local sequenceState = {
+        outputState, dispatchOrigin, dispatchActionKind, actionCode, signatureOfficialSpellID, dispatchSpellID,
+        dispatchInventorySlot or 0, dispatchItemID or 0, bindingInfo and bindingInfo.bindingToken or 0, inCombat,
+        inputFocusActive, sessionPolicy, runtimeReason,
+        castLock.active == true, castLock.kind or "none", castLock.spellID or 0,
+        autoDecision and autoDecision.planId or 0, autoDecision and autoDecision.stepRole or "none",
+        autoDecision and autoDecision.dispatchAttempt or 0, observationOnly,
+        reactionDecision and reactionDecision.reactionKind or "none", reactionDecision and reactionDecision.source or "none",
+        reactionDecision and reactionDecision.castKey or "none", reactionDecision and reactionDecision.routeMode or "none",
+        manualPriorityObservation, manualPriority and manualPriority.kind or "none", manualPriority and manualPriority.source or "none",
+    }
 
     return {
         state = outputState,
@@ -1113,8 +1280,108 @@ function SignalFrame:BuildMessage(reason)
         sessionPolicy = sessionPolicy,
         sessionPolicyReason = sessionPolicyReason,
         monitor = monitor,
+        -- Internal transport metadata; SignalEncoder ignores these keys.
+        _sequenceState = sequenceState,
+        _freshDispatchableFrame = freshDispatchableFrame == true,
+        _officialSampleSpellID = sampledSpellID,
+        _officialSampleStatus = sampledStatus,
+        _officialSampleError = sampledError,
+        _contextRevision = context.revision or (TE.Context and TE.Context:GetRevision()) or 0,
+        _manualPriorityActive = manualPriorityObservation == true,
+        _manualPriorityKind = manualPriority and manualPriority.kind or nil,
+        _manualPrioritySource = manualPriority and manualPriority.source or nil,
+        _castLockActive = castLock.active == true,
+        _castLockKind = castLock.kind,
+        _castLockSpellID = castLock.spellID,
+        _runtimeSnapshot = runtimeSnapshot,
     }
 end
+
+local SEQUENCE_STATE_FIELD_COUNT = 27
+
+local function sameSequenceState(left, right)
+    if left == right then return true end
+    if type(left) ~= "table" or type(right) ~= "table" then return false end
+    for index = 1, SEQUENCE_STATE_FIELD_COUNT do
+        if left[index] ~= right[index] then return false end
+    end
+    return true
+end
+
+local function advanceSequence(message, reason)
+    local sequenceState = message and message._sequenceState or nil
+    if message and message._freshDispatchableFrame == true then
+        -- Preserve the existing protocol contract: every fresh dispatchable
+        -- official/Burst frame receives a new sequence, even when its business
+        -- snapshot is reused for the second 50 ms transport frame.
+        sequence = sequence + 1
+        lastSequenceState = sequenceState
+    elseif not sameSequenceState(sequenceState, lastSequenceState) then
+        sequence = sequence + 1
+        lastSequenceState = sequenceState
+    elseif reason == "manual" then
+        sequence = sequence + 1
+        lastSequenceState = sequenceState
+    end
+    return sequence
+end
+
+local function currentManualPriorityScalars()
+    local priority = TE.ManualActionPriority
+    if priority and type(priority.IsActive) == "function" then
+        return priority:IsActive()
+    end
+    if priority and type(priority.GetActive) == "function" then
+        local active = priority:GetActive()
+        return active and active.active == true, active and active.reason,
+            active and active.kind, active and active.source, active and active.untilAt
+    end
+    return false, nil, nil, nil, 0
+end
+
+local function officialSampleChanged(message, spellID, status, sampleError)
+    if type(message) ~= "table" then return true end
+    return message._officialSampleSpellID ~= spellID
+        or message._officialSampleStatus ~= status
+        or message._officialSampleError ~= sampleError
+end
+
+local function shouldBuildBusiness(reason, now, spellID, status, sampleError)
+    local previous = lastBusinessMessage
+    if type(previous) ~= "table" or businessDirty == true then return true end
+    if reason ~= "tick" then return true end
+    if (now - lastBusinessSampleAt) >= BUSINESS_INTERVAL then return true end
+    if officialSampleChanged(previous, spellID, status, sampleError) then return true end
+
+    if TE.Context then
+        if type(TE.Context.IsDirty) == "function" and TE.Context:IsDirty() then return true end
+        if type(TE.Context.GetRevision) == "function"
+            and previous._contextRevision ~= TE.Context:GetRevision() then return true end
+    end
+
+    local resolver = TE.ActionBarBindingResolver
+    if resolver and resolver.cacheDirty == true then return true end
+    if TE.AutoBurst and type(TE.AutoBurst.NeedsTransportBusinessRefresh) == "function"
+        and TE.AutoBurst:NeedsTransportBusinessRefresh() then return true end
+
+    local inCombat = InCombatLockdown and InCombatLockdown() or false
+    if previous.inCombat ~= (inCombat == true) then return true end
+    if previous.intentState ~= state or previous.sessionPolicy ~= getSessionPolicy() then return true end
+
+    local inputActive, inputReason = isTextInputActive(false)
+    if previous.inputFocusActive ~= (inputActive == true) or previous.inputFocusReason ~= inputReason then return true end
+
+    local manualActive, _, manualKind, manualSource = currentManualPriorityScalars()
+    if previous._manualPriorityActive ~= (manualActive == true)
+        or previous._manualPriorityKind ~= manualKind
+        or previous._manualPrioritySource ~= manualSource then return true end
+
+    if previous._castLockActive ~= (playerCastLock.active == true)
+        or previous._castLockKind ~= playerCastLock.kind
+        or previous._castLockSpellID ~= playerCastLock.spellID then return true end
+    return false
+end
+
 function SignalFrame:GetLastMessage()
     return lastMessage
 end
@@ -1123,37 +1390,42 @@ function SignalFrame:GetLastEncoded()
     return lastEncoded
 end
 
-local REUSABLE_OFFICIAL_TICK_STATES = {
-    waiting = true,
-    armed = true,
-    paused = true,
-    blocked = true,
-    channeling = true,
-    empowering = true,
-}
-
-local function reusableOfficialTickMessage(message)
-    if type(message) ~= "table" then return false end
-    if REUSABLE_OFFICIAL_TICK_STATES[message.state] ~= true then return false end
-    if message.observationOnly == true then return false end
-    if message.dispatchOrigin == "burst" or message.dispatchOrigin == "reaction" then return false end
-    return true
-end
-
-local function cloneMessageForFreshness(message)
-    local copy = {}
-    for key, value in pairs(message) do copy[key] = value end
-    return copy
-end
-
 function SignalFrame:Refresh(reason)
+    reason = reason or "manual"
+    perfCount("teap_refresh")
+    local refreshTimer = perfBegin("SignalFrame.Refresh")
     frameFreshnessCounter = (frameFreshnessCounter + 1) % 65536
-    local now = type(GetTime) == "function" and GetTime() or 0
-    local canReuse = reason == "tick"
-        and reusableOfficialTickMessage(lastMessage)
-        and (now - (lastFullBuildAt or 0)) < OFFICIAL_RECOMMENDATION_REBUILD_INTERVAL
-    local message = canReuse and cloneMessageForFreshness(lastMessage) or self:BuildMessage(reason)
-    if not canReuse then lastFullBuildAt = now end
+
+    -- The official recommendation identity remains a 20 Hz scalar observation.
+    -- Full parsing, context construction and binding resolution occur only when
+    -- this identity or another business dependency changes, at the 10 Hz idle
+    -- cadence, or at the original 20 Hz cadence while AutoBurst owns a window.
+    local sampledSpellID, sampledStatus, sampledError
+    if TE.RecommendationAdapter and type(TE.RecommendationAdapter.ReadOfficialSpellID) == "function" then
+        sampledSpellID, sampledStatus, sampledError = TE.RecommendationAdapter:ReadOfficialSpellID()
+    else
+        sampledStatus, sampledError = "missing", "recommendation_adapter_unavailable"
+    end
+
+    local now = GetTime and GetTime() or 0
+    local message = lastBusinessMessage
+    if shouldBuildBusiness(reason, now, sampledSpellID, sampledStatus, sampledError) then
+        perfCount("business_sample")
+        local businessTimer = perfBegin("SignalFrame.BuildBusinessMessage")
+        message = self:BuildBusinessMessage(reason, sampledSpellID, sampledStatus, sampledError)
+        perfFinish(businessTimer)
+        businessRevision = businessRevision + 1
+        message._businessRevision = businessRevision
+        if TE.RuntimeSnapshot and type(TE.RuntimeSnapshot.Seal) == "function" then
+            TE.RuntimeSnapshot:Seal(message._runtimeSnapshot, message)
+        end
+        lastBusinessMessage = message
+        lastBusinessSampleAt = now
+        businessDirty = false
+    end
+
+    message.sessionEpoch = sessionEpoch
+    message.sequence = advanceSequence(message, reason)
     message.frameFreshnessCounter = frameFreshnessCounter
     local encoded = TE.SignalEncoder:Encode(message)
     lastMessage = message
@@ -1163,6 +1435,11 @@ function SignalFrame:Refresh(reason)
     if TE.TacticalState and type(TE.TacticalState.Publish) == "function" then
         TE.TacticalState:Publish(message, encoded)
     end
+
+    -- ShowOnce deliberately publishes a one-frame observation-only envelope. Do
+    -- not let that special business snapshot become the source for later ticks.
+    if reason == "observe_once" then businessDirty = true end
+    perfFinish(refreshTimer)
     return encoded
 end
 
@@ -1175,9 +1452,25 @@ function SignalFrame:ResetSession()
     sessionEpoch = newSessionEpoch()
     sequence = 0
     frameFreshnessCounter = 0
-    lastSignature = nil
-    lastRememberedSignature = nil
+    elapsedSinceTransport = 0
+    lastBusinessSampleAt = -math.huge
+    businessDirty = true
+    businessRevision = 0
+    lastBusinessMessage = nil
+    lastSequenceState = nil
+    lastRememberedSequence = nil
+    lastRememberedState = nil
+    lastRememberedReason = nil
     lastPaintedFields = nil
+    officialBindingCache.spellID = nil
+    officialBindingCache.result = nil
+    officialBindingCache.reason = nil
+    officialBindingCache.cacheGeneration = nil
+    officialBindingCache.stateHash = nil
+    officialBindingCache.specialActionActive = nil
+    officialBindingCache.specialActionReason = nil
+    officialBindingCache.extraActionVisible = nil
+    if TE.RuntimeSnapshot and type(TE.RuntimeSnapshot.Clear) == "function" then TE.RuntimeSnapshot:Clear() end
 end
 
 -- Login starts the TEAP color signal in an explicit paused state. This is

@@ -44,25 +44,39 @@ local function refreshSignal(reason)
     end
 end
 
-function ManualActionPriority:GetActive()
+function ManualActionPriority:IsActive()
     local active = now() < (tonumber(runtime.untilAt) or 0)
+    if not active then
+        return false, nil, nil, nil, tonumber(runtime.untilAt) or 0
+    end
+    -- Scalar hot-path accessor: SignalFrame can detect ownership transitions on
+    -- every transport tick without allocating a status table.
+    return true,
+        "manual_click_priority:" .. tostring(runtime.kind or "unknown"),
+        runtime.kind,
+        runtime.source,
+        runtime.untilAt
+end
+
+function ManualActionPriority:GetActive()
+    local active, reason, kind, source, untilAt = self:IsActive()
     if not active then
         return {
             active = false,
             reason = nil,
             kind = nil,
             source = nil,
-            untilAt = tonumber(runtime.untilAt) or 0,
+            untilAt = untilAt,
         }
     end
     return {
         active = true,
         -- SignalFrame must preserve the normal manual_hold state name because
         -- TEK already treats it as a non-dispatch pause state.
-        reason = "manual_click_priority:" .. tostring(runtime.kind or "unknown"),
-        kind = runtime.kind,
-        source = runtime.source,
-        untilAt = runtime.untilAt,
+        reason = reason,
+        kind = kind,
+        source = source,
+        untilAt = untilAt,
         startedAt = runtime.startedAt,
     }
 end

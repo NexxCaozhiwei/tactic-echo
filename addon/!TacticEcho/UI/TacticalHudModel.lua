@@ -6,9 +6,7 @@ local TE = _G.TacticEcho
 local TacticalHudModel = {}
 TE.TacticalHudModel = TacticalHudModel
 
-local MAX_CANDIDATES = 3
 local MAX_BURST_CARDS = 5 -- slot 1 window + up to four followups
-local MAX_DEFENSIVES = 4
 
 local NUMERIC_FIELDS = {
     "spellID", "matchedSpellID", "itemID", "itemCount", "itemSlot", "charges", "maxCharges",
@@ -270,70 +268,4 @@ function TacticalHudModel:Build(snapshot, hud)
     model.fingerprint = table.concat(parts, "|")
     return model
     end
-
-    local model = {
-        schema = 3,
-        primary = buildPrimary(snapshot),
-        candidates = buildFixedItems(candidates, MAX_CANDIDATES, "candidate"),
-        tactical = {
-            interrupt = interrupt.suggestion and classify(interrupt.suggestion, "interrupt", {
-                interruptible = interrupt.interruptible == true,
-                dangerous = interrupt.dangerous == true,
-                state = interrupt.state,
-            }) or nil,
-            -- Burst is a true independent queue. Slot 1 is the profile window
-            -- trigger; subsequent slots are injection / trinket / potion / racial
-            -- followups emitted by BurstPlanner. It never shares a lane with
-            -- interrupt/control and never changes any dispatch path.
-            burst = buildFixedItems((advisory.burst or {}).items, MAX_BURST_CARDS, "burst", {
-                state = (advisory.burst or {}).state,
-                profileKey = (advisory.burst or {}).profileKey,
-                source = (advisory.burst or {}).source,
-            }),
-            control = ((advisory.control or {}).items or {})[1] and classify(((advisory.control or {}).items or {})[1], "control", {
-                state = (advisory.control or {}).state,
-            }) or nil,
-            mobility = ((advisory.mobility or {}).items or {})[1] and classify(((advisory.mobility or {}).items or {})[1], "mobility", {
-                state = (advisory.mobility or {}).state,
-            }) or nil,
-        },
-        defense = buildFixedItems(defensives.items, MAX_DEFENSIVES, "defense", {
-            severity = defensives.severity,
-            state = defensives.state,
-        }),
-        meta = {
-            paused = (snapshot.primary or {}).state == "paused" or (snapshot.primary or {}).state == "channeling" or (snapshot.primary or {}).state == "empowering",
-            observedAt = plainNumber(snapshot.observedAt),
-            source = "TacticalAdvisors snapshot",
-            layoutPreset = hud and hud.layoutPreset or "queue_horizontal",
-            defenseDetached = hud and hud.defenseDetached == true,
-        },
-    }
-
-    if model.tactical.interrupt then
-        model.tactical.interrupt.hidden = not (interrupt.active == true and interrupt.suggestion ~= nil)
-    end
-    -- Each burst slot decides its own visibility. The planner already applies
-    -- window/always/cooldown policy; a valid card must not be discarded merely
-    -- because it is a follower or because it is currently cooling down.
-    for index, item in ipairs(model.tactical.burst or {}) do
-        local raw = ((advisory.burst or {}).items or {})[index]
-        item.hidden = raw == nil or raw.hidden == true
-    end
-    if model.tactical.control then
-        model.tactical.control.hidden = not (((advisory.control or {}).active == true and ((advisory.control or {}).items or {})[1] ~= nil) or (advisory.control or {}).state == "unknown")
-    end
-    if model.tactical.mobility then
-        model.tactical.mobility.hidden = not (((advisory.mobility or {}).active == true and ((advisory.mobility or {}).items or {})[1] ~= nil) or (advisory.mobility or {}).state == "environment_unknown")
-    end
-
-    local parts = { signature(model.primary) }
-    for index = 1, MAX_CANDIDATES do parts[#parts + 1] = "candidate:" .. tostring(index) .. ":" .. signature(model.candidates[index]) end
-    parts[#parts + 1] = "interrupt:" .. signature(model.tactical.interrupt)
-    for index = 1, MAX_BURST_CARDS do parts[#parts + 1] = "burst:" .. tostring(index) .. ":" .. signature(model.tactical.burst[index]) end
-    parts[#parts + 1] = "control:" .. signature(model.tactical.control)
-    parts[#parts + 1] = "mobility:" .. signature(model.tactical.mobility)
-    for index = 1, MAX_DEFENSIVES do parts[#parts + 1] = "def:" .. tostring(index) .. ":" .. signature(model.defense[index]) end
-    model.fingerprint = table.concat(parts, "|")
-    return model
 end

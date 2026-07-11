@@ -20,6 +20,7 @@ local MAX_TRANSITION_SOURCES = 48
 -- state/recommendation transitions plus a modest liveness heartbeat.
 local PUBLISH_HEARTBEAT_SECONDS = 0.50
 local lastPublishSignature
+local lastPublishedBusinessRevision
 local lastPublishedAt = 0
 
 local reasonText = {
@@ -251,14 +252,23 @@ end
 
 function TacticalState:Publish(message, encoded)
     local now = type(GetTime) == "function" and GetTime() or 0
-    local signature = publishSignature(message)
-    local stateChanged = signature ~= lastPublishSignature
+    local businessRevision = message and message._businessRevision or nil
+    local sameBusinessSnapshot = businessRevision ~= nil and businessRevision == lastPublishedBusinessRevision
     local heartbeatDue = latest == nil or (now - (lastPublishedAt or 0)) >= PUBLISH_HEARTBEAT_SECONDS
+    -- A reused 50 ms transport frame changes only sequence/freshness. Neither is
+    -- part of the HUD transition signature, so avoid rebuilding its large string
+    -- unless the 0.5 s liveness heartbeat is due.
+    if sameBusinessSnapshot and not heartbeatDue then return latest end
+
+    local signature = sameBusinessSnapshot and lastPublishSignature or publishSignature(message)
+    local stateChanged = signature ~= lastPublishSignature
     if not stateChanged and not heartbeatDue then
+        lastPublishedBusinessRevision = businessRevision
         return latest
     end
     latest = snapshotFrom(message, encoded)
     lastPublishSignature = signature
+    lastPublishedBusinessRevision = businessRevision
     lastPublishedAt = now
     recordHistory(latest)
     for _, callback in pairs(listeners) do

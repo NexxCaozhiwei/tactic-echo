@@ -8,6 +8,7 @@ ADDON = ROOT / "addon" / "!TacticEcho"
 ICON = ADDON / "UI" / "TacticalIconButton.lua"
 RESOLVER = ADDON / "Tactics" / "CooldownResolver.lua"
 BURST = ADDON / "Tactics" / "BurstPlanner.lua"
+AUTO_BURST = ADDON / "Tactics" / "AutoBurst.lua"
 MODEL = ADDON / "UI" / "TacticalHudModel.lua"
 ICON_STATE = ADDON / "Tactics" / "IconState.lua"
 
@@ -19,6 +20,7 @@ class InventoryGcdPresentationContractTests(unittest.TestCase):
         self.icon = ICON.read_text(encoding="utf-8")
         self.resolver = RESOLVER.read_text(encoding="utf-8")
         self.burst = BURST.read_text(encoding="utf-8")
+        self.auto_burst = AUTO_BURST.read_text(encoding="utf-8")
         self.model = MODEL.read_text(encoding="utf-8")
         self.icon_state = ICON_STATE.read_text(encoding="utf-8")
 
@@ -72,12 +74,12 @@ class InventoryGcdPresentationContractTests(unittest.TestCase):
             "hideCooldown(card.gcdCooldown)",
         ):
             self.assertIn(marker, self.icon)
-        self.assertNotIn("local suppressItemGcdLayer = isItemBackedCard(item) or suppressSharedGcd == true", self.icon)
+        self.assertIn("local suppressItemGcdLayer = isItemBackedCard(item) or suppressSharedGcd == true", self.icon)
 
     def test_gcd_alias_reaches_hud_model_and_burst_item_collector(self) -> None:
         self.assertIn('"cooldownGcdAlias"', self.model)
-        self.assertIn("item.cooldownGcdAlias = snapshot.gcdAlias == true", self.burst)
-        self.assertIn("item.cooldownGcdAlias ~= true", self.burst)
+        self.assertIn("item.cooldownGcdAlias", self.auto_burst)
+        self.assertIn("item.cooldownGcdAlias ~= true", self.auto_burst)
 
     def test_non_item_skill_uses_live_duration_renderer_not_sidecar(self) -> None:
         self.assertIn('return duration, "actionbar_duration"', self.resolver)

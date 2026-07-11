@@ -163,6 +163,7 @@ local PRIORITY_LOG_EVENTS = {
     inventory_recovery_completed = true,
     soft_pause_clock_extended = true,
     plan_completed = true,
+    window_confirmation_unobserved_released = true,
     evaluate_fault = true,
 }
 
@@ -383,6 +384,22 @@ local function spellcastMatchesCurrentStep(step, observedSpellID, bindingInfo)
     for _, equivalentSpellID in pairs(type(bindingInfo.equivalentSpellIDs) == "table" and bindingInfo.equivalentSpellIDs or {}) do
         if observedSpellID == positiveSpellID(equivalentSpellID) then return true, "equivalent" end
     end
+    -- The action-bar binding was frozen when the step was offered, but Retail
+    -- can change a replacement/override spell identity between that sample and
+    -- UNIT_SPELLCAST_SUCCEEDED. Rebuild only the resolver's bounded, safe
+    -- base/override equivalence set for this exact waiting step. This does not
+    -- widen confirmation to names, buffs or unrelated action-bar buttons.
+    local resolver = TE.ActionBarBindingResolver
+    if expected and resolver and type(resolver.GetEquivalentSpellIDs) == "function" then
+        local ok, equivalents = pcall(resolver.GetEquivalentSpellIDs, resolver, expected)
+        if ok and type(equivalents) == "table" then
+            for _, equivalentSpellID in pairs(equivalents) do
+                if observedSpellID == positiveSpellID(equivalentSpellID) then
+                    return true, "resolver_equivalent"
+                end
+            end
+        end
+    end
     return false, nil
 end
 
@@ -518,7 +535,7 @@ local function macroAllowed(bindingInfo)
     return false, "macro_spell_not_associated"
 end
 
-local function resolveStepBinding(step)
+local function resolveStepBinding(step, resolveContext, runtimeSnapshot)
     local resolver = TE.ActionBarBindingResolver
     if not resolver then return nil, "BLOCKED", "binding_resolver_unavailable" end
     local bindingInfo, reason
@@ -528,9 +545,15 @@ local function resolveStepBinding(step)
         end
         local slot = inventorySlot(step.inventorySlot)
         if not slot then return nil, "BLOCKED", "inventory_slot_invalid" end
-        local ok
-        ok, bindingInfo, reason = pcall(resolver.ResolveInventorySlot, resolver, slot, step.expectedItemID)
-        if not ok or type(bindingInfo) ~= "table" then return nil, "BLOCKED", "inventory_binding_resolver_failed" end
+        if type(runtimeSnapshot) == "table" and TE.RuntimeSnapshot
+            and type(TE.RuntimeSnapshot.ResolveInventory) == "function" then
+            bindingInfo, reason = TE.RuntimeSnapshot:ResolveInventory(runtimeSnapshot, slot, step.expectedItemID)
+        else
+            local ok
+            ok, bindingInfo, reason = pcall(resolver.ResolveInventorySlot, resolver, slot, step.expectedItemID, resolveContext)
+            if not ok then bindingInfo, reason = nil, "inventory_binding_resolver_failed" end
+        end
+        if type(bindingInfo) ~= "table" then return nil, "BLOCKED", reason or "inventory_binding_resolver_failed" end
         if not positiveItemID(bindingInfo.itemID or bindingInfo.expectedItemID) then
             return bindingInfo, "BLOCKED", reason or "inventory_item_missing"
         end
@@ -538,9 +561,15 @@ local function resolveStepBinding(step)
         if type(resolver.ResolveSpell) ~= "function" then
             return nil, "BLOCKED", "binding_resolver_unavailable"
         end
-        local ok
-        ok, bindingInfo, reason = pcall(resolver.ResolveSpell, resolver, step.spellID)
-        if not ok or type(bindingInfo) ~= "table" then return nil, "BLOCKED", "binding_resolver_failed" end
+        if type(runtimeSnapshot) == "table" and TE.RuntimeSnapshot
+            and type(TE.RuntimeSnapshot.ResolveSpell) == "function" then
+            bindingInfo, reason = TE.RuntimeSnapshot:ResolveSpell(runtimeSnapshot, step.spellID)
+        else
+            local ok
+            ok, bindingInfo, reason = pcall(resolver.ResolveSpell, resolver, step.spellID, resolveContext)
+            if not ok then bindingInfo, reason = nil, "binding_resolver_failed" end
+        end
+        if type(bindingInfo) ~= "table" then return nil, "BLOCKED", reason or "binding_resolver_failed" end
     end
     local special = bindingInfo.specialActionBar
     if special and special.active == true then return bindingInfo, "PAUSED", special.reason or "special_actionbar" end
@@ -567,7 +596,13 @@ local function collectCooldownState(step, cycle, bindingInfo)
         requestedSpellID = bindingInfo.requestedSpellID,
         equivalentSpellIDs = bindingInfo.equivalentSpellIDs,
     }
+    local runtimeSnapshot = type(cycle) == "table" and cycle.runtimeSnapshot or nil
     if stepKind(step) == "inventory" then
+        if type(runtimeSnapshot) == "table" and TE.RuntimeSnapshot
+            and type(TE.RuntimeSnapshot.CollectInventoryCooldown) == "function" then
+            return TE.RuntimeSnapshot:CollectInventoryCooldown(runtimeSnapshot,
+                step.inventorySlot, step.expectedItemID or bindingInfo.itemID, bindingInfo, options)
+        end
         if type(TE.IconState.CollectInventoryCooldownOnly) ~= "function" then
             return nil, "inventory_cooldown_sampler_unavailable"
         end
@@ -576,6 +611,10 @@ local function collectCooldownState(step, cycle, bindingInfo)
         if not ok then return nil, "inventory_cooldown_state_failed" end
         if type(state) ~= "table" then return nil, "inventory_cooldown_state_invalid" end
         return state, nil
+    end
+    if type(runtimeSnapshot) == "table" and TE.RuntimeSnapshot
+        and type(TE.RuntimeSnapshot.CollectSpellCooldown) == "function" then
+        return TE.RuntimeSnapshot:CollectSpellCooldown(runtimeSnapshot, step.spellID, bindingInfo, options)
     end
     if type(TE.IconState.CollectCooldownOnly) ~= "function" then
         return nil, "cooldown_only_sampler_unavailable"
@@ -750,7 +789,8 @@ local function classifyDispatchPhase(step, cycle, bindingInfo, iconState, reason
 end
 
 local function stepSample(step, cycle)
-    local bindingInfo, bindingState, bindingReason = resolveStepBinding(step)
+    local resolveContext = type(cycle) == "table" and cycle.resolveContext or nil
+    local bindingInfo, bindingState, bindingReason = resolveStepBinding(step, resolveContext, type(cycle) == "table" and cycle.runtimeSnapshot or nil)
     if bindingState then return { phase = bindingState, reason = bindingReason, bindingInfo = bindingInfo } end
     local iconState, iconReason = collectCooldownState(step, cycle, bindingInfo)
     if iconState and iconState.inventoryEquipmentChanged == true then
@@ -766,9 +806,9 @@ local function stepSample(step, cycle)
     return classifyDispatchPhase(step, cycle, bindingInfo, iconState, nil, false)
 end
 
-local function validateRuleBindings(self, rule)
+local function validateRuleBindings(self, rule, resolveContext, runtimeSnapshot)
     for _, step in ipairs(sequenceFor(rule)) do
-        local bindingInfo, bindingState, bindingReason = resolveStepBinding(step)
+        local bindingInfo, bindingState, bindingReason = resolveStepBinding(step, resolveContext, runtimeSnapshot)
         if bindingState then
             rememberStepObservation(self, nil, step, { phase = bindingState, reason = bindingReason, bindingInfo = bindingInfo }, "plan_gate_binding")
             return false, step, bindingState, bindingReason
@@ -1835,6 +1875,37 @@ local function finishStep(self, plan, source)
     return nil
 end
 
+-- A dispatched window that has already left the official recommendation must
+-- never retain the whole rotation forever when Retail exposes neither a
+-- matching success event nor a trustworthy own-CD/charge transition. This is
+-- a safe release, not a success confirmation: the step is not appended to the
+-- completed list and no later step is advanced. Because the official window
+-- departure was already observed, no additional stale-window lock is needed.
+local function releaseUnconfirmedDepartedWindow(self, plan, step, sample)
+    log(self, "window_confirmation_unobserved_released", {
+        planId = plan.id,
+        currentStep = plan.stepIndex,
+        role = step.role,
+        spellID = positiveSpellID(step.spellID),
+        officialDepartureObservedAt = number(plan.officialDepartureObservedAt),
+        dispatchedAt = plan.wait and number(plan.wait.dispatchedAt) or nil,
+        phase = sample and sample.phase or nil,
+        reason = sample and sample.reason or "confirmation_unobserved",
+    })
+    self.plan = nil
+    self.activePlanGeneration = nil
+    self.requireWindowDeparture = false
+    self.lockedWindowSpellID = nil
+    self.departureLockGeneration = nil
+    recordDecision(self, "released", "window_confirmation_unobserved_released", {
+        officialSpellID = nil,
+        windowSpellID = plan.rule and plan.rule.windowSpellID or nil,
+        ruleSource = plan.rule and plan.rule.source or nil,
+        ruleId = plan.rule and plan.rule.id or nil,
+    })
+    return noneResult()
+end
+
 -- A plan may react to an optional sequence step becoming unavailable after
 -- preflight but before confirmation. Simple mode skips only that optional step;
 -- focused mode terminates the all-or-nothing sequence.
@@ -1879,7 +1950,7 @@ local function releasePlanForInjectionUnavailable(self, plan, step, sample, reas
     })
 end
 
-local function createPlan(self, rule, officialSpellID, creation)
+local function createPlan(self, rule, officialSpellID, creation, resolveContext, runtimeSnapshot)
     creation = type(creation) == "table" and creation or {}
     local t = now()
     local steps = sequenceFor(rule)
@@ -1888,7 +1959,7 @@ local function createPlan(self, rule, officialSpellID, creation)
     -- fails closed rather than continuing to press `/use 13` for a new trinket.
     for _, step in ipairs(steps) do
         if stepKind(step) == "inventory" then
-            local bindingInfo, bindingState, bindingReason = resolveStepBinding(step)
+            local bindingInfo, bindingState, bindingReason = resolveStepBinding(step, resolveContext, runtimeSnapshot)
             if bindingState then return nil, bindingReason or bindingState end
             local itemID = positiveItemID(bindingInfo and (bindingInfo.itemID or bindingInfo.expectedItemID))
             if not itemID then return nil, "inventory_item_missing" end
@@ -2274,7 +2345,12 @@ function AutoBurst:Evaluate(official, runtime)
         end
     end
 
-    local cycle = TE.GCDGate and TE.GCDGate:BeginCycle(runtime.primary) or { phase = "UNKNOWN" }
+    local cycle = type(runtime.runtimeSnapshot) == "table" and runtime.runtimeSnapshot.gcdCycle or nil
+    if type(cycle) ~= "table" then
+        cycle = TE.GCDGate and TE.GCDGate:BeginCycle(runtime.primary) or { phase = "UNKNOWN" }
+    end
+    cycle.resolveContext = runtime.resolveContext
+    cycle.runtimeSnapshot = runtime.runtimeSnapshot
     if not self.plan then
         if not officialSpellID or officialSpellID ~= rule.windowSpellID then
             if capture then
@@ -2369,7 +2445,7 @@ function AutoBurst:Evaluate(official, runtime)
         }
         if capture then copyHandoffBarrier(capture, creation) end
 
-        local bindingsReady, blockedStep, bindingPhase, bindingReason = validateRuleBindings(self, rule)
+        local bindingsReady, blockedStep, bindingPhase, bindingReason = validateRuleBindings(self, rule, runtime.resolveContext, runtime.runtimeSnapshot)
         if not bindingsReady then
             log(self, "plan_rejected", {
                 reason = bindingReason or bindingPhase, role = blockedStep and blockedStep.role,
@@ -2411,7 +2487,7 @@ function AutoBurst:Evaluate(official, runtime)
             return noneResult()
         end
 
-        local createdPlan, createReason = createPlan(self, rule, officialSpellID, creation)
+        local createdPlan, createReason = createPlan(self, rule, officialSpellID, creation, runtime.resolveContext, runtime.runtimeSnapshot)
         if not createdPlan then
             log(self, "plan_rejected", { reason = createReason or "plan_create_failed", role = "sequence", actionKind = "ordered" })
             recordDecision(self, "armed", "burst_plan_create_failed", {
@@ -2561,6 +2637,12 @@ function AutoBurst:Evaluate(official, runtime)
                 persistent = true,
             })
             startInventoryRecovery(self, plan, step, "confirmation_grace_elapsed")
+        end
+        if isWindowStep(step)
+            and plan.windowDispatchAttempted == true
+            and plan.officialDepartureObserved == true
+            and plan.wait.confirmationGraceElapsed == true then
+            return releaseUnconfirmedDepartedWindow(self, plan, step, sample)
         end
         if isDispatchablePhase(sample.phase) then
             -- Always use the latest sample. A stale offer sample can retain an
@@ -2715,6 +2797,43 @@ function AutoBurst:Evaluate(official, runtime)
     return candidateResult(self, plan, step, sample)
 end
 
+-- Active plans and pre-window captures retain the original 20 Hz evaluator
+-- cadence. Idle observation is sampled by SignalFrame at its lower business
+-- cadence, but a live burst never loses handoff, confirmation or revalidation
+-- ticks.
+function AutoBurst:NeedsTransportBusinessRefresh()
+    -- Preserve the original 20 Hz evaluator cadence whenever AutoBurst owns or
+    -- protects a window. The departure lock also depends on observing the first
+    -- official recommendation change after a completed/aborted sequence.
+    return self.plan ~= nil or self.preWindowCapture ~= nil or self.requireWindowDeparture == true
+end
+
+function AutoBurst:GetRuntimeState()
+    local plan = self.plan
+    local capture = self.preWindowCapture
+    local step = plan and plan.steps and plan.steps[plan.stepIndex] or nil
+    return {
+        schema = 1,
+        active = plan ~= nil,
+        planId = plan and plan.id or nil,
+        state = plan and plan.state or nil,
+        currentStep = plan and plan.stepIndex or nil,
+        currentRole = step and step.role or nil,
+        currentActionKind = step and stepKind(step) or nil,
+        currentSpellID = step and stepKind(step) == "spell" and positiveSpellID(step.spellID) or nil,
+        currentInventorySlot = step and stepKind(step) == "inventory" and inventorySlot(step.inventorySlot) or nil,
+        currentItemID = step and stepKind(step) == "inventory" and positiveItemID(step.expectedItemID) or nil,
+        waitingForConfirmation = plan and plan.state == "WAIT_CONFIRM" or false,
+        preInjectionSkipStatus = plan and plan.preInjectionSkipStatus or nil,
+        requireWindowDeparture = self.requireWindowDeparture == true,
+        preWindowCaptureActive = type(capture) == "table" and capture.active == true,
+        windowGeneration = self.windowGeneration or 0,
+        activePlanGeneration = self.activePlanGeneration,
+        lastDecisionKind = type(self.lastDecision) == "table" and self.lastDecision.kind or nil,
+        lastDecisionReason = type(self.lastDecision) == "table" and self.lastDecision.reason or nil,
+    }
+end
+
 function AutoBurst:GetSnapshot()
     local plan = self.plan
     local capture = self.preWindowCapture
@@ -2867,6 +2986,575 @@ function AutoBurst:GetSnapshot()
         lastInjectionPreflight = shallowCopy(self.lastInjectionPreflight),
         lastSequencePreflight = shallowCopy(self.lastSequencePreflight),
     }
+end
+
+-- Read-only HUD projection owned by AutoBurst. All action identity and cooldown
+-- samples are requested through RuntimeSnapshot so SignalFrame, ordered Burst
+-- execution and the tactical HUD share one business-cycle source of truth.
+local function hudNumber(value)
+    local resolved = tonumber(value)
+    if type(resolved) ~= "number" then return nil end
+    local probe = resolved + 0
+    if probe < -math.huge or probe > math.huge then return nil end
+    return probe
+end
+
+local function hudPerfCount(name, amount)
+    local perf = TE.PerformanceDiagnostics
+    if perf and type(perf.Count) == "function" then perf:Count(name, amount) end
+end
+
+local function hudUniqueAppend(out, seen, key, item)
+    if key == nil or seen[key] then return end
+    seen[key] = true
+    out[#out + 1] = item
+end
+
+local function hudHostileTargetState()
+    if type(UnitExists) == "function" and not UnitExists("target") then return false, "没有敌对目标" end
+    if type(UnitIsDeadOrGhost) == "function" and UnitIsDeadOrGhost("target") then return false, "目标已死亡" end
+    if type(UnitCanAttack) == "function" and type(UnitExists) == "function" and UnitExists("target") then
+        if not UnitCanAttack("player", "target") then return false, "目标不可攻击" end
+    end
+    return true, nil
+end
+
+local function hudNormalizeBinding(result, fallbackReason)
+    if type(result) ~= "table" then return nil, fallbackReason or "未找到动作条映射" end
+    if result.status == "Ready" and result.binding then return result end
+    if result.rawBinding then
+        local out = {}
+        for key, value in pairs(result) do out[key] = value end
+        out.binding = result.rawBinding
+        out.bindingToken = 0
+        out.advisoryOnlyBinding = true
+        return out
+    end
+    return nil, result.reason or result.status or fallbackReason or "当前不可解析"
+end
+
+local function hudResolveSpell(snapshot, spellID)
+    local runtime = TE.RuntimeSnapshot
+    if not runtime or type(runtime.ResolveSpell) ~= "function" then return nil, "runtime_snapshot_unavailable" end
+    local result, reason = runtime:ResolveSpell(snapshot, spellID)
+    return hudNormalizeBinding(result, reason or "技能未绑定或当前不可解析")
+end
+
+local function hudResolveItem(snapshot, itemID, inventorySlot)
+    local runtime = TE.RuntimeSnapshot
+    if not runtime then return nil, "runtime_snapshot_unavailable" end
+    local result, reason
+    if inventorySlot and type(runtime.ResolveInventory) == "function" then
+        result, reason = runtime:ResolveInventory(snapshot, inventorySlot, itemID)
+    elseif type(runtime.ResolveItem) == "function" then
+        result, reason = runtime:ResolveItem(snapshot, itemID)
+    end
+    return hudNormalizeBinding(result, reason or "物品未绑定或当前不可解析")
+end
+
+local function hudApplySpellState(snapshot, item, options)
+    local runtime = TE.RuntimeSnapshot
+    if not runtime or type(runtime.CollectSpellState) ~= "function" then
+        item.usableState = "unknown"
+        item.unusableReason = "统一运行快照不可用"
+        return item
+    end
+    local state, reason = runtime:CollectSpellState(snapshot, item.spellID, item.bindingInfo, options)
+    if type(state) == "table" and TE.IconState and type(TE.IconState.ApplyState) == "function" then
+        TE.IconState:ApplyState(item, state)
+        item.iconStateCollectedBy = "RuntimeSnapshot"
+        return item
+    end
+    item.usableState = "unknown"
+    item.unusableReason = reason or "图标状态读取失败"
+    return item
+end
+
+local function hudApplyItemCooldown(item, sample)
+    sample = type(sample) == "table" and sample or {}
+    item.cooldownRemaining = sample.cooldownRemaining ~= nil and sample.cooldownRemaining or sample.remaining
+    item.cooldownDuration = sample.cooldownDuration ~= nil and sample.cooldownDuration or sample.duration
+    item.cooldownStart = sample.cooldownStart ~= nil and sample.cooldownStart or sample.start
+    item.cooldownKnown = sample.cooldownKnown == true or sample.known == true
+    item.cooldownUnknownReason = sample.cooldownUnknownReason or sample.reason
+    item.cooldownSource = sample.cooldownSource or sample.source
+    item.cooldownIdentityKey = sample.cooldownIdentityKey or sample.identity
+    local publicActive = sample.cooldownActive
+    if publicActive == nil then publicActive = sample.active end
+    local publicOnGCD = sample.cooldownOnGCD
+    if publicOnGCD == nil then publicOnGCD = sample.onGCD end
+    item.cooldownActive = publicActive == true
+    item.cooldownOnGCD = publicOnGCD
+    item.cooldownGcdAlias = sample.cooldownGcdAlias == true or sample.gcdAlias == true
+    item.cooldownGcdAliasReason = sample.cooldownGcdAliasReason or sample.gcdAliasReason
+    item.cooldownSlotSource = sample.cooldownSlotSource or sample.slotSource
+    item.cooldownSlotKnown = sample.cooldownSlotKnown ~= nil and sample.cooldownSlotKnown or sample.slotKnown
+    item.cooldownSlotActive = sample.cooldownSlotActive ~= nil and sample.cooldownSlotActive or sample.slotActive
+    item.cooldownItemFallbackKnown = sample.cooldownItemFallbackKnown ~= nil and sample.cooldownItemFallbackKnown or sample.itemFallbackKnown
+    item.cooldownItemFallbackActive = sample.cooldownItemFallbackActive ~= nil and sample.cooldownItemFallbackActive or sample.itemFallbackActive
+    item.inventorySlot = sample.inventorySlot or item.inventorySlot
+    return item
+end
+
+local function hudSpellCandidate(snapshot, spellID, category, source, options)
+    spellID = hudNumber(spellID)
+    if not spellID then return nil, "invalid_spell" end
+    local runtime = TE.RuntimeSnapshot
+    local known, knownSource = runtime:IsSpellKnown(snapshot, spellID)
+    if known == false then return nil, "not_known_current_spec" end
+    local binding, bindingReason = hudResolveSpell(snapshot, spellID)
+    if not binding or not binding.binding then return nil, bindingReason or "动作条未找到现实绑定" end
+    local name, icon = runtime:GetSpellInfo(snapshot, spellID)
+    local item = {
+        spellID = spellID,
+        spellName = name or tostring(spellID),
+        spellIcon = icon,
+        category = category,
+        source = source,
+        burstSource = source,
+        advisoryOnly = true,
+        displayOnly = true,
+        binding = binding.binding,
+        bindingToken = 0,
+        bindingSource = binding.source,
+        bindingSourceIndex = binding.bindingSourceIndex,
+        buttonName = binding.buttonName,
+        actionSlot = binding.actionSlot or binding.slot,
+        slot = binding.actionSlot or binding.slot,
+        directActionSlot = binding.directActionSlot == true,
+        actionBarStateTrusted = binding.actionBarStateTrusted == true,
+        bindingInfo = binding,
+        requestedSpellID = binding.requestedSpellID or spellID,
+        matchedSpellID = binding.matchedSpellID,
+        equivalentSpellIDs = binding.equivalentSpellIDs,
+        known = known,
+        knownSource = knownSource,
+        advisoryCondition = "当前专精爆发注册表；当前有效动作条真实绑定；仅 HUD 提示",
+    }
+    hudApplySpellState(snapshot, item, options)
+    item.burstReady = item.usableState == "ready"
+    return item
+end
+
+local function hudItemCandidate(snapshot, itemID, category, source, options)
+    itemID = hudNumber(itemID)
+    if not itemID or itemID <= 0 then return nil, "invalid_item" end
+    options = type(options) == "table" and options or {}
+    local runtime = TE.RuntimeSnapshot
+    local inventorySlot = hudNumber(options.inventorySlot)
+    local binding, bindingReason = hudResolveItem(snapshot, itemID, inventorySlot)
+    local name, icon = runtime:GetItemInfo(snapshot, itemID)
+    local item = {
+        itemID = itemID,
+        spellName = name or source or ("物品 " .. tostring(itemID)),
+        spellIcon = icon,
+        category = category,
+        source = source,
+        burstSource = source,
+        advisoryOnly = true,
+        displayOnly = true,
+        binding = binding and binding.binding or nil,
+        bindingToken = 0,
+        bindingSource = binding and binding.source or nil,
+        bindingSourceIndex = binding and binding.bindingSourceIndex or nil,
+        buttonName = binding and binding.buttonName or nil,
+        actionSlot = binding and (binding.actionSlot or binding.slot) or nil,
+        slot = binding and (binding.actionSlot or binding.slot) or nil,
+        directActionSlot = binding and binding.directActionSlot == true or false,
+        actionBarStateTrusted = binding and binding.actionBarStateTrusted == true or false,
+        bindingInfo = binding,
+        bindingMissing = not (binding and binding.binding),
+        bindingReason = bindingReason,
+        inventorySlot = inventorySlot,
+        advisoryCondition = binding and binding.binding
+            and "爆发物品冷却由统一周期快照读取；动作条仅提供现实按键；仅 HUD 提示"
+            or "爆发物品冷却由统一周期快照读取；当前未绑定现实按键；仅 HUD 提示",
+    }
+
+    local cooldown, cooldownReason
+    if inventorySlot then
+        cooldown, cooldownReason = runtime:CollectInventoryCooldown(snapshot, inventorySlot, itemID, binding, {})
+    else
+        cooldown, cooldownReason = runtime:CollectItemCooldown(snapshot, itemID, category == "potion" and "potion" or category)
+    end
+    hudApplyItemCooldown(item, cooldown)
+    if not cooldown and cooldownReason then item.cooldownUnknownReason = cooldownReason end
+
+    local cooling = item.cooldownOnGCD ~= true and item.cooldownGcdAlias ~= true and (
+        item.cooldownActive == true
+        or (item.cooldownKnown == true and (hudNumber(item.cooldownRemaining) or 0) > 0)
+    )
+    if cooling then
+        item.usableState = "cooldown"
+        item.unusableReason = "物品冷却中"
+        item.burstReady = false
+        return item
+    end
+
+    if category ~= "trinket" then
+        local count = runtime:GetItemCount(snapshot, itemID)
+        item.itemCount = count
+        if count ~= nil and count <= 0 then
+            item.usableState = "unavailable"
+            item.unusableReason = "背包中没有该物品"
+            item.burstReady = false
+            return item
+        end
+    end
+
+    local slot = hudNumber(item.actionSlot or item.slot)
+    if slot then
+        local usable, notEnough = runtime:GetActionUsability(snapshot, slot)
+        if usable == false then
+            item.resourceBlocked = notEnough == true
+            item.usableState = item.resourceBlocked and "resource" or "unavailable"
+            item.unusableReason = item.resourceBlocked and "资源不足" or "物品当前不可用"
+            item.burstReady = false
+            return item
+        end
+    end
+
+    item.targetChecked = false
+    item.rangeBlocked = false
+    item.targetInvalid = false
+    item.resourceBlocked = item.resourceBlocked == true
+    item.procHighlight = false
+    item.casting = false
+    item.channeling = false
+    item.castingThisSpell = false
+    item.globalCasting = false
+    item.globalChanneling = false
+    item.gcdKnown = false
+    item.gcdActive = nil
+    item.usableState = "ready"
+    item.unusableReason = nil
+    item.burstReady = true
+    return item
+end
+
+local function hudCollectSpells(snapshot, spellIDs, profile, category, source, options)
+    local all, ready, cooling, blocked, diagnostics, seen = {}, {}, {}, {}, {}, {}
+    for _, spellID in ipairs(spellIDs or {}) do
+        spellID = hudNumber(spellID)
+        if spellID and not seen[spellID] and not (TE.BurstProfiles and TE.BurstProfiles:IsBlacklisted(profile, spellID)) then
+            seen[spellID] = true
+            local item, reason = hudSpellCandidate(snapshot, spellID, category, source, options)
+            if item then
+                all[#all + 1] = item
+                if item.usableState == "ready" then ready[#ready + 1] = item
+                elseif item.usableState == "cooldown" then cooling[#cooling + 1] = item
+                else blocked[#blocked + 1] = item end
+            elseif reason then
+                diagnostics[#diagnostics + 1] = tostring(reason)
+            end
+        end
+    end
+    return all, ready, cooling, blocked, diagnostics
+end
+
+local function hudAppend(out, source, limit, seen)
+    for _, item in ipairs(source or {}) do
+        if limit and #out >= limit then break end
+        local key = item.itemID and ("item:" .. tostring(item.itemID)) or ("spell:" .. tostring(item.spellID))
+        hudUniqueAppend(out, seen, key, item)
+    end
+end
+
+local function hudCooldownAllowed(settings)
+    return settings and settings.burstCooldownDisplay ~= "hide"
+end
+
+local function hudFollowerLimit(settings)
+    local maximum = tonumber(settings and settings.burstMaxCandidates) or 3
+    maximum = math.max(0, math.min(4, math.floor(maximum)))
+    if settings and settings.burstDisplayMode == "compact" then maximum = 0 end
+    return maximum
+end
+
+local function hudMakeOutput(profile, profileKey, state, profileReason, autoBurstState, runtimeSnapshot)
+    return {
+        schema = 2,
+        active = false,
+        state = state.state,
+        windowState = state.state,
+        stateLabel = state.label,
+        window = nil,
+        followups = {},
+        items = {},
+        advisoryOnly = true,
+        displayOnly = true,
+        source = "autoburst_runtime_snapshot",
+        profileKey = profileKey,
+        profileLabel = profile and profile.label,
+        openerSpellID = state.openerSpellID,
+        activeBuffID = state.activeBuffID,
+        lastTransitionReason = state.lastTransitionReason,
+        dispatchPolicy = "strict_safe",
+        overlayPrimary = false,
+        recommendationState = "idle",
+        notice = state.lastTransitionReason or profileReason or "爆发提示待命",
+        diagnostics = {},
+        autoBurst = autoBurstState,
+        runtimeCycleId = runtimeSnapshot and runtimeSnapshot.cycleId or nil,
+    }
+end
+
+local function hudMarkRole(item, role, state, sourceOrder)
+    if not item then return nil end
+    item.burstRole = role
+    item.burstWindow = role == "window"
+    item.burstState = state and state.state or nil
+    item.burstOrder = sourceOrder
+    item.burstOverlay = role == "window" and (state and (state.state == "ACTIVE" or state.state == "ARMED") or false)
+    return item
+end
+
+local function hudWindowCandidates(snapshot, profile, state, options)
+    local ordered, seen = {}, {}
+    local observed = hudNumber(state and state.openerSpellID)
+    if observed then ordered[#ordered + 1], seen[observed] = observed, true end
+    for _, spellID in ipairs(profile.openerSpellIDs or {}) do
+        spellID = hudNumber(spellID)
+        if spellID and not seen[spellID] then ordered[#ordered + 1], seen[spellID] = spellID, true end
+    end
+    return hudCollectSpells(snapshot, ordered, profile, "offensiveCooldowns", "爆发窗口技能", options)
+end
+
+local function hudSelectWindow(snapshot, profile, state, settings, options, allowReady)
+    local all, ready, cooling, blocked, diagnostics = hudWindowCandidates(snapshot, profile, state, options)
+    local selected
+    if allowReady and #ready > 0 then selected = ready[1]
+    elseif #cooling > 0 and hudCooldownAllowed(settings) then selected = cooling[1]
+    elseif settings.burstDisplayMode == "always" and #blocked > 0 then selected = blocked[1]
+    elseif settings.burstDisplayMode == "always" and #all > 0 then selected = all[1] end
+    return selected, diagnostics
+end
+
+local function hudCollectTrinkets(snapshot, profile)
+    local all, diagnostics = {}, {}
+    local runtime = TE.RuntimeSnapshot
+    for _, entry in ipairs((profile.displayCandidates or {}).trinkets or {}) do
+        if entry.enabled ~= false then
+            local slot = hudNumber(entry.slot)
+            local itemID, reason = runtime:GetInventoryItemID(snapshot, slot)
+            if itemID and itemID > 0 then
+                local item, candidateReason = hudItemCandidate(snapshot, itemID, "trinket", entry.label or ("饰品" .. tostring(slot)), { inventorySlot = slot })
+                if item then all[#all + 1] = item elseif candidateReason then diagnostics[#diagnostics + 1] = tostring(candidateReason) end
+            elseif reason then
+                diagnostics[#diagnostics + 1] = tostring(reason)
+            end
+        end
+    end
+    return all, diagnostics
+end
+
+local function hudCollectPotion(snapshot, settings)
+    local itemID = hudNumber(settings and settings.burstPotionItemID)
+    if not itemID or itemID <= 0 then return {}, {} end
+    local item, reason = hudItemCandidate(snapshot, itemID, "potion", "爆发药水", { potion = true })
+    return item and { item } or {}, reason and { tostring(reason) } or {}
+end
+
+local function hudCollectRacial(snapshot, profile, settings, options)
+    local ids, seen = {}, {}
+    for _, spellID in ipairs((profile.displayCandidates or {}).racial or {}) do
+        spellID = hudNumber(spellID)
+        if spellID and not seen[spellID] then ids[#ids + 1], seen[spellID] = spellID, true end
+    end
+    local custom = hudNumber(settings and settings.burstRacialSpellID)
+    if custom and custom > 0 and not seen[custom] then ids[#ids + 1] = custom end
+    return hudCollectSpells(snapshot, ids, profile, "racial", "种族技能", options)
+end
+
+local function hudFollowups(snapshot, profile, state, settings, options, showSequence)
+    local out, seen, diagnostics = {}, {}, {}
+    local maximum = hudFollowerLimit(settings)
+    if maximum <= 0 then return out, diagnostics end
+    local always = settings.burstDisplayMode == "always"
+    local active = state.state == "ACTIVE"
+    if not always and not active and showSequence ~= true then return out, diagnostics end
+
+    local orderedGroups = {}
+    local injectionAll, _, _, _, injectionDiag = hudCollectSpells(snapshot, profile.injectionSpellIDs, profile, "rotationSpells", "爆发注入", options)
+    orderedGroups[#orderedGroups + 1] = { role = "injection", items = injectionAll }
+    for _, reason in ipairs(injectionDiag or {}) do diagnostics[#diagnostics + 1] = reason end
+
+    if settings.burstShowTrinkets == true and profile.allowTrinketHint ~= false then
+        local values, diag = hudCollectTrinkets(snapshot, profile)
+        orderedGroups[#orderedGroups + 1] = { role = "trinket", items = values }
+        for _, reason in ipairs(diag or {}) do diagnostics[#diagnostics + 1] = reason end
+    end
+    if settings.burstShowPotions == true and profile.allowPotionHint ~= false then
+        local values, diag = hudCollectPotion(snapshot, settings)
+        orderedGroups[#orderedGroups + 1] = { role = "potion", items = values }
+        for _, reason in ipairs(diag or {}) do diagnostics[#diagnostics + 1] = reason end
+    end
+    if settings.burstShowRacial == true and profile.allowRacialHint ~= false then
+        local values, _, _, _, diag = hudCollectRacial(snapshot, profile, settings, options)
+        orderedGroups[#orderedGroups + 1] = { role = "racial", items = values }
+        for _, reason in ipairs(diag or {}) do diagnostics[#diagnostics + 1] = reason end
+    end
+
+    local function addGroup(items, role, wanted)
+        for _, item in ipairs(items or {}) do
+            if #out >= maximum then return end
+            if wanted == nil or item.usableState == wanted then
+                hudMarkRole(item, role, state, #out + 2)
+                hudAppend(out, { item }, maximum, seen)
+            end
+        end
+    end
+
+    if always then
+        for _, group in ipairs(orderedGroups) do addGroup(group.items, group.role) end
+    else
+        for _, group in ipairs(orderedGroups) do addGroup(group.items, group.role, "ready") end
+        if hudCooldownAllowed(settings) and #out < maximum then
+            for _, group in ipairs(orderedGroups) do addGroup(group.items, group.role, "cooldown") end
+        end
+    end
+    return out, diagnostics
+end
+
+local function hudCompose(out)
+    out.items = {}
+    if out.window then out.items[#out.items + 1] = out.window end
+    for _, item in ipairs(out.followups or {}) do out.items[#out.items + 1] = item end
+    out.active = #out.items > 0
+end
+
+local function hudMarkVerification(out, stateSnapshot)
+    if type(out) ~= "table" or type(stateSnapshot) ~= "table" or stateSnapshot.active ~= true then return end
+    local pending = stateSnapshot.waitingForConfirmation == true
+        or stateSnapshot.preInjectionSkipStatus == "confirming_own_cooldown"
+    local spellID = hudNumber(stateSnapshot.currentSpellID)
+    if pending ~= true or not spellID or spellID <= 0 then return end
+    for _, item in ipairs(out.items or {}) do
+        if hudNumber(item.spellID) == spellID then
+            item.burstVerificationPending = true
+            item.burstVerificationRole = stateSnapshot.currentRole
+        end
+    end
+end
+
+function AutoBurst:BuildHudSnapshot(primary, context, settings, runtimeSnapshot)
+    hudPerfCount("autoburst_hud_snapshot")
+    settings, context = settings or {}, context or {}
+    local runtime = TE.RuntimeSnapshot
+    if type(runtimeSnapshot) ~= "table" and runtime and type(runtime.Begin) == "function" then
+        runtimeSnapshot = runtime:Begin("hud_fallback", {
+            context = context,
+            official = primary,
+            inCombat = context.inCombat == true,
+        })
+    end
+    if type(runtimeSnapshot) ~= "table" then
+        return {
+            schema = 2,
+            active = false,
+            state = "UNKNOWN",
+            stateLabel = "状态未知",
+            items = {},
+            followups = {},
+            advisoryOnly = true,
+            displayOnly = true,
+            source = "autoburst_runtime_snapshot_unavailable",
+            blockedReason = "runtime_snapshot_unavailable",
+        }
+    end
+
+    local profile, profileKey, profileReason
+    if TE.BurstProfiles and type(TE.BurstProfiles.Get) == "function" then
+        profile, profileKey, profileReason = TE.BurstProfiles:Get(context)
+    else
+        profileReason = "BurstProfiles 不可用"
+    end
+    local state = TE.BurstStateMachine and TE.BurstStateMachine:Update(profile, profileKey, primary, context, settings)
+        or { state = "UNKNOWN", label = "状态未知", lastTransitionReason = "BurstStateMachine 不可用" }
+    local stateSnapshot = runtimeSnapshot.autoBurst
+    if type(stateSnapshot) ~= "table" then stateSnapshot = self:GetSnapshot() end
+    local out = hudMakeOutput(profile, profileKey, state, profileReason, stateSnapshot, runtimeSnapshot)
+
+    if not profile then
+        out.state, out.stateLabel, out.notice = "SUPPRESSED", "已抑制", profileReason or "当前专精暂无爆发辅助配置"
+        return out
+    end
+    if settings.burstEnabled == false or profile.enabled == false then
+        out.state, out.stateLabel, out.notice = "SUPPRESSED", "已抑制", "爆发模块已关闭"
+        return out
+    end
+    if state.state == "UNKNOWN" then
+        out.notice = state.lastTransitionReason or "爆发状态未知"
+        return out
+    end
+
+    local always = settings.burstDisplayMode == "always"
+    local inCombat = context.inCombat == true
+    local targetOK, targetReason = hudHostileTargetState()
+    local activeWindow = state.state == "ACTIVE" or state.state == "ARMED"
+    local primaryExists = primary and primary.spellID
+    local policyAllowsReady = state.state == "ACTIVE"
+        or (settings.burstPolicy ~= "hold" and inCombat and targetOK and (settings.burstPolicy ~= "align" or primaryExists))
+    if always then policyAllowsReady = true end
+
+    local options = {
+        requiresHostileTarget = inCombat and targetOK and not always,
+        gcdSnapshot = runtimeSnapshot.gcdSnapshot,
+        castSnapshot = runtimeSnapshot.castSnapshot,
+    }
+
+    if settings.burstShowClassCooldowns ~= false then
+        local window, diagnostics = hudSelectWindow(runtimeSnapshot, profile, state, settings, options, policyAllowsReady)
+        out.diagnostics = diagnostics or {}
+        if window then out.window = hudMarkRole(window, "window", state, 1) end
+    end
+
+    local shouldFollow = always or activeWindow or (out.window and out.window.usableState == "ready" and policyAllowsReady)
+    if shouldFollow and settings.burstShowCandidates ~= false then
+        local values, diagnostics = hudFollowups(runtimeSnapshot, profile, state, settings, options, shouldFollow)
+        out.followups = values
+        for _, reason in ipairs(diagnostics or {}) do out.diagnostics[#out.diagnostics + 1] = reason end
+    end
+    hudCompose(out)
+    hudMarkVerification(out, stateSnapshot)
+
+    if out.active then
+        if state.state == "ACTIVE" then
+            out.recommendationState = "active_window_queue"
+            out.notice = "爆发窗口：首图标为窗口技能，后续按注入技能、饰品、药水、种族技能顺序显示；仅 HUD 提示"
+        elseif always and not inCombat then
+            out.recommendationState = "always_out_of_combat_queue"
+            out.notice = "常驻爆发队列：仅展示当前专精已知且有真实动作条绑定的窗口与后续技能"
+        elseif always then
+            out.recommendationState = "always_queue"
+            out.notice = "常驻爆发队列：窗口技能固定首位；后续按已配置顺序保留，并显示真实冷却状态"
+        elseif out.window and out.window.usableState == "cooldown" then
+            out.recommendationState = "window_cooldown"
+            out.notice = "爆发窗口技能冷却中：保留首图标并由游戏原生转盘显示倒计时"
+        else
+            out.recommendationState = "window_ready"
+            out.notice = "当前专精爆发窗口技能已就绪：首图标显示真实动作条按键；仅 HUD 提示"
+        end
+        return out
+    end
+
+    if settings.burstPolicy == "hold" then
+        out.state, out.stateLabel, out.recommendationState = "HOLD", "保留爆发", "held"
+        out.notice = "爆发保留模式：不主动显示就绪窗口技能；开启常驻后仍会保留已绑定的队列卡片"
+    elseif not inCombat then
+        out.state, out.stateLabel, out.recommendationState = "OUT_OF_COMBAT", "脱战待命", "out_of_combat"
+        out.notice = "进入战斗并选择敌对目标后，独立检测当前专精爆发窗口技能"
+    elseif not targetOK then
+        out.state, out.stateLabel, out.recommendationState = "WAITING_TARGET", "等待敌对目标", "waiting_target"
+        out.notice = targetReason or "没有可攻击目标"
+    elseif settings.burstPolicy == "align" and not primaryExists then
+        out.state, out.stateLabel, out.recommendationState = "WAITING_PRIMARY", "等待主推荐", "waiting_primary"
+        out.notice = "对齐爆发模式：等待官方主推荐可用后再显示独立爆发窗口技能"
+    else
+        out.state, out.stateLabel, out.recommendationState = "WAITING_READY", "等待爆发就绪", "no_bound_candidate"
+        out.notice = "当前专精未找到已知、已绑定的爆发窗口技能或后续候选"
+    end
+    return out
 end
 
 local function recentPriorityEvents()

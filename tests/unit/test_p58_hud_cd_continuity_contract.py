@@ -32,6 +32,8 @@ class P58HudCooldownContinuityContractTests(unittest.TestCase):
             "local function cachedCooldownText(card, item, ownCooldown)",
             "card.hudCooldownLabelCache",
             '"continuity_cache"',
+            '"snapshot_anchor"',
+            "never extend an existing remaining-only anchor",
             "never reads a DurationObject",
         ):
             self.assertIn(marker, self.icon)

@@ -725,6 +725,49 @@ assert(AutoBurst:GetDiagnostics().lastConfirmationSource == "unit_spellcast_succ
 """)
 
 
+def test_waiting_window_accepts_current_resolver_override_equivalent() -> None:
+    run_lua(AUTO_BURST_HARNESS + r"""
+function TE.ActionBarBindingResolver:GetEquivalentSpellIDs(spellID)
+    if spellID == 343527 then return { 343527, 999343 } end
+    return { spellID }
+end
+local injection = eval()
+assert(injection.kind == "candidate" and injection.dispatchSpellID == 31884)
+AutoBurst:RecordSpellcastSucceeded(31884)
+local window = eval()
+assert(window.kind == "candidate" and window.dispatchSpellID == 343527)
+assert(AutoBurst:RecordSpellcastSucceeded(999343) == true, "current resolver override must confirm the exact waiting window")
+local completed = eval()
+assert(completed.kind ~= "candidate" and AutoBurst:GetSnapshot().active == false, "override confirmation must complete the sequence")
+assert(AutoBurst:GetDiagnostics().lastConfirmationSource == "unit_spellcast_succeeded_resolver_equivalent")
+""")
+
+
+def test_unconfirmed_dispatched_window_releases_after_observed_departure_and_grace() -> None:
+    run_lua(AUTO_BURST_HARNESS + r"""
+local injection = eval()
+assert(injection.kind == "candidate" and injection.dispatchSpellID == 31884)
+AutoBurst:RecordSpellcastSucceeded(31884)
+local window = eval()
+assert(window.kind == "candidate" and window.dispatchSpellID == 343527)
+local rotated = AutoBurst:Evaluate({ spellID = 184575 }, {
+    inCombat = true, intentState = "armed", effectiveState = "armed",
+    primary = { spellID = 184575 }, context = { class = "PALADIN", specIndex = 3 },
+})
+assert(rotated.kind == "candidate", "window stays latched during its confirmation grace")
+nowValue = 2.30
+local released = AutoBurst:Evaluate({ spellID = 184575 }, {
+    inCombat = true, intentState = "armed", effectiveState = "armed",
+    primary = { spellID = 184575 }, context = { class = "PALADIN", specIndex = 3 },
+})
+assert(released.kind == "none", "unconfirmed departed window must release ordinary scheduling")
+assert(AutoBurst:GetSnapshot().active == false, "unconfirmed window must not remain in WAIT_CONFIRM")
+local events = AutoBurst:GetDiagnostics().recentPriorityEvents
+local event = events and events[#events]
+assert(event and event.event == "window_confirmation_unobserved_released", "safe release must remain auditable")
+""")
+
+
 def test_post_mode_requires_eligible_injection_before_claiming_window() -> None:
     run_lua(AUTO_BURST_HARNESS + r"""
 use_post_sequence()
