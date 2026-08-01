@@ -65,16 +65,17 @@ trinket:13 / trinket:14   -- 固定装备栏身份，计划创建时锁定实际
 
 ### 3.2 计划创建与预检
 
-命中官方窗口后，先对每个已启用可选步骤执行真实绑定、装备身份、实时自身 CD/充能与 GCD 采样，再决定是否创建计划：
+命中官方窗口后，先对每个已启用可选步骤执行真实绑定、装备身份、实时自身 CD/充能与 GCD 采样，再决定是否创建计划。用户已明确授权一个窄资源例外：仅对已验证动作栏来源且已有真实 BindingToken 的可选 spell 注入，可经共享 `RuntimeSnapshot:GetActionUsability()` 读取 `usable` / `notEnoughResource` 两个公开布尔值；仅明确 `usable=false` 且 `notEnoughResource=true` 才视为资源不足：
 
 - `simple`：移除明确自身 CD、冷却 UNKNOWN、无绑定、未装备、装备身份变化或其他硬失效步骤；保留剩余步骤相对顺序。
 - `focused`：任何已启用可选步骤不可用，即不创建计划，官方窗口保持普通路径。
+- 资源不足的可选注入在 `simple` 中按不可用步骤移除或运行期跳过；在 `focused` 中不得创建计划，运行期则沿用窗口派发前释放、窗口派发后保留离开锁的既有规则。
 - 所有可选步骤均被移除时，不创建计划。
 - `READY_NOW`、`QUEUE_WINDOW` 与 `GCD_LOCKED` 是可用时序，不是自身 CD；共享 GCD 永远不得排除或确认一个步骤。
 - 对 resolver 已验证的直接可信默认动作条，当前按钮的显式 ready（`isActive=false` 或可解释 `0/0`）可仅用于纠正覆盖/天赋变体造成的旧 SpellID 自身 CD；该证据不构成 CD 跳过、成功确认或任何额外派发资格。
 - 窗口步骤始终保留；真实计划不得把窗口替换为旧缓存 SpellID。
 
-预检只使用 `IconState:CollectCooldownOnly()`、`CollectInventoryCooldownOnly()`、`GCDGate`、已验证的动作条绑定和当前官方推荐。不得使用 Buff、Debuff、资源、目标生命、敌人数量、首领机制、距离、范围或读条对象作为爆发时机输入。
+预检只使用 `IconState:CollectCooldownOnly()`、`CollectInventoryCooldownOnly()`、`GCDGate`、已验证的动作条绑定、当前官方推荐，以及上述可选 spell 注入的资源不足双布尔例外。除该例外外，不得使用 Buff、Debuff、资源、目标生命、敌人数量、首领机制、距离、范围或读条对象作为爆发时机输入；不得读取、保存或导出具体资源数值，UNKNOWN 不得视为资源不足。
 
 ### 3.3 执行、确认与运行期漂移
 

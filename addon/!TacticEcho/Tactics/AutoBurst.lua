@@ -188,6 +188,12 @@ local function number(value)
     return ok and result or nil
 end
 
+local function boolean(value)
+    if value == true then return true end
+    if value == false then return false end
+    return nil
+end
+
 local function now()
     if type(GetTime) ~= "function" then return 0 end
     local ok, value = pcall(GetTime)
@@ -827,6 +833,45 @@ local function stepSample(step, cycle)
     if ownState ~= "OWN_READY" then
         return { phase = ownState, reason = ownReason or iconReason, bindingInfo = bindingInfo, iconState = iconState }
     end
+
+    -- User-authorized narrow exception for resource-gated optional injections.
+    -- Read only the two public booleans for the exact, already-verified action
+    -- slot from the shared RuntimeSnapshot. Never read or retain a resource
+    -- amount, and never apply this signal to the immutable window step,
+    -- inventory steps, an untrusted action-bar source, or an UNKNOWN result.
+    if isOptionalStep(step) and stepKind(step) == "spell" then
+        local runtime = TE.RuntimeSnapshot
+        local runtimeSnapshot = type(cycle) == "table" and cycle.runtimeSnapshot or nil
+        local actionSlot = number(bindingInfo and (bindingInfo.actionSlot or bindingInfo.slot))
+        local trusted = bindingInfo and bindingInfo.status == "Ready"
+            and bindingInfo.actionBarStateTrusted == true
+            and (number(bindingInfo.bindingToken) or 0) > 0
+            and actionSlot and actionSlot > 0
+        if trusted and type(runtimeSnapshot) == "table" and runtime
+            and type(runtime.GetActionUsability) == "function" then
+            local ok, usable, notEnoughResource, usabilityReason = pcall(
+                runtime.GetActionUsability, runtime, runtimeSnapshot, actionSlot
+            )
+            if ok then
+                usable = boolean(usable)
+                notEnoughResource = boolean(notEnoughResource)
+            else
+                usable, notEnoughResource = nil, nil
+            end
+            if usable == false and notEnoughResource == true then
+                return {
+                    phase = "RESOURCE_BLOCKED",
+                    reason = "optional_injection_resource_insufficient",
+                    bindingInfo = bindingInfo,
+                    iconState = iconState,
+                    resourceBlocked = true,
+                    actionUsable = false,
+                    notEnoughResource = true,
+                    resourceUsabilityReason = usabilityReason,
+                }
+            end
+        end
+    end
     return classifyDispatchPhase(step, cycle, bindingInfo, iconState, nil, false)
 end
 
@@ -911,6 +956,10 @@ rememberStepObservation = function(self, plan, step, sample, stage)
         itemID = stepKind(step) == "inventory" and positiveItemID(step and step.expectedItemID) or nil,
         phase = sample.phase,
         reason = sample.reason,
+        resourceBlocked = sample.resourceBlocked == true,
+        actionUsable = sample.actionUsable,
+        notEnoughResource = sample.notEnoughResource == true,
+        resourceUsabilityReason = sample.resourceUsabilityReason,
         bindingStatus = binding.status,
         bindingReason = binding.reason,
         bindingToken = number(binding.bindingToken),
@@ -1946,6 +1995,7 @@ local function releasePlanForInjectionUnavailable(self, plan, step, sample, reas
         inventorySlot = stepKind(step) == "inventory" and inventorySlot(step.inventorySlot) or nil,
         dispatchAttempt = plan.dispatchAttempt or 0,
         cooldownUncertain = type(sample) == "table" and sample.cooldownUncertain == true or false,
+        resourceBlocked = type(sample) == "table" and sample.resourceBlocked == true or false,
     }
     self.lastInjectionPreflight = self.lastSequencePreflight
     if plan.rule and plan.rule.mode == "simple" then
@@ -2117,6 +2167,7 @@ local function preflightSequence(self, rule, cycle)
                     index = index, key = step.key, role = step.role, category = step.category,
                     phase = phase, reason = sample and sample.reason or "sample_missing",
                     cooldownUncertain = sample and sample.cooldownUncertain == true or false,
+                    resourceBlocked = sample and sample.resourceBlocked == true or false,
                     spellID = stepKind(step) == "spell" and positiveSpellID(step.spellID) or nil,
                     inventorySlot = stepKind(step) == "inventory" and inventorySlot(step.inventorySlot) or nil,
                 }
@@ -2140,6 +2191,7 @@ local function preflightSequence(self, rule, cycle)
         excluded = excluded, excludedCount = #excluded,
         firstExcludedPhase = firstExcluded.phase, firstExcludedReason = firstExcluded.reason,
         firstExcludedCooldownUncertain = firstExcluded.cooldownUncertain == true,
+        firstExcludedResourceBlocked = firstExcluded.resourceBlocked == true,
         firstExcludedSpellID = firstExcluded.spellID, firstExcludedInventorySlot = firstExcluded.inventorySlot,
         selectedKeys = {},
     }
@@ -2161,6 +2213,7 @@ local function preflightSequence(self, rule, cycle)
             excludedCount = #excluded, firstExcludedPhase = firstExcluded.phase,
             firstExcludedKey = firstExcluded.key, firstExcludedRole = firstExcluded.role,
             firstExcludedReason = firstExcluded.reason,
+            firstExcludedResourceBlocked = firstExcluded.resourceBlocked == true,
             firstExcludedSpellID = firstExcluded.spellID,
             firstExcludedInventorySlot = firstExcluded.inventorySlot,
             selectedOrder = diagnostic.selectedOrder, excludedOrder = diagnostic.excludedOrder,
@@ -2637,6 +2690,10 @@ function AutoBurst:Evaluate(official, runtime)
             self:SoftPause(sample.reason or "step_paused")
             return holdResult(plan, sample.reason or "step_paused")
         end
+        if isOptionalStep(step) and sample.resourceBlocked == true then
+            return releasePlanForInjectionUnavailable(self, plan, step, sample,
+                "optional_injection_resource_insufficient")
+        end
         if sample.phase == "BLOCKED" or sample.phase == "UNUSABLE" then
             self:Abort(sample.reason or sample.phase, false)
             return terminalResult(self, "burst_wait_confirmation_invalidated", { officialSpellID = officialSpellID, abortReason = sample.reason or sample.phase })
@@ -2685,6 +2742,10 @@ function AutoBurst:Evaluate(official, runtime)
     if sample.phase == "PAUSED" then
         self:SoftPause(sample.reason or "step_paused")
         return holdResult(plan, sample.reason or "step_paused")
+    end
+    if isOptionalStep(step) and sample.resourceBlocked == true then
+        return releasePlanForInjectionUnavailable(self, plan, step, sample,
+            "optional_injection_resource_insufficient")
     end
     if isOptionalStep(step) and (sample.phase == "COOLDOWN" or sample.cooldownUncertain == true or sample.phase == "UNKNOWN") then
         return releasePlanForInjectionUnavailable(self, plan, step, sample,

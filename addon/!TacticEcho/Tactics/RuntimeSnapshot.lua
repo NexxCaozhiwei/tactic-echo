@@ -18,6 +18,12 @@ local function number(value)
     return resolved + 0
 end
 
+local function boolean(value)
+    if value == true then return true end
+    if value == false then return false end
+    return nil
+end
+
 local function perfCount(name, amount)
     local perf = TE.PerformanceDiagnostics
     if perf and type(perf.Count) == "function" then perf:Count(name, amount) end
@@ -246,8 +252,10 @@ function RuntimeSnapshot:GetActionUsability(snapshot, actionSlot)
         perfCount("action_usability_read")
         local ok, value, resource = guarded("ActionUsability:" .. tostring(actionSlot), C_ActionBar.IsUsableAction, actionSlot)
         if ok then
-            usable = value == true and true or value == false and false or nil
-            notEnough = resource == true and true or resource == false and false or nil
+            -- Explicit false is meaningful here. Do not use Lua's and/or
+            -- pseudo-ternary because a false middle value collapses to nil.
+            usable = boolean(value)
+            notEnough = boolean(resource)
         else
             reason = "action_usability_read_failed:" .. tostring(value)
         end

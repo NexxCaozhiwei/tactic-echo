@@ -47,6 +47,7 @@ _G.TacticEcho = {
     ActionBarBindingResolver = {},
     IconState = {},
     GCDGate = {},
+    RuntimeSnapshot = {},
 }
 local TE = _G.TacticEcho
 function TE:RegisterEventsSafe(frame, events) frame.events = events end
@@ -91,13 +92,15 @@ end
 use_default_pre_sequence()
 cooldowns = { [343527] = "ready", [31884] = "ready" }
 bindings = { [343527] = "ready", [31884] = "ready" }
+bindingTokens = { [343527] = 1, [31884] = 4 }
+actionUsability = {}
 gcdPhase = "READY_NOW"
 
 function TE.ActionBarBindingResolver:ResolveSpell(spellID)
     if bindings[spellID] ~= "ready" then
         return { status = "NoBinding", reason = "test_no_binding", spellID = spellID }, "test_no_binding"
     end
-    local token = spellID == 31884 and 4 or 1
+    local token = bindingTokens[spellID] or 1
     return {
         status = "Ready",
         spellID = spellID,
@@ -111,6 +114,14 @@ function TE.ActionBarBindingResolver:ResolveSpell(spellID)
         actionSlot = token,
         actionBarStateTrusted = true,
     }, nil
+end
+
+function TE.RuntimeSnapshot:GetActionUsability(snapshot, actionSlot)
+    local state = actionUsability[actionSlot]
+    if state == "resource" then return false, true, nil end
+    if state == "unusable" then return false, false, nil end
+    if state == "ready" then return true, false, nil end
+    return nil, nil, "test_action_usability_unknown"
 end
 
 function TE.IconState:CollectCooldownOnly(spellID, options)
@@ -211,10 +222,12 @@ function TE.GCDGate:Classify(cycle) return gcdPhase, "test_" .. tostring(gcdPhas
 dofile(ROOT .. "/addon/!TacticEcho/Tactics/BurstProfiles.lua")
 dofile(ROOT .. "/addon/!TacticEcho/Tactics/AutoBurst.lua")
 local AutoBurst = TE.AutoBurst
+testContext = { class = "PALADIN", specIndex = 3 }
+officialSpellID = 343527
 
 local function eval(intent, transportTick)
     intent = intent or "armed"
-    return AutoBurst:Evaluate({ spellID = 343527 }, {
+    return AutoBurst:Evaluate({ spellID = officialSpellID }, {
         inCombat = true,
         intentState = intent,
         effectiveState = intent,
@@ -222,8 +235,9 @@ local function eval(intent, transportTick)
         -- models a state/event Refresh that paints a hold but must not consume
         -- the 50 ms transport handoff budget.
         transportHandoffTick = transportTick,
-        primary = { spellID = 343527 },
-        context = { class = "PALADIN", specIndex = 3 },
+        primary = { spellID = officialSpellID },
+        context = testContext,
+        runtimeSnapshot = {},
     })
 end
 
@@ -717,6 +731,110 @@ local function containsCustom(entries, spellID)
 end
 assert(containsCustom(updated.triggerEntries, 1217610))
 assert(containsCustom(updated.injectionEntries, 1217611))
+""")
+
+
+def test_devourer_simple_preflight_skips_resource_blocked_void_metamorphosis() -> None:
+    run_lua(AUTO_BURST_HARNESS + r"""
+testContext = { class = "DEMONHUNTER", specIndex = 3, specID = 1480 }
+officialSpellID = 1225826
+bindings[1225826] = "ready"
+bindings[1217605] = "ready"
+bindingTokens[1225826] = 7
+bindingTokens[1217605] = 8
+cooldowns[1225826] = "ready"
+cooldowns[1217605] = "ready"
+actionUsability[8] = "resource"
+
+local result = eval()
+assert(result.kind == "none", "resource-blocked optional injection must leave Eradicate on the official path")
+assert(AutoBurst:GetSnapshot().active == false, "no plan may be created when the only optional injection lacks resource")
+local preflight = AutoBurst:GetDiagnostics().lastSequencePreflight
+assert(preflight.status == "none_ready" and preflight.firstExcludedPhase == "RESOURCE_BLOCKED")
+assert(preflight.firstExcludedReason == "optional_injection_resource_insufficient")
+assert(preflight.firstExcludedResourceBlocked == true)
+""")
+
+
+def test_devourer_simple_runtime_resource_drift_skips_injection_and_continues_window() -> None:
+    run_lua(AUTO_BURST_HARNESS + r"""
+testContext = { class = "DEMONHUNTER", specIndex = 3, specID = 1480 }
+officialSpellID = 1225826
+bindings[1225826] = "ready"
+bindings[1217605] = "ready"
+bindingTokens[1225826] = 7
+bindingTokens[1217605] = 8
+cooldowns[1225826] = "ready"
+cooldowns[1217605] = "ready"
+actionUsability[8] = "ready"
+
+local injection = eval()
+assert(injection.kind == "candidate" and injection.dispatchSpellID == 1217605)
+actionUsability[8] = "resource"
+local skipped = eval()
+assert(skipped.kind == "hold" and skipped.reason == "burst_next_step_pending")
+local window = eval()
+assert(window.kind == "candidate" and window.dispatchSpellID == 1225826,
+    "simple mode must continue with Eradicate after resource-blocked Void Metamorphosis is skipped")
+local observation = AutoBurst:GetDiagnostics().lastStepObservation
+assert(observation.role == "window", "the plan must advance beyond the skipped injection")
+""")
+
+
+def test_devourer_focused_resource_block_refuses_plan_without_claiming_window() -> None:
+    run_lua(AUTO_BURST_HARNESS + r"""
+settings.autoBurstMode = "focused"
+testContext = { class = "DEMONHUNTER", specIndex = 3, specID = 1480 }
+officialSpellID = 1225826
+bindings[1225826] = "ready"
+bindings[1217605] = "ready"
+bindingTokens[1225826] = 7
+bindingTokens[1217605] = 8
+cooldowns[1225826] = "ready"
+cooldowns[1217605] = "ready"
+actionUsability[8] = "resource"
+
+local result = eval()
+assert(result.kind == "none" and AutoBurst:GetSnapshot().active == false)
+local preflight = AutoBurst:GetDiagnostics().lastSequencePreflight
+assert(preflight.firstExcludedPhase == "RESOURCE_BLOCKED")
+assert(preflight.firstExcludedResourceBlocked == true)
+""")
+
+
+def test_runtime_snapshot_preserves_false_action_usability_for_resource_gate() -> None:
+    run_lua(r"""
+_G.TacticEcho = {}
+local TE = _G.TacticEcho
+C_ActionBar = {
+    IsUsableAction = function(actionSlot)
+        assert(actionSlot == 8)
+        return false, true
+    end,
+}
+dofile(ROOT .. "/addon/!TacticEcho/Tactics/RuntimeSnapshot.lua")
+local snapshot = TE.RuntimeSnapshot:Begin("resource_boolean_test", {})
+local usable, notEnough, reason = TE.RuntimeSnapshot:GetActionUsability(snapshot, 8)
+assert(usable == false, "explicit action unusable=false must not collapse to nil")
+assert(notEnough == true and reason == nil)
+local cachedUsable, cachedNotEnough = TE.RuntimeSnapshot:GetActionUsability(snapshot, 8)
+assert(cachedUsable == false and cachedNotEnough == true, "cached resource booleans must preserve false/true")
+""")
+
+
+def test_resource_exception_does_not_apply_to_window_or_non_resource_unusable_result() -> None:
+    run_lua(AUTO_BURST_HARNESS + r"""
+use_post_sequence()
+actionUsability[1] = "resource"
+local window = eval()
+assert(window.kind == "candidate" and window.dispatchSpellID == 343527,
+    "resource exception must never suppress the immutable window step")
+""")
+    run_lua(AUTO_BURST_HARNESS + r"""
+actionUsability[4] = "unusable"
+local injection = eval()
+assert(injection.kind == "candidate" and injection.dispatchSpellID == 31884,
+    "usable=false without explicit notEnoughResource=true must not authorize an injection skip")
 """)
 
 
