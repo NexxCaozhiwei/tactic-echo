@@ -1,5 +1,12 @@
 # Tactic Echo 1.1.7 基线：HUD 容器可见性战斗保护收口
 
+## 噬灭 DH 与空种子专精
+
+- `DEMONHUNTER_3` 必须作为噬灭恶魔猎手显式注册，`specIndex=3`、`specID=1480`；默认窗口技能固定为 `1225826`（根除），默认第一注入技能固定为 `1217605`（虚空变形），不得回退到浩劫/复仇或跨专精共用配置。
+- 噬灭默认序列必须保持 `injection:1217605 → window:1225826`，并继续允许当前专精已学会的额外自定义触发/注入技能。其他没有内置参考触发/注入种子的显式专精保持空列表，但必须允许 `C_Spell.IsSpellKnown` / `IsPlayerSpell` / `IsSpellKnown` 已确认的当前专精技能作为用户自定义条目加入。
+- `noSeedNotice` 只在合并默认与用户配置后的触发、注入列表都为空时成立。用户加入有效自定义条目后必须解除该阻断，并由自定义触发形成固定窗口、由最多前三项已启用自定义注入形成稳定 `injection:<SpellID>` 步骤。
+- 显式注册表必须覆盖 13 个职业共 40 个现行战斗专精；契约测试需逐项校验 class、specIndex 与 specID，防止新专精再次出现 UI 可见但无法保存自定义技能的问题。
+
 ## 稳定性与热路径收口
 
 - 主卡拖动与 HUD 抓手只能通过 `beginContainerMove()` / `finishContainerMove()` 改变容器移动状态；`InCombatLockdown()` 为真时不得直接调用 `StartMoving()` 或 `StopMovingOrSizing()`。
@@ -41,6 +48,10 @@
 
 ## 验收
 
+- `tests/unit/test_auto_burst_phase1_behavior.py::test_sparse_registered_specs_accept_custom_trigger_and_injection_sequences`
+- `tests/unit/test_auto_burst_phase1_behavior.py::test_devourer_defaults_build_sequence_and_accept_additional_custom_skills`
+- `tests/unit/test_burst_profile_configuration_table_contract.py`
+- `tests/unit/test_burst_defense_registry_lists_contract.py::BurstDefenseRegistryListsContractTests::test_every_playable_specialization_has_explicit_burst_profile_metadata`
 - `tests/unit/test_current_scope_efficiency_contract.py`
 - `tests/unit/test_hud_board_combat_protection_contract.py`
 - `tests/unit/test_hud_icon_visibility_contract.py`

@@ -18,14 +18,28 @@ class BurstDefenseRegistryListsContractTests(unittest.TestCase):
 
     def test_every_playable_specialization_has_explicit_burst_profile_metadata(self) -> None:
         expected = {
-            "DEATHKNIGHT": 3, "DEMONHUNTER": 2, "DRUID": 4, "EVOKER": 3,
-            "HUNTER": 3, "MAGE": 3, "MONK": 3, "PALADIN": 3,
-            "PRIEST": 3, "ROGUE": 3, "SHAMAN": 3, "WARLOCK": 3,
-            "WARRIOR": 3,
+            "DEATHKNIGHT": [250, 251, 252],
+            "DEMONHUNTER": [577, 581, 1480],
+            "DRUID": [102, 103, 104, 105],
+            "EVOKER": [1467, 1468, 1473],
+            "HUNTER": [253, 254, 255],
+            "MAGE": [62, 63, 64],
+            "MONK": [268, 270, 269],
+            "PALADIN": [65, 66, 70],
+            "PRIEST": [256, 257, 258],
+            "ROGUE": [259, 260, 261],
+            "SHAMAN": [262, 263, 264],
+            "WARLOCK": [265, 266, 267],
+            "WARRIOR": [71, 72, 73],
         }
-        for class_file, count in expected.items():
-            for spec_index in range(1, count + 1):
-                self.assertIn(f"{class_file}_{spec_index} = {{ classFile", self.burst_profiles)
+        for class_file, spec_ids in expected.items():
+            for spec_index, spec_id in enumerate(spec_ids, start=1):
+                marker = (
+                    f'{class_file}_{spec_index} = {{ classFile = "{class_file}", '
+                    f"specIndex = {spec_index}, specID = {spec_id},"
+                )
+                self.assertIn(marker, self.burst_profiles)
+        self.assertEqual(sum(map(len, expected.values())), 40)
 
     def test_justac_seeds_are_normalized_and_eye_of_tyr_is_corrected_before_registry_use(self) -> None:
         for marker in (

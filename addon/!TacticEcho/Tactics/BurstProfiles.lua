@@ -30,6 +30,7 @@ local SPEC_META = {
     -- Demon Hunter
     DEMONHUNTER_1 = { classFile = "DEMONHUNTER", specIndex = 1, specID = 577, label = "浩劫恶魔猎手" },
     DEMONHUNTER_2 = { classFile = "DEMONHUNTER", specIndex = 2, specID = 581, label = "复仇恶魔猎手" },
+    DEMONHUNTER_3 = { classFile = "DEMONHUNTER", specIndex = 3, specID = 1480, label = "噬灭恶魔猎手" },
     -- Druid
     DRUID_1 = { classFile = "DRUID", specIndex = 1, specID = 102, label = "平衡德鲁伊" },
     DRUID_2 = { classFile = "DRUID", specIndex = 2, specID = 103, label = "野性德鲁伊" },
@@ -86,6 +87,7 @@ local REFERENCE_TRIGGER_SEEDS = {
     DEATHKNIGHT_3 = { 63560, 42650 },
     DEMONHUNTER_1 = { 191427 },
     DEMONHUNTER_2 = { 187827 },
+    DEMONHUNTER_3 = { 1225826 },
     DRUID_1 = { 202770 },
     DRUID_2 = { 391528 },
     DRUID_3 = { 50334, 102558 },
@@ -126,6 +128,7 @@ local REFERENCE_INJECTION_SEEDS = {
     DEATHKNIGHT_3 = { 42650 },
     DEMONHUNTER_1 = { 370965 },
     DEMONHUNTER_2 = { 187827 },
+    DEMONHUNTER_3 = { 1217605 },
     DRUID_1 = { 102560 },
     DRUID_2 = { 106951 },
     DRUID_3 = { 50334, 102558, 391528 },
@@ -534,7 +537,12 @@ local function createProfile(profileKey, meta)
         blacklistSpellIDs = copyList(user and user.blacklistSpellIDs),
         alternatives = {},
         duplicateGroups = {},
-        noSeedNotice = (#triggerDefaults == 0 and #injectionDefaults == 0)
+        -- An explicitly registered specialization may intentionally have no
+        -- built-in seed. Once the player adds current-spec custom entries,
+        -- those effective lists are authoritative and must clear the sparse
+        -- profile guard; otherwise AddCustom succeeds in the UI but AutoBurst
+        -- remains permanently blocked by the original empty defaults.
+        noSeedNotice = (#triggerEntries == 0 and #injectionEntries == 0)
             and "参考技能资料未提供该专精的默认爆发触发/注入技能；列表保持为空，避免猜测治疗或跨专精技能。"
             or nil,
     }

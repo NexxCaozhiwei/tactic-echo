@@ -638,6 +638,88 @@ assert(hunterAfter.entries[1].key == "window" and hunterAfter.entries[2].key == 
 """)
 
 
+def test_sparse_registered_specs_accept_custom_trigger_and_injection_sequences() -> None:
+    run_lua(AUTO_BURST_HARNESS + r"""
+C_Spell = {
+    IsSpellKnown = function(spellID)
+        return spellID == 257001 or spellID == 257002
+    end,
+}
+local cases = {
+    {
+        -- Holy Priest represents the existing registered specializations that
+        -- intentionally ship without guessed built-in burst seeds.
+        context = { class = "PRIEST", specIndex = 2, specID = 257 },
+        key = "PRIEST_2",
+        trigger = 257001,
+        injection = 257002,
+    },
+}
+for _, case in ipairs(cases) do
+    local emptyProfile, emptyKey, emptyReason = TE.BurstProfiles:Get(case.context)
+    assert(emptyProfile ~= nil and emptyKey == case.key and emptyProfile.noSeedNotice ~= nil,
+        case.key .. " must begin as an explicitly registered sparse profile")
+    local triggerAdded, triggerReason = TE.BurstProfiles:AddCustom(case.context, "trigger", case.trigger)
+    assert(triggerAdded == true, case.key .. " custom trigger rejected: " .. tostring(triggerReason))
+    local injectionAdded, injectionReason = TE.BurstProfiles:AddCustom(case.context, "injection", case.injection)
+    assert(injectionAdded == true, case.key .. " custom injection rejected: " .. tostring(injectionReason))
+
+    local profile, profileKey, profileReason = TE.BurstProfiles:Get(case.context)
+    assert(profile ~= nil and profileKey == case.key and profileReason == nil and profile.noSeedNotice == nil,
+        case.key .. " custom entries must clear the sparse-profile guard")
+    assert(profile.triggerEntries[1].custom == true and profile.injectionEntries[1].custom == true,
+        case.key .. " must preserve user-current-spec custom identity")
+    local sequence, sequenceKey, sequenceReason = TE.BurstProfiles:GetAutoBurstSequence(case.context)
+    assert(sequence ~= nil and sequenceKey == case.key and sequenceReason == nil,
+        case.key .. " custom sequence rejected: " .. tostring(sequenceReason))
+    assert(sequence.windowSpellID == case.trigger and sequence.injectionCount == 1,
+        case.key .. " sequence must use the custom trigger and injection")
+    assert(sequence.entries[1].key == "injection:" .. tostring(case.injection)
+        and sequence.entries[2].key == "window",
+        case.key .. " must retain the default front-injection order")
+end
+""")
+
+
+def test_devourer_defaults_build_sequence_and_accept_additional_custom_skills() -> None:
+    run_lua(AUTO_BURST_HARNESS + r"""
+local context = { class = "DEMONHUNTER", specIndex = 3, specID = 1480 }
+local profile, profileKey, profileReason = TE.BurstProfiles:Get(context)
+assert(profile ~= nil and profileKey == "DEMONHUNTER_3" and profileReason == nil)
+assert(profile.noSeedNotice == nil)
+assert(profile.openerSpellIDs[1] == 1225826)
+assert(profile.injectionSpellIDs[1] == 1217605)
+assert(profile.triggerEntries[1].spellID == 1225826 and profile.triggerEntries[1].builtIn == true)
+assert(profile.injectionEntries[1].spellID == 1217605 and profile.injectionEntries[1].builtIn == true)
+
+local sequence, sequenceKey, sequenceReason = TE.BurstProfiles:GetAutoBurstSequence(context)
+assert(sequence ~= nil and sequenceKey == "DEMONHUNTER_3" and sequenceReason == nil)
+assert(sequence.windowSpellID == 1225826 and sequence.injectionCount == 1)
+assert(sequence.entries[1].key == "injection:1217605")
+assert(sequence.entries[2].key == "window" and sequence.entries[2].spellID == 1225826)
+
+C_Spell = {
+    IsSpellKnown = function(spellID)
+        return spellID == 1217610 or spellID == 1217611
+    end,
+}
+local triggerAdded, triggerReason = TE.BurstProfiles:AddCustom(context, "trigger", 1217610)
+assert(triggerAdded == true, "Devourer custom trigger rejected: " .. tostring(triggerReason))
+local injectionAdded, injectionReason = TE.BurstProfiles:AddCustom(context, "injection", 1217611)
+assert(injectionAdded == true, "Devourer custom injection rejected: " .. tostring(injectionReason))
+
+local updated = TE.BurstProfiles:Get(context)
+local function containsCustom(entries, spellID)
+    for _, entry in ipairs(entries or {}) do
+        if entry.spellID == spellID and entry.custom == true then return true end
+    end
+    return false
+end
+assert(containsCustom(updated.triggerEntries, 1217610))
+assert(containsCustom(updated.injectionEntries, 1217611))
+""")
+
+
 def test_unknown_window_after_confirmed_injection_keeps_latched_candidate() -> None:
     run_lua(AUTO_BURST_HARNESS + r"""
 cooldowns[343527] = "unknown"

@@ -8,6 +8,7 @@ PROFILE_SOURCE = (ROOT / "addon" / "!TacticEcho" / "Tactics" / "BurstProfiles.lu
 
 EXPECTED = {
     "trigger": {
+        "DEMONHUNTER_3": [1225826],
         "PALADIN_3": [343527],
         "MAGE_3": [84714],
         "MAGE_2": [153561],
@@ -17,6 +18,7 @@ EXPECTED = {
         "HUNTER_2": [260243],
     },
     "injection": {
+        "DEMONHUNTER_3": [1217605],
         "PALADIN_3": [31884],
         "MAGE_3": [55342],
         "MAGE_2": [190319],
