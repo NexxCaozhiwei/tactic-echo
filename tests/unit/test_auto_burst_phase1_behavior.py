@@ -233,9 +233,11 @@ dofile(ROOT .. "/addon/!TacticEcho/Tactics/AutoBurst.lua")
 local AutoBurst = TE.AutoBurst
 testContext = { class = "PALADIN", specIndex = 3 }
 officialSpellID = 343527
+local runtimeCycleId = 0
 
-local function eval(intent, transportTick)
+local function eval(intent, transportTick, forcedCycleId)
     intent = intent or "armed"
+    runtimeCycleId = runtimeCycleId + 1
     return AutoBurst:Evaluate({ spellID = officialSpellID }, {
         inCombat = true,
         intentState = intent,
@@ -246,7 +248,7 @@ local function eval(intent, transportTick)
         transportHandoffTick = transportTick,
         primary = { spellID = officialSpellID },
         context = testContext,
-        runtimeSnapshot = {},
+        runtimeSnapshot = { cycleId = forcedCycleId or runtimeCycleId },
     })
 end
 
@@ -827,11 +829,136 @@ assert(window.kind == "candidate" and window.dispatchSpellID == 1225826)
 AutoBurst:RecordSpellcastSucceeded(1225826)
 cooldowns[1217605] = "unknown"
 spellUsability[1217605] = "resource"
-local skipped = eval()
-assert(skipped.kind == "hold", "resource-blocked post-window injection must finish without another dispatch")
+    local settling = eval()
+    assert(settling.kind == "hold" and AutoBurst:GetSnapshot().active == true)
+    local confirming = eval()
+    assert(confirming.kind == "hold" and AutoBurst:GetSnapshot().active == true)
+    local skipped = eval()
+    assert(skipped.kind == "hold", "resource-blocked post-window injection must finish without another dispatch")
 local snapshot = AutoBurst:GetSnapshot()
 assert(snapshot.active == false and snapshot.requireWindowDeparture == true,
     "window-first plan must keep only the normal departure lock after skipping its last optional step")
+""")
+
+
+def test_devourer_post_window_resource_preflight_is_deferred_and_ready_after_eradicate_dispatches_immediately() -> None:
+    run_lua(AUTO_BURST_HARNESS + r"""
+testContext = { class = "DEMONHUNTER", specIndex = 3, specID = 1480 }
+officialSpellID = 1225826
+settings.burstProfiles.DEMONHUNTER_3 = {
+    autoBurstSequence = {
+        order = { "window", "injection:1217605", "trinket:13", "trinket:14" },
+        enabled = { ["injection:1217605"] = true, ["trinket:13"] = false, ["trinket:14"] = false },
+    },
+}
+bindings[1225826] = "ready"
+bindings[1217605] = "ready"
+bindingTokens[1225826] = 7
+bindingTokens[1217605] = 8
+cooldowns[1225826] = "ready"
+cooldowns[1217605] = "ready"
+spellUsability[1217605] = "resource"
+actionUsability[8] = "resource"
+
+local window = eval()
+assert(window.kind == "candidate" and window.dispatchSpellID == 1225826,
+    "pre-Eradicate resource insufficiency must not discard the configured post-window injection")
+local preflight = AutoBurst:GetDiagnostics().lastSequencePreflight
+assert(preflight.status == "selected" and preflight.resourceCheckDeferred == true)
+assert(preflight.firstDeferredResourceSpellID == 1217605)
+assert(preflight.deferredResourceOrder == "injection:1217605")
+
+AutoBurst:RecordSpellcastSucceeded(1225826)
+spellUsability[1217605] = "ready"
+actionUsability[8] = "ready"
+gcdPhase = "QUEUE_WINDOW"
+local injection = eval()
+assert(injection.kind == "candidate" and injection.dispatchSpellID == 1217605,
+    "a fresh post-Eradicate ready sample must dispatch Void Metamorphosis in the same burst")
+local snapshot = AutoBurst:GetSnapshot()
+assert(snapshot.state == "WAIT_CONFIRM" and snapshot.postWindowResourceSettling == false)
+local observation = AutoBurst:GetDiagnostics().lastStepObservation
+assert(observation.stage == "post_window_resource_ready" and observation.actionUsable == true)
+""")
+
+
+def test_devourer_post_window_resource_settlement_waits_for_gcd_and_two_distinct_unavailable_cycles() -> None:
+    run_lua(AUTO_BURST_HARNESS + r"""
+testContext = { class = "DEMONHUNTER", specIndex = 3, specID = 1480 }
+officialSpellID = 1225826
+settings.burstProfiles.DEMONHUNTER_3 = {
+    autoBurstSequence = {
+        order = { "window", "injection:1217605", "trinket:13", "trinket:14" },
+        enabled = { ["injection:1217605"] = true, ["trinket:13"] = false, ["trinket:14"] = false },
+    },
+}
+bindings[1225826] = "ready"
+bindings[1217605] = "ready"
+bindingTokens[1225826] = 7
+bindingTokens[1217605] = 8
+cooldowns[1225826] = "ready"
+cooldowns[1217605] = "ready"
+spellUsability[1217605] = "resource"
+actionUsability[8] = "resource"
+
+local window = eval(nil, nil, 100)
+assert(window.kind == "candidate" and window.dispatchSpellID == 1225826)
+AutoBurst:RecordSpellcastSucceeded(1225826)
+
+gcdPhase = "GCD_LOCKED"
+local gcdHold = eval(nil, nil, 101)
+assert(gcdHold.kind == "hold" and gcdHold.reason == "post_window_resource_settling")
+local snapshot = AutoBurst:GetSnapshot()
+assert(snapshot.postWindowResourceSettling == true and snapshot.postWindowResourceFreshSamples == 0,
+    "Root GCD must not dispatch or count an unavailable sample")
+
+gcdPhase = "READY_NOW"
+local first = eval(nil, nil, 102)
+assert(first.kind == "hold" and AutoBurst:GetSnapshot().postWindowResourceFreshSamples == 1)
+local duplicate = eval(nil, nil, 102)
+assert(duplicate.kind == "hold" and AutoBurst:GetSnapshot().postWindowResourceFreshSamples == 1,
+    "re-evaluating one RuntimeSnapshot cycle must not count twice")
+local released = eval(nil, nil, 103)
+assert(released.kind == "hold")
+snapshot = AutoBurst:GetSnapshot()
+assert(snapshot.active == false and snapshot.requireWindowDeparture == true,
+    "two distinct fresh unavailable samples must skip the optional injection without hanging")
+local preflight = AutoBurst:GetDiagnostics().lastSequencePreflight
+assert(preflight.status == "runtime_optional_unavailable")
+assert(preflight.reason == "post_window_resource_unavailable_confirmed")
+""")
+
+
+def test_devourer_post_window_resource_unknown_is_bounded_and_released() -> None:
+    run_lua(AUTO_BURST_HARNESS + r"""
+testContext = { class = "DEMONHUNTER", specIndex = 3, specID = 1480 }
+officialSpellID = 1225826
+settings.burstProfiles.DEMONHUNTER_3 = {
+    autoBurstSequence = {
+        order = { "window", "injection:1217605", "trinket:13", "trinket:14" },
+        enabled = { ["injection:1217605"] = true, ["trinket:13"] = false, ["trinket:14"] = false },
+    },
+}
+bindings[1225826] = "ready"
+bindings[1217605] = "ready"
+bindingTokens[1225826] = 7
+bindingTokens[1217605] = 8
+cooldowns[1225826] = "ready"
+cooldowns[1217605] = "ready"
+spellUsability[1217605] = "resource"
+
+local window = eval()
+assert(window.kind == "candidate" and window.dispatchSpellID == 1225826)
+AutoBurst:RecordSpellcastSucceeded(1225826)
+spellUsability[1217605] = nil
+actionUsability[8] = nil
+assert(eval().kind == "hold")
+assert(eval().kind == "hold" and AutoBurst:GetSnapshot().postWindowResourceFreshSamples == 1)
+local released = eval()
+assert(released.kind == "hold" and AutoBurst:GetSnapshot().active == false,
+    "opaque post-window resource booleans must release the optional step after bounded fresh samples")
+local preflight = AutoBurst:GetDiagnostics().lastSequencePreflight
+assert(preflight.reason == "post_window_resource_unknown_released")
 """)
 
 
@@ -861,7 +988,11 @@ local window = eval()
 assert(window.kind == "candidate" and window.dispatchSpellID == 1225826)
 AutoBurst:RecordSpellcastSucceeded(1225826)
 cooldowns[1217605] = "unknown"
-local skipped = eval()
+    local settling = eval()
+    assert(settling.kind == "hold" and AutoBurst:GetSnapshot().active == true)
+    local confirming = eval()
+    assert(confirming.kind == "hold" and AutoBurst:GetSnapshot().active == true)
+    local skipped = eval()
 assert(skipped.kind == "hold",
     "Devourer special-resource unusable=false/false must skip the optional post injection")
 local snapshot = AutoBurst:GetSnapshot()
@@ -882,6 +1013,21 @@ actionUsability[4] = "unusable"
 local injection = eval()
 assert(injection.kind == "candidate" and injection.dispatchSpellID == 31884,
     "ordinary optional injections must still require explicit insufficientPower=true")
+""")
+
+
+def test_post_window_resource_deferral_does_not_apply_to_other_specializations() -> None:
+    run_lua(AUTO_BURST_HARNESS + r"""
+use_post_sequence()
+spellUsability[31884] = "resource"
+actionUsability[4] = "resource"
+
+local result = eval()
+assert(result.kind == "none" and AutoBurst:GetSnapshot().active == false,
+    "ordinary post-window injections must retain the existing resource preflight rule")
+local preflight = AutoBurst:GetDiagnostics().lastSequencePreflight
+assert(preflight.status == "none_ready" and preflight.resourceCheckDeferred == false)
+assert(preflight.firstExcludedPhase == "RESOURCE_BLOCKED")
 """)
 
 
@@ -927,6 +1073,12 @@ def test_devourer_focused_resource_block_refuses_plan_without_claiming_window() 
 settings.autoBurstMode = "focused"
 testContext = { class = "DEMONHUNTER", specIndex = 3, specID = 1480 }
 officialSpellID = 1225826
+settings.burstProfiles.DEMONHUNTER_3 = {
+    autoBurstSequence = {
+        order = { "injection:1217605", "window", "trinket:13", "trinket:14" },
+        enabled = { ["injection:1217605"] = true, ["trinket:13"] = false, ["trinket:14"] = false },
+    },
+}
 bindings[1225826] = "ready"
 bindings[1217605] = "ready"
 bindingTokens[1225826] = 7

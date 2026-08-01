@@ -838,7 +838,7 @@ local function optionalInjectionResourceBlock(step, cycle, bindingInfo, iconStat
         and (number(bindingInfo.bindingToken) or 0) > 0
         and actionSlot and actionSlot > 0
         and spellID ~= nil
-    if not (trusted and type(runtimeSnapshot) == "table" and runtime) then return nil end
+    if not (trusted and type(runtimeSnapshot) == "table" and runtime) then return nil, nil end
     local ownState = ownReadyState(iconState)
 
     -- Prefer the exact spell API: Retail exposes special class resources such
@@ -874,16 +874,30 @@ local function optionalInjectionResourceBlock(step, cycle, bindingInfo, iconStat
                     bindingInfo = bindingInfo,
                     iconState = iconState,
                     resourceBlocked = true,
+                    resourceUsabilityKnown = true,
                     actionUsable = false,
                     notEnoughResource = notEnoughResource == true,
                     specialResourceUnusableCompat = specialResourceUnusable,
+                    resourceUsabilitySource = probe.source,
+                    resourceUsabilityReason = usabilityReason,
+                    cooldownUncertain = ownState == "UNKNOWN",
+                }
+            end
+            if usable ~= nil then
+                return nil, {
+                    resourceUsabilityKnown = true,
+                    actionUsable = usable,
+                    notEnoughResource = notEnoughResource == true,
                     resourceUsabilitySource = probe.source,
                     resourceUsabilityReason = usabilityReason,
                 }
             end
         end
     end
-    return nil
+    return nil, {
+        resourceUsabilityKnown = false,
+        resourceUsabilityReason = "optional_injection_resource_usability_unknown",
+    }
 end
 
 local function stepSample(step, cycle, options)
@@ -895,18 +909,28 @@ local function stepSample(step, cycle, options)
     if iconState and iconState.inventoryEquipmentChanged == true then
         return { phase = "BLOCKED", reason = iconState.cooldownUnknownReason or "inventory_equipment_changed", bindingInfo = bindingInfo, iconState = iconState }
     end
-    local resourceBlock = optionalInjectionResourceBlock(step, cycle, bindingInfo, iconState,
+    local resourceBlock, resourceObservation = optionalInjectionResourceBlock(step, cycle, bindingInfo, iconState,
         options.allowSpecialResourceUnusableCompat == true)
     if resourceBlock then return resourceBlock end
+    local function withResourceObservation(sample)
+        if type(resourceObservation) == "table" and type(sample) == "table" then
+            sample.resourceUsabilityKnown = resourceObservation.resourceUsabilityKnown == true
+            sample.actionUsable = resourceObservation.actionUsable
+            sample.notEnoughResource = resourceObservation.notEnoughResource == true
+            sample.resourceUsabilitySource = resourceObservation.resourceUsabilitySource
+            sample.resourceUsabilityReason = resourceObservation.resourceUsabilityReason
+        end
+        return sample
+    end
     local ownState, ownReason = ownReadyState(iconState)
     if ownState == "UNKNOWN" and mayDeliverWithUnknownCooldown(iconState) then
-        return classifyDispatchPhase(step, cycle, bindingInfo, iconState, ownReason or iconReason, true)
+        return withResourceObservation(classifyDispatchPhase(step, cycle, bindingInfo, iconState, ownReason or iconReason, true))
     end
     if ownState ~= "OWN_READY" then
-        return { phase = ownState, reason = ownReason or iconReason, bindingInfo = bindingInfo, iconState = iconState }
+        return withResourceObservation({ phase = ownState, reason = ownReason or iconReason, bindingInfo = bindingInfo, iconState = iconState })
     end
 
-    return classifyDispatchPhase(step, cycle, bindingInfo, iconState, nil, false)
+    return withResourceObservation(classifyDispatchPhase(step, cycle, bindingInfo, iconState, nil, false))
 end
 
 local function validateRuleBindings(self, rule, resolveContext, runtimeSnapshot)
@@ -991,11 +1015,15 @@ rememberStepObservation = function(self, plan, step, sample, stage)
         phase = sample.phase,
         reason = sample.reason,
         resourceBlocked = sample.resourceBlocked == true,
+        resourceUsabilityKnown = sample.resourceUsabilityKnown == true,
         actionUsable = sample.actionUsable,
         notEnoughResource = sample.notEnoughResource == true,
         specialResourceUnusableCompat = sample.specialResourceUnusableCompat == true,
         resourceUsabilitySource = sample.resourceUsabilitySource,
         resourceUsabilityReason = sample.resourceUsabilityReason,
+        postWindowResourceSettling = sample.postWindowResourceSettling == true,
+        postWindowResourceCycleId = sample.postWindowResourceCycleId,
+        postWindowResourceGCDPhase = sample.postWindowResourceGCDPhase,
         bindingStatus = binding.status,
         bindingReason = binding.reason,
         bindingToken = number(binding.bindingToken),
@@ -1792,6 +1820,7 @@ function AutoBurst:SoftPause(reason)
     if not self.plan then return end
     if self.plan.state ~= "SOFT_PAUSED" then
         self.plan.pauseStartedAt = now()
+        self.plan.pauseResumeState = self.plan.state
         self.plan.state = "SOFT_PAUSED"
         self.plan.pauseReason = reason
         local step = self.plan.steps and self.plan.steps[self.plan.stepIndex] or nil
@@ -1829,7 +1858,10 @@ function AutoBurst:ResumeIfPossible()
         plan.revalidate.deadlineAt = extendDeadline(plan.revalidate.deadlineAt, pauseSeconds)
     end
     plan.pauseStartedAt = nil
-    plan.state = plan.wait and "WAIT_CONFIRM" or "PENDING"
+    plan.state = plan.wait and "WAIT_CONFIRM"
+        or (plan.pauseResumeState == "POST_WINDOW_RESOURCE_SETTLING"
+            and "POST_WINDOW_RESOURCE_SETTLING" or "PENDING")
+    plan.pauseResumeState = nil
     local priorReason = plan.pauseReason
     plan.pauseReason = nil
     log(self, "soft_pause_clock_extended", {
@@ -1950,7 +1982,24 @@ local function completePlanForWindowOwnCooldown(self, plan, reason)
     })
 end
 
-local function finishStep(self, plan, source)
+local function runtimeCycleIdentity(cycle)
+    local runtimeSnapshot = type(cycle) == "table" and cycle.runtimeSnapshot or nil
+    local cycleId = type(runtimeSnapshot) == "table" and runtimeSnapshot.cycleId or nil
+    if type(cycleId) == "number" or type(cycleId) == "string" then
+        return "runtime:" .. tostring(cycleId), cycleId
+    end
+    if type(runtimeSnapshot) == "table" then return runtimeSnapshot, nil end
+    if type(cycle) == "table" then return cycle, nil end
+    return nil, nil
+end
+
+local function isPostWindowResourceSettlementStep(step)
+    return isOptionalStep(step)
+        and stepKind(step) == "spell"
+        and step.specialResourceUnusableCompat == true
+end
+
+local function finishStep(self, plan, source, cycle)
     local step = plan.steps[plan.stepIndex]
     self.lastConfirmationSource = source
     plan.completed[#plan.completed + 1] = step.role
@@ -1980,6 +2029,27 @@ local function finishStep(self, plan, source)
             ruleSource = plan.rule.source,
             ruleId = plan.rule.id,
         })
+    end
+    local nextStep = plan.steps[plan.stepIndex]
+    if isWindowStep(step) and isPostWindowResourceSettlementStep(nextStep) then
+        local confirmationCycleKey, confirmationCycleId = runtimeCycleIdentity(cycle)
+        plan.state = "POST_WINDOW_RESOURCE_SETTLING"
+        plan.postWindowResourceSettlement = {
+            stepIndex = plan.stepIndex,
+            confirmationCycleKey = confirmationCycleKey,
+            confirmationCycleId = confirmationCycleId,
+            lastUnavailableCycleKey = nil,
+            unavailableFreshSamples = 0,
+            lastResult = "window_confirmed",
+        }
+        log(self, "post_window_resource_settling_started", {
+            currentStep = plan.stepIndex,
+            role = nextStep.role,
+            spellID = positiveSpellID(nextStep.spellID),
+            confirmationCycleId = confirmationCycleId,
+        })
+    else
+        plan.postWindowResourceSettlement = nil
     end
     return nil
 end
@@ -2186,20 +2256,41 @@ local function selectedRuleForSequence(rule, selectedSteps)
 end
 
 local function preflightSequence(self, rule, cycle)
-    local selected, excluded = {}, {}
+    local selected, excluded, deferredResource = {}, {}, {}
     local configuredOptional, selectedOptional = 0, 0
+    local windowSeen = false
     for index, step in ipairs(sequenceFor(rule)) do
         if isWindowStep(step) then
             selected[#selected + 1] = step
+            windowSeen = true
         elseif isOptionalStep(step) then
             configuredOptional = configuredOptional + 1
-            local sample = stepSample(step, cycle)
+            local postWindowSpecialResource = windowSeen and isPostWindowResourceSettlementStep(step)
+            local sample = stepSample(step, cycle, {
+                allowSpecialResourceUnusableCompat = postWindowSpecialResource,
+            })
             rememberStepObservation(self, nil, step, sample, "plan_gate_sequence_preflight")
             local phase = sample and sample.phase or "UNKNOWN"
-            local eligible = isDispatchablePhase(phase) and sample.cooldownUncertain ~= true
+            -- Eradicate can change Void Metamorphosis' resource eligibility.
+            -- Keep the configured post-window step when resource is the only
+            -- blocker, then make the first post-confirmation fresh samples
+            -- authoritative. Pre-window injections and every other profile keep
+            -- the ordinary preflight contract.
+            local resourceCheckDeferred = postWindowSpecialResource
+                and sample and sample.resourceBlocked == true
+                and sample.cooldownUncertain ~= true
+            local eligible = resourceCheckDeferred
+                or (isDispatchablePhase(phase) and sample.cooldownUncertain ~= true)
             if eligible then
                 selected[#selected + 1] = step
                 selectedOptional = selectedOptional + 1
+                if resourceCheckDeferred then
+                    deferredResource[#deferredResource + 1] = {
+                        index = index, key = step.key, role = step.role,
+                        spellID = positiveSpellID(step.spellID),
+                        phase = phase, reason = sample.reason,
+                    }
+                end
             else
                 excluded[#excluded + 1] = {
                     index = index, key = step.key, role = step.role, category = step.category,
@@ -2231,16 +2322,23 @@ local function preflightSequence(self, rule, cycle)
         firstExcludedCooldownUncertain = firstExcluded.cooldownUncertain == true,
         firstExcludedResourceBlocked = firstExcluded.resourceBlocked == true,
         firstExcludedSpellID = firstExcluded.spellID, firstExcludedInventorySlot = firstExcluded.inventorySlot,
+        resourceCheckDeferred = #deferredResource > 0,
+        deferredResourceCount = #deferredResource,
+        firstDeferredResourceSpellID = deferredResource[1] and deferredResource[1].spellID or nil,
+        firstDeferredResourceReason = deferredResource[1] and deferredResource[1].reason or nil,
         selectedKeys = {},
     }
     for _, step in ipairs(selected) do diagnostic.selectedKeys[#diagnostic.selectedKeys + 1] = step.key or step.role end
     local excludedKeys = {}
     for _, entry in ipairs(excluded) do excludedKeys[#excludedKeys + 1] = entry.key or entry.role end
+    local deferredResourceKeys = {}
+    for _, entry in ipairs(deferredResource) do deferredResourceKeys[#deferredResourceKeys + 1] = entry.key or entry.role end
     -- Mapping export intentionally keeps diagnostics scalar-only. Preserve the
     -- resolved order in compact text so the saved trace can show exactly which
     -- steps survived CD/GCD preflight without serializing raw binding objects.
     diagnostic.selectedOrder = table.concat(diagnostic.selectedKeys, ">")
     diagnostic.excludedOrder = table.concat(excludedKeys, ">")
+    diagnostic.deferredResourceOrder = table.concat(deferredResourceKeys, ">")
     self.lastSequencePreflight = diagnostic
     self.lastInjectionPreflight = diagnostic
 
@@ -2273,6 +2371,8 @@ local function preflightSequence(self, rule, cycle)
         ruleId = selectedRule.id, selectedOptionalCount = selectedOptional,
         excludedCount = #excluded, requiresPreWindowCapture = selectedRule.requiresPreWindowCapture == true,
         selectedOrder = diagnostic.selectedOrder, excludedOrder = diagnostic.excludedOrder,
+        resourceCheckDeferred = diagnostic.resourceCheckDeferred,
+        deferredResourceOrder = diagnostic.deferredResourceOrder,
         firstExcludedKey = firstExcluded.key, firstExcludedRole = firstExcluded.role,
         firstExcludedReason = firstExcluded.reason,
     })
@@ -2282,6 +2382,111 @@ local function preflightSequence(self, rule, cycle)
         excludedOrder = diagnostic.excludedOrder,
     })
     return selectedRule, diagnostic
+end
+
+local function publicGCDPhase(cycle)
+    if TE.GCDGate and type(TE.GCDGate.Classify) == "function" then
+        local ok, phase = pcall(TE.GCDGate.Classify, TE.GCDGate, cycle)
+        if ok and type(phase) == "string" then return phase end
+    end
+    return type(cycle) == "table" and cycle.phase or "UNKNOWN"
+end
+
+-- Eradicate is the operation that can make the following Void Metamorphosis
+-- usable. The pre-window sample is therefore only structural/CD evidence. Once
+-- the exact window step is confirmed, settle on fresh shared RuntimeSnapshot
+-- cycles: explicit readiness may dispatch immediately, while an unavailable or
+-- opaque result needs two distinct non-GCD-locked observations before the
+-- optional step is released. Repeated evaluation of one snapshot cannot vote
+-- twice, and no fixed sleep or raw resource value is introduced.
+local function settlePostWindowResource(self, plan, step, cycle)
+    local settlement = plan and plan.postWindowResourceSettlement or nil
+    if not (plan and plan.state == "POST_WINDOW_RESOURCE_SETTLING"
+        and type(settlement) == "table"
+        and settlement.stepIndex == plan.stepIndex
+        and isPostWindowResourceSettlementStep(step)) then
+        if plan then
+            plan.postWindowResourceSettlement = nil
+            if plan.state == "POST_WINDOW_RESOURCE_SETTLING" then plan.state = "PENDING" end
+        end
+        return nil, nil, false
+    end
+
+    local sample = stepSample(step, cycle, { allowSpecialResourceUnusableCompat = true })
+    local cycleKey, cycleId = runtimeCycleIdentity(cycle)
+    -- A normal dispatch sample already contains GCDGate's result. Resource
+    -- blocking returns before that classification, so only that branch needs
+    -- the one explicit shared-cycle lookup here.
+    local gcdPhase = sample.resourceBlocked == true and publicGCDPhase(cycle) or sample.phase
+    sample.postWindowResourceSettling = true
+    sample.postWindowResourceCycleId = cycleId
+    sample.postWindowResourceGCDPhase = gcdPhase
+    rememberStepObservation(self, plan, step, sample, "post_window_resource_settling")
+
+    if gcdPhase == "GCD_LOCKED" then
+        settlement.lastResult = "gcd_locked"
+        recordDecision(self, "hold", "post_window_resource_settling", {
+            officialSpellID = plan.officialSpellID,
+            windowSpellID = plan.rule and plan.rule.windowSpellID or nil,
+            injectionSpellID = positiveSpellID(step.spellID),
+            ruleSource = plan.rule and plan.rule.source or nil,
+            ruleId = plan.rule and plan.rule.id or nil,
+            state = plan.state,
+        })
+        return holdResult(plan, "post_window_resource_settling"), nil, true
+    end
+
+    if sample.resourceUsabilityKnown == true and sample.actionUsable == true then
+        settlement.lastResult = "ready"
+        plan.postWindowResourceSettlement = nil
+        plan.state = "PENDING"
+        log(self, "post_window_resource_ready", {
+            currentStep = plan.stepIndex,
+            role = step.role,
+            spellID = positiveSpellID(step.spellID),
+            cycleId = cycleId,
+            phase = sample.phase,
+        })
+        return nil, sample, false
+    end
+
+    if not isDispatchablePhase(sample.phase) and sample.resourceBlocked ~= true then
+        -- Resource settlement has completed, but another ordinary runtime gate
+        -- now owns the outcome (binding, own CD, UNKNOWN, and so on).
+        plan.postWindowResourceSettlement = nil
+        plan.state = "PENDING"
+        return nil, sample, false
+    end
+
+    local isConfirmationCycle = cycleKey ~= nil and cycleKey == settlement.confirmationCycleKey
+    local isRepeatedCycle = cycleKey ~= nil and cycleKey == settlement.lastUnavailableCycleKey
+    if isConfirmationCycle or isRepeatedCycle then
+        settlement.lastResult = isConfirmationCycle and "confirmation_cycle_stale" or "duplicate_cycle"
+        return holdResult(plan, "post_window_resource_settling"), nil, true
+    end
+
+    settlement.lastUnavailableCycleKey = cycleKey
+    settlement.unavailableFreshSamples = (number(settlement.unavailableFreshSamples) or 0) + 1
+    settlement.lastResult = sample.resourceBlocked == true and "resource_blocked" or "resource_unknown"
+    log(self, "post_window_resource_sampled", {
+        currentStep = plan.stepIndex,
+        role = step.role,
+        spellID = positiveSpellID(step.spellID),
+        cycleId = cycleId,
+        freshSamples = settlement.unavailableFreshSamples,
+        resourceBlocked = sample.resourceBlocked == true,
+        resourceUsabilityKnown = sample.resourceUsabilityKnown == true,
+    })
+    if settlement.unavailableFreshSamples < 2 then
+        return holdResult(plan, "post_window_resource_settling"), nil, true
+    end
+
+    plan.postWindowResourceSettlement = nil
+    plan.state = "PENDING"
+    local reason = sample.resourceBlocked == true
+        and "post_window_resource_unavailable_confirmed"
+        or "post_window_resource_unknown_released"
+    return releasePlanForInjectionUnavailable(self, plan, step, sample, reason), nil, true
 end
 
 -- The official recommendation is an independent, read-only window anchor.  A
@@ -2686,7 +2891,7 @@ function AutoBurst:Evaluate(official, runtime)
     if plan.state == "WAIT_CONFIRM" and plan.wait then
         local eventSuccess, eventSource = spellcastEventConfirmed(plan, step)
         if eventSuccess then
-            local result = finishStep(self, plan, eventSource)
+            local result = finishStep(self, plan, eventSource, cycle)
             if result then return result end
             -- The event may arrive after SignalFrame's earlier listener refresh.
             -- Re-enter once with the next declared step so injection confirmation
@@ -2709,7 +2914,7 @@ function AutoBurst:Evaluate(official, runtime)
                     currentStep = plan.stepIndex,
                 })
             end
-            local result = finishStep(self, plan, source)
+            local result = finishStep(self, plan, source, cycle)
             if result then return result end
             return self:Evaluate(official, runtime)
         end
@@ -2775,8 +2980,15 @@ function AutoBurst:Evaluate(official, runtime)
             "wait_confirm_" .. tostring(sample.phase):lower() .. ":" .. tostring(sample.reason or "unknown"))
     end
 
-    local sample = stepSample(step, cycle, { allowSpecialResourceUnusableCompat = true })
-    rememberStepObservation(self, plan, step, sample, "step_pending")
+    local sample
+    if plan.state == "POST_WINDOW_RESOURCE_SETTLING" then
+        local settlementResult, settlementSample = settlePostWindowResource(self, plan, step, cycle)
+        if settlementResult then return settlementResult end
+        sample = settlementSample
+    end
+    sample = sample or stepSample(step, cycle, { allowSpecialResourceUnusableCompat = true })
+    rememberStepObservation(self, plan, step, sample,
+        sample.postWindowResourceSettling == true and "post_window_resource_ready" or "step_pending")
     if sample.phase == "PAUSED" then
         self:SoftPause(sample.reason or "step_paused")
         return holdResult(plan, sample.reason or "step_paused")
@@ -2950,6 +3162,9 @@ function AutoBurst:GetRuntimeState()
         currentInventorySlot = step and stepKind(step) == "inventory" and inventorySlot(step.inventorySlot) or nil,
         currentItemID = step and stepKind(step) == "inventory" and positiveItemID(step.expectedItemID) or nil,
         waitingForConfirmation = plan and plan.state == "WAIT_CONFIRM" or false,
+        postWindowResourceSettling = plan and plan.state == "POST_WINDOW_RESOURCE_SETTLING" or false,
+        postWindowResourceFreshSamples = plan and plan.postWindowResourceSettlement
+            and number(plan.postWindowResourceSettlement.unavailableFreshSamples) or 0,
         preInjectionSkipStatus = plan and plan.preInjectionSkipStatus or nil,
         requireWindowDeparture = self.requireWindowDeparture == true,
         preWindowCaptureActive = type(capture) == "table" and capture.active == true,
@@ -3034,6 +3249,7 @@ function AutoBurst:GetSnapshot()
         stepState = plan.state,
         stepStatusReason = plan.pauseReason
             or (plan.revalidate and "revalidating")
+            or (plan.state == "POST_WINDOW_RESOURCE_SETTLING" and "post_window_resource_settling")
             or (plan.wait and plan.wait.phase)
             or (self.lastStepObservation and self.lastStepObservation.reason),
         completed = plan.completed,
@@ -3064,6 +3280,11 @@ function AutoBurst:GetSnapshot()
         handoffBarrierRemainingFrames = handoffBarrierRemaining(plan),
         handoffBarrierPublishedFrames = number(plan.handoffBarrierPublishedFrames) or 0,
         waitingForConfirmation = plan.state == "WAIT_CONFIRM",
+        postWindowResourceSettling = plan.state == "POST_WINDOW_RESOURCE_SETTLING",
+        postWindowResourceFreshSamples = plan.postWindowResourceSettlement
+            and number(plan.postWindowResourceSettlement.unavailableFreshSamples) or 0,
+        postWindowResourceLastResult = plan.postWindowResourceSettlement
+            and plan.postWindowResourceSettlement.lastResult or nil,
         pendingConfirmationSpellID = plan.wait and positiveSpellID(plan.wait.expectedSpellID) or nil,
         pendingConfirmationActionKind = plan.wait and plan.wait.expectedActionKind or nil,
         pendingConfirmationInventorySlot = plan.wait and inventorySlot(plan.wait.expectedInventorySlot) or nil,
