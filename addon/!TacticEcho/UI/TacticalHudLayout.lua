@@ -274,23 +274,16 @@ end
 local function layoutFingerprint(nodes, hud)
     local function shownMarker(card) return cardShown(card) and "1" or "0" end
     return table.concat({
-        tostring(hud.layoutPreset or "queue_horizontal"), tostring(hud.primaryGrowth or "RIGHT"), tostring(hud.tacticalGrowth or "RIGHT"), tostring(hud.burstGrowth or "RIGHT"),
+        tostring(hud.layoutPreset or "queue_horizontal"), tostring(hud.primaryGrowth or "RIGHT"), tostring(hud.burstGrowth or "RIGHT"),
         tostring(clamp(hud.gap, 2, 24)), tostring(moduleSize(hud, "main", hud.primarySize, 44, 120)),
-        tostring(clamp(hud.candidateSize, 26, 88)), tostring(moduleSize(hud, "burst", hud.tacticalSize, 28, 88)),
-        tostring(moduleSize(hud, "interrupt", hud.tacticalSize, 28, 88)), tostring(moduleSize(hud, "defense", hud.defenseSize, 28, 88)),
+        tostring(moduleSize(hud, "burst", hud.tacticalSize, 28, 88)),
         tostring(clamp(hud.scale, 0.60, 2.00)), tostring(clamp(hud.backdropAlpha, 0, 1)),
-        tostring(hud.locked == true), tostring(hud.showDragHandle ~= false), tostring(hud.defenseDetached == true),
-        tostring(hud.defenseLocked == true), tostring(clamp(hud.defenseScale, 0.60, 2.00)), tostring(clamp(hud.defenseAlpha, 0.20, 1.00)),
-        shownMarker(nodes.primary), shownMarker(nodes.candidates and nodes.candidates[1]), shownMarker(nodes.candidates and nodes.candidates[2]), shownMarker(nodes.candidates and nodes.candidates[3]),
-        shownMarker(nodes.tactical and nodes.tactical.interrupt),
+        tostring(hud.locked == true), tostring(hud.showDragHandle ~= false), shownMarker(nodes.primary),
         shownMarker(nodes.tactical and nodes.tactical.burst and nodes.tactical.burst[1]),
         shownMarker(nodes.tactical and nodes.tactical.burst and nodes.tactical.burst[2]),
         shownMarker(nodes.tactical and nodes.tactical.burst and nodes.tactical.burst[3]),
         shownMarker(nodes.tactical and nodes.tactical.burst and nodes.tactical.burst[4]),
         shownMarker(nodes.tactical and nodes.tactical.burst and nodes.tactical.burst[5]),
-        shownMarker(nodes.tactical and nodes.tactical.control), shownMarker(nodes.tactical and nodes.tactical.mobility),
-        shownMarker(nodes.defense and nodes.defense[1]), shownMarker(nodes.defense and nodes.defense[2]),
-        shownMarker(nodes.defense and nodes.defense[3]), shownMarker(nodes.defense and nodes.defense[4]),
     }, "|")
 end
 

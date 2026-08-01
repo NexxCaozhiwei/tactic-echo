@@ -1,5 +1,10 @@
 # 1.1.7 — HUD 容器可见性战斗保护收口
 
+- **HUD 拖动保护补回**：主卡和 HUD 抓手统一经 `beginContainerMove()` / `finishContainerMove()`；战斗锁定期间只记录阻断状态，不再直接调用容器 `StartMoving()` / `StopMovingOrSizing()`。
+- **退役 HUD 对象收口**：HUD 初始化不再创建候选历史、打断、控制、位移与防御图标按钮，只保留主键和最多 5 个 AutoBurst 卡；布局指纹也只跟踪当前产品范围内的节点。
+- **Signal 诊断降频**：TEAP 20Hz 新鲜度、sequence 和像素绘制保持不变；SavedVariables 历史改为语义变化即时记录、稳定派发状态每 0.5 秒记录一次，避免逐帧分配和队列头移除。
+- **AutoBurst 日志合并**：`window_queue_delivery_continues` 与 `gcd_locked_delivery_continues` 每个计划步骤最多每 0.5 秒记录一次，并退出关键生命周期环；计划创建、预检、派发、确认、中止和完成事件仍完整保留。
+- **HUD 配置读取去重**：`TacticalAdvisors` 每次刷新只调用一次 `Config.Normalize:All()`，同时取得 tactical 与 HUD 设置，避免永久 watcher 对同一配置重复规范化。
 - **AutoBurst 窗口确认防卡死**：当前窗口步骤已派发、官方推荐已离开且确认宽限期结束后，若客户端仍未提供匹配的成功事件或可信自身 CD/充能变化，则以 `window_confirmation_unobserved_released` 安全释放计划；该路径不把超时记为成功，也不推进后续步骤。
 - **覆盖技能事件确认补强**：`UNIT_SPELLCAST_SUCCEEDED` 除冻结绑定中的等效 SpellID 外，还会对当前等待步骤重新读取 Resolver 的有界基础/覆盖等效集合，兼容派发后才发生的 Retail replacement/override 身份变化。
 - **HUD CD 时间一致性**：HUD 数字优先锚定安全的 `cooldownStart + cooldownDuration`；只有 remaining 的业务快照重复绘制时不再用新的 `GetTime` 延后到期点，避免 HUD 倒计时慢于 Blizzard 动作条。

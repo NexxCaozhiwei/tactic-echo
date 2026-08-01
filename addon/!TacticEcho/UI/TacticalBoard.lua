@@ -130,6 +130,32 @@ local function restorePoint(frame, prefix)
     end
 end
 
+local function beginContainerMove(frame)
+    if not frame then return false end
+    if inCombatLockdown() then
+        frame.tacticEchoCombatDragBlocked = true
+        return false
+    end
+    frame.tacticEchoCombatDragBlocked = nil
+    frame.tacticEchoMoving = true
+    frame:StartMoving()
+    return true
+end
+
+local function finishContainerMove(frame, prefix)
+    if not frame then return false end
+    if inCombatLockdown() then
+        frame.tacticEchoCombatDragBlocked = true
+        frame.tacticEchoMoving = nil
+        return false
+    end
+    frame.tacticEchoCombatDragBlocked = nil
+    frame:StopMovingOrSizing()
+    frame.tacticEchoMoving = nil
+    savePoint(frame, prefix)
+    return true
+end
+
 local function statusText(primary)
     local visual = primary and primary.visual or {}
     local labels = {
@@ -287,12 +313,11 @@ end
 local function bindPrimaryDrag(card)
     card:RegisterForDrag("LeftButton")
     card:SetScript("OnDragStart", function(self)
-        self.tacticEchoDragging = true
-        if not db().locked then board:StartMoving() end
+        self.tacticEchoDragging = false
+        if not db().locked then self.tacticEchoDragging = beginContainerMove(board) end
     end)
     card:SetScript("OnDragStop", function(self)
-        board:StopMovingOrSizing()
-        savePoint(board)
+        if self.tacticEchoDragging == true then finishContainerMove(board) end
         self.tacticEchoDragging = false
         self.tacticEchoSuppressClickUntil = (type(GetTime) == "function" and GetTime() or 0) + 0.15
     end)
@@ -320,45 +345,28 @@ local function ensureBoard()
     createBackdrop(defenseFrame)
 
     board.handle = TacticalHudDragHandle:Create(board,
-        function() if not db().locked then board:StartMoving() end end,
-        function() board:StopMovingOrSizing(); savePoint(board) end,
+        function() if not db().locked then beginContainerMove(board) end end,
+        function() finishContainerMove(board) end,
         function() if TE.ControlPanel then TE.ControlPanel:Show("general") end end,
         "主队列抓手")
     board.handle:SetPoint("LEFT", board, "LEFT", -18, 0)
 
-    defenseFrame.handle = TacticalHudDragHandle:Create(defenseFrame,
-        function() if not db().defenseLocked then defenseFrame:StartMoving() end end,
-        function() defenseFrame:StopMovingOrSizing(); savePoint(defenseFrame, "defense") end,
-        function() if TE.ControlPanel then TE.ControlPanel:Show("defense") end end,
-        "防御队列抓手")
-    defenseFrame.handle:SetPoint("LEFT", defenseFrame, "LEFT", -18, 0)
-
     nodes.primary = TacticalIconButton:Create(board, nil, 68, "main_toggle")
     bindPrimaryDrag(nodes.primary)
     nodes.candidates = {}
-    for index = 1, 3 do nodes.candidates[index] = TacticalIconButton:Create(board, nil, 38, "none") end
     nodes.tactical = {
-        interrupt = TacticalIconButton:Create(board, nil, 46, "manual_action"),
         burst = {},
-        control = TacticalIconButton:Create(board, nil, 46, "manual_action"),
-        mobility = TacticalIconButton:Create(board, nil, 46, "none"),
     }
     for index = 1, MAX_BURST_CARDS do
         nodes.tactical.burst[index] = TacticalIconButton:Create(board, nil, 46, "manual_action")
     end
     nodes.defense = {}
-    for index = 1, 4 do nodes.defense[index] = TacticalIconButton:Create(defenseFrame, nil, 38, "manual_action") end
 
     -- Right-click navigation is intentionally visual-only.  It opens the
     -- matching settings page but never changes a recommendation, binding,
     -- token or TEAP frame.
     nodes.primary.settingsPage = "main"
-    for _, card in ipairs(nodes.candidates) do card.settingsPage = "main" end
-    nodes.tactical.interrupt.settingsPage = "interrupt"
-    nodes.tactical.control.settingsPage = "interrupt"
-    nodes.tactical.mobility.settingsPage = "interrupt"
     for _, card in ipairs(nodes.tactical.burst) do card.settingsPage = "burst" end
-    for _, card in ipairs(nodes.defense) do card.settingsPage = "defense" end
 
     board.statusText = board:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
     board.statusText:SetJustifyH("LEFT")

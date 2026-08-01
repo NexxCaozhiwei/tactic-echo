@@ -27,30 +27,18 @@ local function perfFinish(token)
     if perf and type(perf.Finish) == "function" then perf:Finish(token) end
 end
 
-local function ensureSettings()
-    -- 规范器拥有 interruptDisplayMode / controlDisplayMode / defensiveDisplayMode
-    -- 等战术展示字段的默认值；本文件只读取，不再保留第二套钳制规则。
-    -- Config/Normalize.lua is the sole owner of persisted tactical defaults.
-    -- This fallback deliberately creates only tables: duplicating defaults here
-    -- previously allowed load order to overwrite intended profile values.
+local function ensureConfig()
+    -- Config/Normalize.lua is the sole owner of persisted tactical and HUD
+    -- defaults. Fetch both views in one normalization pass per refresh; doing
+    -- this through separate helpers doubled the table walk on the HUD watcher.
     if TE.Config and TE.Config.Normalize and type(TE.Config.Normalize.All) == "function" then
-        local _, settings = TE.Config.Normalize:All()
-        return settings
-    end
-    TacticEchoDB = TacticEchoDB or {}
-    TacticEchoDB.tactics = type(TacticEchoDB.tactics) == "table" and TacticEchoDB.tactics or {}
-    return TacticEchoDB.tactics
-end
-
-local function ensureHudSettings()
-    if TE.Config and TE.Config.Normalize and type(TE.Config.Normalize.All) == "function" then
-        local _, _, hud = TE.Config.Normalize:All()
-        if type(hud) == "table" then return hud end
+        local _, settings, hud = TE.Config.Normalize:All()
+        if type(settings) == "table" and type(hud) == "table" then return settings, hud end
     end
     TacticEchoDB = TacticEchoDB or {}
     TacticEchoDB.tactics = type(TacticEchoDB.tactics) == "table" and TacticEchoDB.tactics or {}
     TacticEchoDB.tactics.hud = type(TacticEchoDB.tactics.hud) == "table" and TacticEchoDB.tactics.hud or {}
-    return TacticEchoDB.tactics.hud
+    return TacticEchoDB.tactics, TacticEchoDB.tactics.hud
 end
 
 local function emptyAdvisory(reason)
@@ -957,8 +945,7 @@ function TacticalAdvisors:Refresh(force)
     local primary = TE.TacticalState and TE.TacticalState:GetSnapshot() or nil
     local context = type(runtimeSnapshot) == "table" and type(runtimeSnapshot.context) == "table"
         and runtimeSnapshot.context or (TE.Context and TE.Context:GetPlayer() or {})
-    local settings = ensureSettings()
-    local hud = ensureHudSettings()
+    local settings, hud = ensureConfig()
     local primaryDisplay = primaryDisplayFromState(primary, context)
     if not primaryDisplay and context.inCombat ~= true then
         primaryDisplay = buildOutOfCombatPrimary(context, runtimeSnapshot)

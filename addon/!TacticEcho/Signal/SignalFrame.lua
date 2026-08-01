@@ -46,9 +46,10 @@ local state = "waiting"
 local sequence = 0
 local frameFreshnessCounter = 0
 local sessionEpoch
-local lastRememberedSequence
 local lastRememberedState
 local lastRememberedReason
+local lastRememberedSequenceState
+local lastRememberedAt = -math.huge
 local lastMessage
 local lastEncoded
 local lastPaintedFields
@@ -140,17 +141,49 @@ function SignalFrame:GetSessionPolicyLabel()
 end
 
 local MAX_SIGNAL_FRAMES = 60
+local SIGNAL_HISTORY_HEARTBEAT_SECONDS = 0.50
+local SEQUENCE_STATE_FIELD_COUNT = 27
+local DISPATCH_ATTEMPT_STATE_INDEX = 19
 
-local function remember(encoded, reason)
-    local rememberedSequence = tonumber(encoded.sequence) or 0
+local function sameSequenceState(left, right)
+    if left == right then return true end
+    if type(left) ~= "table" or type(right) ~= "table" then return false end
+    for index = 1, SEQUENCE_STATE_FIELD_COUNT do
+        if left[index] ~= right[index] then return false end
+    end
+    return true
+end
+
+local function sameRememberedState(left, right)
+    if left == right then return true end
+    if type(left) ~= "table" or type(right) ~= "table" then return false end
+    for index = 1, SEQUENCE_STATE_FIELD_COUNT do
+        -- Dispatch attempts intentionally advance on every fresh deliverable
+        -- frame. Keep the latest attempt in the bounded heartbeat record rather
+        -- than allocating SavedVariables history at the 20 Hz transport rate.
+        if index ~= DISPATCH_ATTEMPT_STATE_INDEX and left[index] ~= right[index] then return false end
+    end
+    return true
+end
+
+local function copySequenceState(source)
+    local out = {}
+    for index = 1, SEQUENCE_STATE_FIELD_COUNT do out[index] = source and source[index] or nil end
+    return out
+end
+
+local function remember(encoded, reason, sequenceState, observedAt)
     local rememberedState = encoded.state or "unknown"
     local rememberedReason = reason or "tick"
-    if rememberedSequence == lastRememberedSequence
-        and rememberedState == lastRememberedState
-        and rememberedReason == lastRememberedReason then return end
-    lastRememberedSequence = rememberedSequence
+    observedAt = tonumber(observedAt) or (GetTime and GetTime() or 0)
+    if rememberedState == lastRememberedState
+        and rememberedReason == lastRememberedReason
+        and sameRememberedState(sequenceState, lastRememberedSequenceState)
+        and observedAt - lastRememberedAt < SIGNAL_HISTORY_HEARTBEAT_SECONDS then return end
     lastRememberedState = rememberedState
     lastRememberedReason = rememberedReason
+    lastRememberedSequenceState = copySequenceState(sequenceState)
+    lastRememberedAt = observedAt
 
     local store = ensureStore()
     local record = {
@@ -191,7 +224,7 @@ local function remember(encoded, reason)
         burstPlan = encoded.burstPlan,
         reaction = encoded.reaction,
         observedAt = date("%Y-%m-%d %H:%M:%S"),
-        elapsed = GetTime and GetTime() or 0,
+        elapsed = observedAt,
         reason = reason,
         state = encoded.state,
         intentState = encoded.intentState,
@@ -1297,17 +1330,6 @@ function SignalFrame:BuildBusinessMessage(reason, sampledSpellID, sampledStatus,
     }
 end
 
-local SEQUENCE_STATE_FIELD_COUNT = 27
-
-local function sameSequenceState(left, right)
-    if left == right then return true end
-    if type(left) ~= "table" or type(right) ~= "table" then return false end
-    for index = 1, SEQUENCE_STATE_FIELD_COUNT do
-        if left[index] ~= right[index] then return false end
-    end
-    return true
-end
-
 local function advanceSequence(message, reason)
     local sequenceState = message and message._sequenceState or nil
     if message and message._freshDispatchableFrame == true then
@@ -1431,7 +1453,7 @@ function SignalFrame:Refresh(reason)
     lastMessage = message
     lastEncoded = encoded
     paint(encoded)
-    remember(encoded, message.unresolvedReason or reason)
+    remember(encoded, message.unresolvedReason or reason, message._sequenceState, now)
     if TE.TacticalState and type(TE.TacticalState.Publish) == "function" then
         TE.TacticalState:Publish(message, encoded)
     end
@@ -1458,9 +1480,10 @@ function SignalFrame:ResetSession()
     businessRevision = 0
     lastBusinessMessage = nil
     lastSequenceState = nil
-    lastRememberedSequence = nil
     lastRememberedState = nil
     lastRememberedReason = nil
+    lastRememberedSequenceState = nil
+    lastRememberedAt = -math.huge
     lastPaintedFields = nil
     officialBindingCache.spellID = nil
     officialBindingCache.result = nil

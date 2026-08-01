@@ -1,5 +1,13 @@
 # Tactic Echo 1.1.7 基线：HUD 容器可见性战斗保护收口
 
+## 稳定性与热路径收口
+
+- 主卡拖动与 HUD 抓手只能通过 `beginContainerMove()` / `finishContainerMove()` 改变容器移动状态；`InCombatLockdown()` 为真时不得直接调用 `StartMoving()` 或 `StopMovingOrSizing()`。
+- HUD 运行时只创建主键卡与最多 5 个 AutoBurst 卡。候选历史、打断、控制、位移、防御卡保持空节点，不创建 `TacticalIconButton`，也不进入布局指纹。
+- TEAP v3 的 20 字节协议、50ms transport freshness、可派发 sequence 更新和像素绘制节奏不变。`TacticEchoDB.signal.frames` 只在语义状态变化时立即追加，稳定状态按 0.5 秒心跳追加；逐帧 dispatch attempt 只更新到下一份心跳记录。
+- AutoBurst 的持续 `window_queue_delivery_continues` / `gcd_locked_delivery_continues` 诊断按 plan、step 与 wait phase 合并为 0.5 秒心跳，且不占用 priority lifecycle ring；计划创建、预检、派发、确认、中止、释放与完成记录不合并。
+- `TacticalAdvisors:Refresh()` 每轮只执行一次 `Config.Normalize:All()` 并同时取得 tactical/HUD 配置；不改变 BurstPlanner、BindingToken、TEAP 或 TEK 行为。
+
 ## AutoBurst 窗口确认防卡死
 
 - 当前等待步骤的成功事件只允许匹配声明 SpellID、冻结绑定身份或 Resolver 对该精确步骤给出的有界基础/覆盖等效 SpellID；不得使用技能名、Buff、资源或无关动作条按钮确认。
@@ -33,6 +41,7 @@
 
 ## 验收
 
+- `tests/unit/test_current_scope_efficiency_contract.py`
 - `tests/unit/test_hud_board_combat_protection_contract.py`
 - `tests/unit/test_hud_icon_visibility_contract.py`
 - `tests/unit/test_p57_hud_manual_click_and_auto_interrupt_suspend.py`

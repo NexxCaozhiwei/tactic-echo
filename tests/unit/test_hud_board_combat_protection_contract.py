@@ -26,7 +26,7 @@ def test_tactical_board_defers_container_visibility_in_combat() -> None:
     board = read("UI/TacticalBoard.lua")
     assert "local function applyFrameShown(frame, shown)" in board
     assert "frame.tacticEchoCombatShownPending = shown" in board
-    assert "applyFrameShown(defenseFrame, hasDefense)" in board
+    assert "applyFrameShown(defenseFrame, false)" in board
     assert "applyFrameShown(panel, true)" in board
     assert "applyFrameShown(panel, false); applyFrameShown(defenseFrame, false); return" in board
     assert "defenseFrame:SetShown(hasDefense)" not in board
@@ -42,3 +42,26 @@ def test_tactical_layout_defers_layout_mutations_in_combat() -> None:
     assert "board.tacticEchoPendingLayoutFingerprint = fingerprint" in layout
     assert "including SetScale/SetPoint/SetSize/SetShown" in layout
     assert "board.tacticEchoLayoutDirty = nil" in layout
+
+
+def test_tactical_board_blocks_container_drag_mutations_in_combat() -> None:
+    board = read("UI/TacticalBoard.lua")
+    assert "local function beginContainerMove(frame)" in board
+    assert "frame.tacticEchoCombatDragBlocked = true" in board
+    assert "if not db().locked then self.tacticEchoDragging = beginContainerMove(board) end" in board
+    assert "if self.tacticEchoDragging == true then finishContainerMove(board) end" in board
+    assert "if not db().locked then beginContainerMove(board) end" in board
+    assert "function() finishContainerMove(board) end" in board
+    assert "if not db().locked then board:StartMoving() end" not in board
+    assert "function() board:StopMovingOrSizing(); savePoint(board) end" not in board
+
+
+def test_tactical_board_only_creates_in_scope_hud_cards() -> None:
+    board = read("UI/TacticalBoard.lua")
+    assert 'nodes.primary = TacticalIconButton:Create(board, nil, 68, "main_toggle")' in board
+    assert 'nodes.tactical.burst[index] = TacticalIconButton:Create(board, nil, 46, "manual_action")' in board
+    assert 'nodes.candidates[index] = TacticalIconButton:Create' not in board
+    assert 'interrupt = TacticalIconButton:Create' not in board
+    assert 'control = TacticalIconButton:Create' not in board
+    assert 'mobility = TacticalIconButton:Create' not in board
+    assert 'nodes.defense[index] = TacticalIconButton:Create' not in board

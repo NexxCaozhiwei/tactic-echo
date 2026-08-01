@@ -120,6 +120,8 @@ local PRE_WINDOW_HANDOFF_MIN_HOLD_FRAMES = 4
 -- re-offer it; TEK's global limiter bounds physical input.
 local DECISION_LOG_MIN_SECONDS = 0.35
 local QUIET_DECISION_LOG_MIN_SECONDS = 15.00
+local PROGRESS_LOG_HEARTBEAT_SECONDS = 0.50
+local progressLogState = {}
 
 local PRIORITY_LOG_EVENTS = {
     combat_epoch_started = true,
@@ -157,8 +159,6 @@ local PRIORITY_LOG_EVENTS = {
     sequence_optional_step_skipped = true,
     step_dispatched = true,
     step_confirmed = true,
-    window_queue_delivery_continues = true,
-    gcd_locked_delivery_continues = true,
     inventory_recovery_started = true,
     inventory_recovery_completed = true,
     soft_pause_clock_extended = true,
@@ -271,8 +271,9 @@ local function tactics()
 end
 
 local function log(self, event, fields)
-    local settings = tactics()
-    if settings.autoBurstDebug ~= true and event == "phase" then return end
+    local settings = type(TacticEchoDB) == "table" and type(TacticEchoDB.tactics) == "table"
+        and TacticEchoDB.tactics or nil
+    if (not settings or settings.autoBurstDebug ~= true) and event == "phase" then return end
     local store = ensureStore()
     local record = {
         schema = 1,
@@ -290,6 +291,29 @@ local function log(self, event, fields)
         store.priorityEvents[#store.priorityEvents + 1] = shallowCopy(record)
         while #store.priorityEvents > MAX_PRIORITY_LOGS do table.remove(store.priorityEvents, 1) end
     end
+end
+
+local function shouldLogProgress(self, event)
+    local plan = self and self.plan or nil
+    local planId = plan and plan.id or 0
+    local currentStep = plan and plan.stepIndex or 0
+    local waitPhase = plan and plan.wait and plan.wait.phase or "none"
+    local observedAt = now()
+    local previous = progressLogState[event]
+    if previous
+        and previous.planId == planId
+        and previous.currentStep == currentStep
+        and previous.waitPhase == waitPhase
+        and observedAt - previous.observedAt < PROGRESS_LOG_HEARTBEAT_SECONDS then
+        return false
+    end
+    progressLogState[event] = {
+        planId = planId,
+        currentStep = currentStep,
+        waitPhase = waitPhase,
+        observedAt = observedAt,
+    }
+    return true
 end
 
 local function isInCombat(runtime)
@@ -2598,7 +2622,8 @@ function AutoBurst:Evaluate(official, runtime)
             if result then return result end
             return self:Evaluate(official, runtime)
         end
-        if observeWindowQueueDelivery(plan, step, sample) then
+        if observeWindowQueueDelivery(plan, step, sample)
+            and shouldLogProgress(self, "window_queue_delivery_continues") then
             log(self, "window_queue_delivery_continues", {
                 role = step.role,
                 spellID = step.spellID,
@@ -2672,13 +2697,15 @@ function AutoBurst:Evaluate(official, runtime)
         -- configured rate, allowing the game to accept/queue the binding when
         -- its normal queue window opens. This is not a confirmation shortcut:
         -- the plan still advances only after exact current-step evidence.
-        log(self, "gcd_locked_delivery_continues", {
-            role = step.role,
-            actionKind = stepKind(step),
-            spellID = stepKind(step) == "spell" and step.spellID or nil,
-            inventorySlot = stepKind(step) == "inventory" and inventorySlot(step.inventorySlot) or nil,
-            currentStep = plan.stepIndex,
-        })
+        if shouldLogProgress(self, "gcd_locked_delivery_continues") then
+            log(self, "gcd_locked_delivery_continues", {
+                role = step.role,
+                actionKind = stepKind(step),
+                spellID = stepKind(step) == "spell" and step.spellID or nil,
+                inventorySlot = stepKind(step) == "inventory" and inventorySlot(step.inventorySlot) or nil,
+                currentStep = plan.stepIndex,
+            })
+        end
     end
     if isWindowStep(step) and plan.windowAvailabilityConflict == true
         and isOfficialWindowAvailabilityConflict(sample) then
