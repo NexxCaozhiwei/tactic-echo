@@ -503,6 +503,14 @@ local function profileRule(context)
                     step = {
                         key = entry.key, role = entry.role or "injection", category = "injection",
                         kind = "spell", spellID = spellID, optional = true,
+                        -- Devourer's Void Metamorphosis is gated by its aura-backed
+                        -- Soul resource. Retail can report the verified action as
+                        -- unusable without setting the generic insufficientPower
+                        -- boolean. Keep this compatibility marker profile-scoped;
+                        -- ordinary optional injections retain the strict two-boolean
+                        -- resource contract below.
+                        specialResourceUnusableCompat = profileKey == "DEMONHUNTER_3"
+                            and spellID == 1217605,
                     }
                     firstOptionalSpellID = firstOptionalSpellID or spellID
                 end
@@ -818,7 +826,7 @@ local function classifyDispatchPhase(step, cycle, bindingInfo, iconState, reason
     }
 end
 
-local function optionalInjectionResourceBlock(step, cycle, bindingInfo, iconState)
+local function optionalInjectionResourceBlock(step, cycle, bindingInfo, iconState, allowSpecialResourceCompat)
     if not (isOptionalStep(step) and stepKind(step) == "spell") then return nil end
 
     local runtime = TE.RuntimeSnapshot
@@ -831,6 +839,7 @@ local function optionalInjectionResourceBlock(step, cycle, bindingInfo, iconStat
         and actionSlot and actionSlot > 0
         and spellID ~= nil
     if not (trusted and type(runtimeSnapshot) == "table" and runtime) then return nil end
+    local ownState = ownReadyState(iconState)
 
     -- Prefer the exact spell API: Retail exposes special class resources such
     -- as Devourer Soul Fragments through the public insufficientPower boolean,
@@ -854,7 +863,11 @@ local function optionalInjectionResourceBlock(step, cycle, bindingInfo, iconStat
                 usabilityReason = "resource_usability_read_failed:" .. tostring(usable)
                 usable, notEnoughResource = nil, nil
             end
-            if usable == false and notEnoughResource == true then
+            local specialResourceUnusable = allowSpecialResourceCompat == true
+                and step.specialResourceUnusableCompat == true
+                and ownState ~= "COOLDOWN"
+                and usable == false
+            if usable == false and (notEnoughResource == true or specialResourceUnusable) then
                 return {
                     phase = "RESOURCE_BLOCKED",
                     reason = "optional_injection_resource_insufficient",
@@ -862,7 +875,8 @@ local function optionalInjectionResourceBlock(step, cycle, bindingInfo, iconStat
                     iconState = iconState,
                     resourceBlocked = true,
                     actionUsable = false,
-                    notEnoughResource = true,
+                    notEnoughResource = notEnoughResource == true,
+                    specialResourceUnusableCompat = specialResourceUnusable,
                     resourceUsabilitySource = probe.source,
                     resourceUsabilityReason = usabilityReason,
                 }
@@ -872,7 +886,8 @@ local function optionalInjectionResourceBlock(step, cycle, bindingInfo, iconStat
     return nil
 end
 
-local function stepSample(step, cycle)
+local function stepSample(step, cycle, options)
+    options = type(options) == "table" and options or {}
     local resolveContext = type(cycle) == "table" and cycle.resolveContext or nil
     local bindingInfo, bindingState, bindingReason = resolveStepBinding(step, resolveContext, type(cycle) == "table" and cycle.runtimeSnapshot or nil)
     if bindingState then return { phase = bindingState, reason = bindingReason, bindingInfo = bindingInfo } end
@@ -880,7 +895,8 @@ local function stepSample(step, cycle)
     if iconState and iconState.inventoryEquipmentChanged == true then
         return { phase = "BLOCKED", reason = iconState.cooldownUnknownReason or "inventory_equipment_changed", bindingInfo = bindingInfo, iconState = iconState }
     end
-    local resourceBlock = optionalInjectionResourceBlock(step, cycle, bindingInfo, iconState)
+    local resourceBlock = optionalInjectionResourceBlock(step, cycle, bindingInfo, iconState,
+        options.allowSpecialResourceUnusableCompat == true)
     if resourceBlock then return resourceBlock end
     local ownState, ownReason = ownReadyState(iconState)
     if ownState == "UNKNOWN" and mayDeliverWithUnknownCooldown(iconState) then
@@ -977,6 +993,7 @@ rememberStepObservation = function(self, plan, step, sample, stage)
         resourceBlocked = sample.resourceBlocked == true,
         actionUsable = sample.actionUsable,
         notEnoughResource = sample.notEnoughResource == true,
+        specialResourceUnusableCompat = sample.specialResourceUnusableCompat == true,
         resourceUsabilitySource = sample.resourceUsabilitySource,
         resourceUsabilityReason = sample.resourceUsabilityReason,
         bindingStatus = binding.status,
@@ -2015,6 +2032,8 @@ local function releasePlanForInjectionUnavailable(self, plan, step, sample, reas
         dispatchAttempt = plan.dispatchAttempt or 0,
         cooldownUncertain = type(sample) == "table" and sample.cooldownUncertain == true or false,
         resourceBlocked = type(sample) == "table" and sample.resourceBlocked == true or false,
+        specialResourceUnusableCompat = type(sample) == "table"
+            and sample.specialResourceUnusableCompat == true or false,
     }
     self.lastInjectionPreflight = self.lastSequencePreflight
     if plan.rule and plan.rule.mode == "simple" then
@@ -2676,7 +2695,7 @@ function AutoBurst:Evaluate(official, runtime)
         end
 
         observeLatchedPlanOfficialDeparture(self, plan, officialSpellID, "official_window_departed_while_waiting")
-        local sample = stepSample(step, cycle)
+        local sample = stepSample(step, cycle, { allowSpecialResourceUnusableCompat = true })
         rememberStepObservation(self, plan, step, sample, "wait_confirm")
         local success, source = confirmed(sample, plan.wait.baseline)
         if success then
@@ -2756,7 +2775,7 @@ function AutoBurst:Evaluate(official, runtime)
             "wait_confirm_" .. tostring(sample.phase):lower() .. ":" .. tostring(sample.reason or "unknown"))
     end
 
-    local sample = stepSample(step, cycle)
+    local sample = stepSample(step, cycle, { allowSpecialResourceUnusableCompat = true })
     rememberStepObservation(self, plan, step, sample, "step_pending")
     if sample.phase == "PAUSED" then
         self:SoftPause(sample.reason or "step_paused")

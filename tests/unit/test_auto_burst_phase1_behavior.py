@@ -718,8 +718,8 @@ assert(profile.injectionEntries[1].spellID == 1217605 and profile.injectionEntri
 local sequence, sequenceKey, sequenceReason = TE.BurstProfiles:GetAutoBurstSequence(context)
 assert(sequence ~= nil and sequenceKey == "DEMONHUNTER_3" and sequenceReason == nil)
 assert(sequence.windowSpellID == 1225826 and sequence.injectionCount == 1)
-assert(sequence.entries[1].key == "injection:1217605")
-assert(sequence.entries[2].key == "window" and sequence.entries[2].spellID == 1225826)
+assert(sequence.entries[1].key == "window" and sequence.entries[1].spellID == 1225826)
+assert(sequence.entries[2].key == "injection:1217605")
 
 C_Spell = {
     IsSpellKnown = function(spellID)
@@ -747,6 +747,12 @@ def test_devourer_simple_preflight_skips_resource_blocked_void_metamorphosis() -
     run_lua(AUTO_BURST_HARNESS + r"""
 testContext = { class = "DEMONHUNTER", specIndex = 3, specID = 1480 }
 officialSpellID = 1225826
+settings.burstProfiles.DEMONHUNTER_3 = {
+    autoBurstSequence = {
+        order = { "injection:1217605", "window", "trinket:13", "trinket:14" },
+        enabled = { ["injection:1217605"] = true, ["trinket:13"] = false, ["trinket:14"] = false },
+    },
+}
 bindings[1225826] = "ready"
 bindings[1217605] = "ready"
 bindingTokens[1225826] = 7
@@ -770,6 +776,12 @@ def test_devourer_simple_runtime_resource_drift_skips_injection_and_continues_wi
     run_lua(AUTO_BURST_HARNESS + r"""
 testContext = { class = "DEMONHUNTER", specIndex = 3, specID = 1480 }
 officialSpellID = 1225826
+settings.burstProfiles.DEMONHUNTER_3 = {
+    autoBurstSequence = {
+        order = { "injection:1217605", "window", "trinket:13", "trinket:14" },
+        enabled = { ["injection:1217605"] = true, ["trinket:13"] = false, ["trinket:14"] = false },
+    },
+}
 bindings[1225826] = "ready"
 bindings[1217605] = "ready"
 bindingTokens[1225826] = 7
@@ -820,6 +832,93 @@ assert(skipped.kind == "hold", "resource-blocked post-window injection must fini
 local snapshot = AutoBurst:GetSnapshot()
 assert(snapshot.active == false and snapshot.requireWindowDeparture == true,
     "window-first plan must keep only the normal departure lock after skipping its last optional step")
+""")
+
+
+def test_devourer_window_first_plan_skips_post_injection_when_special_resource_flag_is_missing() -> None:
+    run_lua(AUTO_BURST_HARNESS + r"""
+testContext = { class = "DEMONHUNTER", specIndex = 3, specID = 1480 }
+officialSpellID = 1225826
+settings.burstProfiles.DEMONHUNTER_3 = {
+    autoBurstSequence = {
+        order = { "window", "injection:1217605", "trinket:13", "trinket:14" },
+        enabled = { ["injection:1217605"] = true, ["trinket:13"] = false, ["trinket:14"] = false },
+    },
+}
+bindings[1225826] = "ready"
+bindings[1217605] = "ready"
+bindingTokens[1225826] = 7
+bindingTokens[1217605] = 8
+cooldowns[1225826] = "ready"
+cooldowns[1217605] = "ready"
+-- Retail may expose the aura-backed resource gate only as unusable=false/false.
+-- This compatibility signal must be rechecked after Eradicate, not used to
+-- discard the configured post-window step during initial preflight.
+spellUsability[1217605] = "unusable"
+actionUsability[8] = "unusable"
+
+local window = eval()
+assert(window.kind == "candidate" and window.dispatchSpellID == 1225826)
+AutoBurst:RecordSpellcastSucceeded(1225826)
+cooldowns[1217605] = "unknown"
+local skipped = eval()
+assert(skipped.kind == "hold",
+    "Devourer special-resource unusable=false/false must skip the optional post injection")
+local snapshot = AutoBurst:GetSnapshot()
+assert(snapshot.active == false and snapshot.requireWindowDeparture == true,
+    "skipping Void Metamorphosis must finish the plan with only the departure lock")
+local observation = AutoBurst:GetDiagnostics().lastStepObservation
+assert(observation.resourceBlocked == true and observation.notEnoughResource == false)
+assert(observation.specialResourceUnusableCompat == true,
+    "diagnostics must distinguish the Devourer compatibility classification")
+""")
+
+
+def test_special_resource_unusable_compat_is_scoped_to_devourer_void_metamorphosis() -> None:
+    run_lua(AUTO_BURST_HARNESS + r"""
+spellUsability[31884] = "unusable"
+actionUsability[4] = "unusable"
+
+local injection = eval()
+assert(injection.kind == "candidate" and injection.dispatchSpellID == 31884,
+    "ordinary optional injections must still require explicit insufficientPower=true")
+""")
+
+
+def test_devourer_wait_confirm_releases_when_special_resource_becomes_unusable() -> None:
+    run_lua(AUTO_BURST_HARNESS + r"""
+testContext = { class = "DEMONHUNTER", specIndex = 3, specID = 1480 }
+officialSpellID = 1225826
+settings.burstProfiles.DEMONHUNTER_3 = {
+    autoBurstSequence = {
+        order = { "window", "injection:1217605", "trinket:13", "trinket:14" },
+        enabled = { ["injection:1217605"] = true, ["trinket:13"] = false, ["trinket:14"] = false },
+    },
+}
+bindings[1225826] = "ready"
+bindings[1217605] = "ready"
+bindingTokens[1225826] = 7
+bindingTokens[1217605] = 8
+cooldowns[1225826] = "ready"
+cooldowns[1217605] = "ready"
+spellUsability[1217605] = "ready"
+actionUsability[8] = "ready"
+
+local window = eval()
+assert(window.kind == "candidate" and window.dispatchSpellID == 1225826)
+AutoBurst:RecordSpellcastSucceeded(1225826)
+local injection = eval()
+assert(injection.kind == "candidate" and injection.dispatchSpellID == 1217605,
+    "the test must first enter Void Metamorphosis WAIT_CONFIRM")
+spellUsability[1217605] = "unusable"
+actionUsability[8] = "unusable"
+local released = eval()
+assert(released.kind == "hold", "resource loss during validation must release the optional injection")
+local snapshot = AutoBurst:GetSnapshot()
+assert(snapshot.active == false and snapshot.requireWindowDeparture == true)
+local observation = AutoBurst:GetDiagnostics().lastStepObservation
+assert(observation.stage == "wait_confirm" and observation.resourceBlocked == true)
+assert(observation.specialResourceUnusableCompat == true)
 """)
 
 

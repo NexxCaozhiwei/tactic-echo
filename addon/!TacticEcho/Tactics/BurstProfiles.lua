@@ -336,8 +336,19 @@ local function appendUnique(out, seen, key)
     end
 end
 
-local function autoBurstDefaultOrder(injections)
+local function autoBurstDefaultOrder(injections, profileKey)
     local order, seen = {}, {}
+    -- Devourer's calibrated damage order uses Eradicate as the immutable
+    -- official window before the optional Void Metamorphosis injection.
+    if profileKey == "DEMONHUNTER_3" then
+        appendUnique(order, seen, "window")
+        if injections[1] then appendUnique(order, seen, injections[1].key) end
+        if injections[2] then appendUnique(order, seen, injections[2].key) end
+        if injections[3] then appendUnique(order, seen, injections[3].key) end
+        appendUnique(order, seen, "trinket:13")
+        appendUnique(order, seen, "trinket:14")
+        return order
+    end
     -- Preserve 1.0.25's verified default: first injection precedes the window.
     if injections[1] then appendUnique(order, seen, injections[1].key) end
     appendUnique(order, seen, "window")
@@ -373,7 +384,7 @@ local function buildAutoBurstSequence(profile, profileKey)
 
     local store = autoBurstSequenceStore(profileKey, false) or {}
     local requestedOrder = type(store.order) == "table" and store.order or {}
-    local defaultOrder = autoBurstDefaultOrder(injections)
+    local defaultOrder = autoBurstDefaultOrder(injections, profileKey)
     local order, seen = {}, {}
     for _, key in ipairs(requestedOrder) do
         if byKey[key] then appendUnique(order, seen, key) end

@@ -3,8 +3,8 @@
 ## 噬灭 DH 与空种子专精
 
 - `DEMONHUNTER_3` 必须作为噬灭恶魔猎手显式注册，`specIndex=3`、`specID=1480`；默认窗口技能固定为 `1225826`（根除），默认第一注入技能固定为 `1217605`（虚空变形），不得回退到浩劫/复仇或跨专精共用配置。
-- 噬灭默认序列必须保持 `injection:1217605 → window:1225826`，并继续允许当前专精已学会的额外自定义触发/注入技能。其他没有内置参考触发/注入种子的显式专精保持空列表，但必须允许 `C_Spell.IsSpellKnown` / `IsPlayerSpell` / `IsSpellKnown` 已确认的当前专精技能作为用户自定义条目加入。
-- 用户已明确授权资源不足例外：仅对可选 spell 注入、仅在绑定来源为当前已验证动作栏且存在真实 BindingToken 时，可从共享 `RuntimeSnapshot:GetSpellUsability()` 按精确 SpellID 读取 `usable` / `insufficientPower` 两个公开布尔值，并以 `GetActionUsability()` 作为动作槽兼容回退。该判定必须位于冷却 UNKNOWN 继续派发分支之前；明确 `false/true` 时 `simple` 排除或跳过该注入并继续，`focused` 不建计划或按窗口是否已派发执行既有释放/离开锁规则。窗口步骤、普通不可用及 UNKNOWN 不得据此跳过。
+- 噬灭默认序列必须保持 `window:1225826 → injection:1217605`（根除 → 虚空变形），已有用户自定义排序不得被迁移或覆盖，并继续允许当前专精已学会的额外自定义触发/注入技能。其他没有内置参考触发/注入种子的显式专精保持空列表，但必须允许 `C_Spell.IsSpellKnown` / `IsPlayerSpell` / `IsSpellKnown` 已确认的当前专精技能作为用户自定义条目加入。
+- 用户已明确授权资源不足例外：仅对可选 spell 注入、仅在绑定来源为当前已验证动作栏且存在真实 BindingToken 时，可从共享 `RuntimeSnapshot:GetSpellUsability()` 按精确 SpellID 读取 `usable` / `insufficientPower` 两个公开布尔值，并以 `GetActionUsability()` 作为动作槽兼容回退。该判定必须位于冷却 UNKNOWN 继续派发分支之前；普通注入明确 `false/true` 时 `simple` 排除或跳过该注入并继续，`focused` 不建计划或按窗口是否已派发执行既有释放/离开锁规则。Retail 对噬灭光环型特殊资源可能只返回 `usable=false` 而不设置通用 `insufficientPower`；因此仅允许 `DEMONHUNTER_3` 的 `1217605`（虚空变形）在已验证动作栏/真实 BindingToken 前提下，于计划运行期、首次派发前或等待确认时，把任一精确可用性探针的 `usable=false` 解释为特殊资源不足，并导出 `specialResourceUnusableCompat=true` 诊断；初始预检不得用该兼容形态提前丢弃位于根除之后的虚空变形步骤。窗口步骤、其他专精/技能及 UNKNOWN 不得据此跳过，且不得读取、保存或导出具体资源数值。
 - 资源例外不得读取、保存或导出具体资源数值，不得扩展到窗口、饰品、普通官方推荐、Buff、Debuff、目标状态、BindingToken、TEAP 或 TEK。
 - `noSeedNotice` 只在合并默认与用户配置后的触发、注入列表都为空时成立。用户加入有效自定义条目后必须解除该阻断，并由自定义触发形成固定窗口、由最多前三项已启用自定义注入形成稳定 `injection:<SpellID>` 步骤。
 - 显式注册表必须覆盖 13 个职业共 40 个现行战斗专精；契约测试需逐项校验 class、specIndex 与 specID，防止新专精再次出现 UI 可见但无法保存自定义技能的问题。

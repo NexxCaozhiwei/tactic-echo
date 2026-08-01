@@ -1,7 +1,7 @@
 # 1.1.7 — HUD 容器可见性战斗保护收口
 
-- **噬灭资源不足不再卡校验**：用户明确授权对已验证动作栏来源且具有真实 BindingToken 的可选注入步骤读取公开可用性布尔值。共享快照优先按精确 SpellID 调用 `C_Spell.IsSpellUsable()`，使虚空变形所需的噬灭特殊资源也能返回 `insufficientPower`，并保留 `IsUsableAction` 动作槽兼容回退；资源判定提前到冷却 UNKNOWN 继续派发分支之前。仅在明确 `usable=false` 且 `notEnoughResource=true` 时，`simple` 跳过该注入并继续、`focused` 不创建或释放计划；窗口步骤、普通不可用、UNKNOWN、具体资源数值、BindingToken、TEAP 与 TEK 均不受影响。
-- **噬灭恶魔猎手爆发默认值**：新增 `DEMONHUNTER_3` / SpecID `1480` 显式爆发资料，以 `1225826`（根除）作为默认窗口技能、`1217605`（虚空变形）作为默认第一注入技能，并继续允许添加当前专精已学会的自定义触发与注入 SpellID。
+- **噬灭资源不足不再卡校验**：用户明确授权对已验证动作栏来源且具有真实 BindingToken 的可选注入步骤读取公开可用性布尔值。共享快照优先按精确 SpellID 调用 `C_Spell.IsSpellUsable()`，并保留 `IsUsableAction` 动作槽兼容回退；资源判定提前到冷却 UNKNOWN 继续派发分支之前。普通注入仍只在明确 `usable=false` 且 `notEnoughResource=true` 时跳过；针对 `DEMONHUNTER_3` 的 `1217605`（虚空变形），兼容 Retail 对光环型噬灭特殊资源只返回 `usable=false`、却不设置通用 `insufficientPower` 的实机形态。该精确专精/技能例外同样只作用于可选注入：`simple` 在首次派发前或等待确认时跳过并继续，`focused` 不创建或释放计划；窗口步骤、其他专精/技能、UNKNOWN、具体资源数值、BindingToken、TEAP 与 TEK 均不受影响。
+- **噬灭恶魔猎手爆发默认值**：新增 `DEMONHUNTER_3` / SpecID `1480` 显式爆发资料，以 `1225826`（根除）作为默认窗口技能、`1217605`（虚空变形）作为默认第一注入技能，默认执行顺序固定为 `根除 → 虚空变形`，并继续允许添加当前专精已学会的自定义触发与注入 SpellID；已有用户自定义排序不被覆盖。
 - **纯自定义爆发资料解锁**：`noSeedNotice` 改为检查合并后的有效专精列表，而非只检查内置参考种子；神圣骑、治疗牧等无内置种子的已注册专精，在添加自定义技能后可正常生成 AutoBurst sequence。
 - **全专精覆盖审计**：契约测试逐项校验 13 个职业共 40 个现行战斗专精的 class、specIndex 与 specID，并新增噬灭默认序列、额外自定义技能和既有空种子治疗专精的行为回归。
 - **HUD 拖动保护补回**：主卡和 HUD 抓手统一经 `beginContainerMove()` / `finishContainerMove()`；战斗锁定期间只记录阻断状态，不再直接调用容器 `StartMoving()` / `StopMovingOrSizing()`。

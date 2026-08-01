@@ -65,7 +65,7 @@ trinket:13 / trinket:14   -- 固定装备栏身份，计划创建时锁定实际
 
 ### 3.2 计划创建与预检
 
-命中官方窗口后，先对每个已启用可选步骤执行真实绑定、装备身份、实时自身 CD/充能与 GCD 采样，再决定是否创建计划。用户已明确授权一个窄资源例外：仅对已验证动作栏来源且已有真实 BindingToken 的可选 spell 注入，可经共享 `RuntimeSnapshot:GetActionUsability()` 读取 `usable` / `notEnoughResource` 两个公开布尔值；仅明确 `usable=false` 且 `notEnoughResource=true` 才视为资源不足：
+命中官方窗口后，先对每个已启用可选步骤执行真实绑定、装备身份、实时自身 CD/充能与 GCD 采样，再决定是否创建计划。用户已明确授权一个窄资源例外：仅对已验证动作栏来源且已有真实 BindingToken 的可选 spell 注入，可经共享 `RuntimeSnapshot:GetSpellUsability()` 按精确 SpellID 读取 `usable` / `insufficientPower` 两个公开布尔值，并以 `GetActionUsability()` 作为动作槽兼容回退。普通注入仅明确 `usable=false` 且 `notEnoughResource=true` 才视为资源不足；由于 Retail 对噬灭光环型特殊资源可能只返回 `usable=false` 而不设置通用 `insufficientPower`，仅 `DEMONHUNTER_3` 的 `1217605`（虚空变形）可在相同已验证动作栏/真实 BindingToken 前提下，于计划运行期、首次派发前或等待确认时把精确探针的 `usable=false` 解释为资源不足，并必须记录 `specialResourceUnusableCompat=true`；初始预检不得用该兼容形态提前丢弃位于根除之后的虚空变形步骤：
 
 - `simple`：移除明确自身 CD、冷却 UNKNOWN、无绑定、未装备、装备身份变化或其他硬失效步骤；保留剩余步骤相对顺序。
 - `focused`：任何已启用可选步骤不可用，即不创建计划，官方窗口保持普通路径。
