@@ -113,6 +113,7 @@ function RuntimeSnapshot:Begin(reason, input)
         facts = {
             knownSpell = {},
             spellInfo = {},
+            spellUsability = {},
             itemInfo = {},
             inventoryItem = {},
             itemCount = {},
@@ -237,6 +238,40 @@ function RuntimeSnapshot:GetItemCount(snapshot, itemID)
     end
     snapshot.facts.itemCount[key] = { value = value, reason = reason }
     return value, reason
+end
+
+
+function RuntimeSnapshot:GetSpellUsability(snapshot, spellID)
+    if type(snapshot) ~= "table" then return nil, nil, "runtime_snapshot_missing" end
+    local key = spellCacheKey(spellID)
+    if not key then return nil, nil, "spell_id_invalid" end
+    local cached = snapshot.facts.spellUsability[key]
+    if cached then return cached.usable, cached.notEnough, cached.reason end
+
+    local usable, notEnough, reason
+    if C_Spell and type(C_Spell.IsSpellUsable) == "function" then
+        perfCount("spell_usability_read")
+        local ok, value, resource = guarded("SpellUsability:C_Spell:" .. tostring(key), C_Spell.IsSpellUsable, key)
+        if ok then
+            usable = boolean(value)
+            notEnough = boolean(resource)
+        else
+            reason = "spell_usability_read_failed:" .. tostring(value)
+        end
+    elseif type(IsUsableSpell) == "function" then
+        perfCount("spell_usability_read")
+        local ok, value, resource = guarded("SpellUsability:legacy:" .. tostring(key), IsUsableSpell, key)
+        if ok then
+            usable = boolean(value)
+            notEnough = boolean(resource)
+        else
+            reason = "spell_usability_read_failed:" .. tostring(value)
+        end
+    else
+        reason = "spell_usability_api_unavailable"
+    end
+    snapshot.facts.spellUsability[key] = { usable = usable, notEnough = notEnough, reason = reason }
+    return usable, notEnough, reason
 end
 
 

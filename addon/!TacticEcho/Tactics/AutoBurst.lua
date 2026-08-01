@@ -818,44 +818,40 @@ local function classifyDispatchPhase(step, cycle, bindingInfo, iconState, reason
     }
 end
 
-local function stepSample(step, cycle)
-    local resolveContext = type(cycle) == "table" and cycle.resolveContext or nil
-    local bindingInfo, bindingState, bindingReason = resolveStepBinding(step, resolveContext, type(cycle) == "table" and cycle.runtimeSnapshot or nil)
-    if bindingState then return { phase = bindingState, reason = bindingReason, bindingInfo = bindingInfo } end
-    local iconState, iconReason = collectCooldownState(step, cycle, bindingInfo)
-    if iconState and iconState.inventoryEquipmentChanged == true then
-        return { phase = "BLOCKED", reason = iconState.cooldownUnknownReason or "inventory_equipment_changed", bindingInfo = bindingInfo, iconState = iconState }
-    end
-    local ownState, ownReason = ownReadyState(iconState)
-    if ownState == "UNKNOWN" and mayDeliverWithUnknownCooldown(iconState) then
-        return classifyDispatchPhase(step, cycle, bindingInfo, iconState, ownReason or iconReason, true)
-    end
-    if ownState ~= "OWN_READY" then
-        return { phase = ownState, reason = ownReason or iconReason, bindingInfo = bindingInfo, iconState = iconState }
-    end
+local function optionalInjectionResourceBlock(step, cycle, bindingInfo, iconState)
+    if not (isOptionalStep(step) and stepKind(step) == "spell") then return nil end
 
-    -- User-authorized narrow exception for resource-gated optional injections.
-    -- Read only the two public booleans for the exact, already-verified action
-    -- slot from the shared RuntimeSnapshot. Never read or retain a resource
-    -- amount, and never apply this signal to the immutable window step,
-    -- inventory steps, an untrusted action-bar source, or an UNKNOWN result.
-    if isOptionalStep(step) and stepKind(step) == "spell" then
-        local runtime = TE.RuntimeSnapshot
-        local runtimeSnapshot = type(cycle) == "table" and cycle.runtimeSnapshot or nil
-        local actionSlot = number(bindingInfo and (bindingInfo.actionSlot or bindingInfo.slot))
-        local trusted = bindingInfo and bindingInfo.status == "Ready"
-            and bindingInfo.actionBarStateTrusted == true
-            and (number(bindingInfo.bindingToken) or 0) > 0
-            and actionSlot and actionSlot > 0
-        if trusted and type(runtimeSnapshot) == "table" and runtime
-            and type(runtime.GetActionUsability) == "function" then
+    local runtime = TE.RuntimeSnapshot
+    local runtimeSnapshot = type(cycle) == "table" and cycle.runtimeSnapshot or nil
+    local spellID = positiveSpellID(step and step.spellID)
+    local actionSlot = number(bindingInfo and (bindingInfo.actionSlot or bindingInfo.slot))
+    local trusted = bindingInfo and bindingInfo.status == "Ready"
+        and bindingInfo.actionBarStateTrusted == true
+        and (number(bindingInfo.bindingToken) or 0) > 0
+        and actionSlot and actionSlot > 0
+        and spellID ~= nil
+    if not (trusted and type(runtimeSnapshot) == "table" and runtime) then return nil end
+
+    -- Prefer the exact spell API: Retail exposes special class resources such
+    -- as Devourer Soul Fragments through the public insufficientPower boolean,
+    -- while the action-slot compatibility API can leave that second result
+    -- unset. Both probes remain boolean-only and are scoped to the already
+    -- verified action the existing BindingToken would dispatch.
+    local probes = {
+        { method = "GetSpellUsability", value = spellID, source = "spell" },
+        { method = "GetActionUsability", value = actionSlot, source = "action" },
+    }
+    for _, probe in ipairs(probes) do
+        local fn = runtime[probe.method]
+        if type(fn) == "function" then
             local ok, usable, notEnoughResource, usabilityReason = pcall(
-                runtime.GetActionUsability, runtime, runtimeSnapshot, actionSlot
+                fn, runtime, runtimeSnapshot, probe.value
             )
             if ok then
                 usable = boolean(usable)
                 notEnoughResource = boolean(notEnoughResource)
             else
+                usabilityReason = "resource_usability_read_failed:" .. tostring(usable)
                 usable, notEnoughResource = nil, nil
             end
             if usable == false and notEnoughResource == true then
@@ -867,11 +863,33 @@ local function stepSample(step, cycle)
                     resourceBlocked = true,
                     actionUsable = false,
                     notEnoughResource = true,
+                    resourceUsabilitySource = probe.source,
                     resourceUsabilityReason = usabilityReason,
                 }
             end
         end
     end
+    return nil
+end
+
+local function stepSample(step, cycle)
+    local resolveContext = type(cycle) == "table" and cycle.resolveContext or nil
+    local bindingInfo, bindingState, bindingReason = resolveStepBinding(step, resolveContext, type(cycle) == "table" and cycle.runtimeSnapshot or nil)
+    if bindingState then return { phase = bindingState, reason = bindingReason, bindingInfo = bindingInfo } end
+    local iconState, iconReason = collectCooldownState(step, cycle, bindingInfo)
+    if iconState and iconState.inventoryEquipmentChanged == true then
+        return { phase = "BLOCKED", reason = iconState.cooldownUnknownReason or "inventory_equipment_changed", bindingInfo = bindingInfo, iconState = iconState }
+    end
+    local resourceBlock = optionalInjectionResourceBlock(step, cycle, bindingInfo, iconState)
+    if resourceBlock then return resourceBlock end
+    local ownState, ownReason = ownReadyState(iconState)
+    if ownState == "UNKNOWN" and mayDeliverWithUnknownCooldown(iconState) then
+        return classifyDispatchPhase(step, cycle, bindingInfo, iconState, ownReason or iconReason, true)
+    end
+    if ownState ~= "OWN_READY" then
+        return { phase = ownState, reason = ownReason or iconReason, bindingInfo = bindingInfo, iconState = iconState }
+    end
+
     return classifyDispatchPhase(step, cycle, bindingInfo, iconState, nil, false)
 end
 
@@ -959,6 +977,7 @@ rememberStepObservation = function(self, plan, step, sample, stage)
         resourceBlocked = sample.resourceBlocked == true,
         actionUsable = sample.actionUsable,
         notEnoughResource = sample.notEnoughResource == true,
+        resourceUsabilitySource = sample.resourceUsabilitySource,
         resourceUsabilityReason = sample.resourceUsabilityReason,
         bindingStatus = binding.status,
         bindingReason = binding.reason,
