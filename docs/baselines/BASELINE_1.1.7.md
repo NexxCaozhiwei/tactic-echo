@@ -1,5 +1,11 @@
 # Tactic Echo 1.1.7 基线：HUD 容器可见性战斗保护收口
 
+## 自动爆发快捷键与状态码
+
+- 设置中心的整体启停快捷键下方必须提供独立的自动爆发开关快捷键，并保存为 `settings.autoBurstToggleHotkey`。该快捷键只能切换 `tactics.autoBurstEnabled`，不得修改整体运行状态、官方推荐、BindingToken、TEAP、TEK 或输入派发门禁。
+- 自动爆发快捷键与整体启停快捷键不得使用同一按键；覆盖绑定在战斗中只记录 pending，脱战后再应用，保持既有安全边界。
+- 自动派发处于 `dispatchable` 状态时，自动爆发关闭显示 `LCC`，自动爆发开启显示 `HAD`。暂停、待命、阻断、施法、引导与射击等其他状态文案保持不变；HUD 主键按钮自身仍显示“可用”，不得被改写为 `LCC` 或 `HAD`。
+
 ## 噬灭 DH 与空种子专精
 
 - 噬灭默认后置 `injection:1217605` 的资源判定必须以已确认 `window:1225826` 之后的新鲜共享快照为准。根除前若绑定、真实 BindingToken 与自身 CD 合格，但仅公开可用性布尔值显示资源不足，预检必须保留该步骤并导出 `resourceCheckDeferred=true`、`deferredResourceOrder`；不得让根除前的资源状态取消整轮爆发。
@@ -53,6 +59,8 @@
 
 ## 验收
 
+- `tests/unit/test_auto_burst_hotkey_status_contract.py`
+- `tests/unit/test_state_display_unification_contract.py`
 - `tests/unit/test_auto_burst_phase1_behavior.py::test_sparse_registered_specs_accept_custom_trigger_and_injection_sequences`
 - `tests/unit/test_auto_burst_phase1_behavior.py::test_devourer_defaults_build_sequence_and_accept_additional_custom_skills`
 - `tests/unit/test_auto_burst_phase1_behavior.py::test_devourer_simple_preflight_skips_resource_blocked_void_metamorphosis`

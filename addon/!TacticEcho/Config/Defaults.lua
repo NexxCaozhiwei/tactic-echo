@@ -13,6 +13,7 @@ local Defaults = {
         sessionPolicy = "pause_out_of_combat",
         protocolMode = "v3_dynamic",
         toggleHotkey = "",
+        autoBurstToggleHotkey = "",
         performanceDiagnostics = false,
     },
     hud = {

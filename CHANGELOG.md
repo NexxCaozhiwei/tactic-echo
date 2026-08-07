@@ -1,4 +1,6 @@
 # 1.1.7 — HUD 容器可见性战斗保护收口
+- **自动爆发独立快捷键**：在整体启停快捷键下方新增独立的“自动爆发开关快捷键”，沿用 ControlPanel 的覆盖绑定与战斗中延迟应用机制；快捷键只切换 `tactics.autoBurstEnabled`，与整体启停快捷键冲突时拒绝保存，不改变官方推荐、BindingToken、TEAP 或 TEK。
+- **可派发状态区分**：自动派发处于可派发状态时，自动爆发关闭显示 `LCC`，自动爆发开启显示 `HAD`；暂停、待命、阻断、施法/引导等既有状态保持不变，HUD 主键按钮仍显示原有“可用”语义。
 - **根除后的虚空变形资源复核**：噬灭默认 `根除 → 虚空变形` 序列不再用根除释放前的资源布尔值排除后置注入；初始预检在绑定、BindingToken 与自身 CD 合格时记录 `resourceCheckDeferred` 并保留该步骤。根除获得精确确认后进入 `POST_WINDOW_RESOURCE_SETTLING`：共享 GCD 锁定期间只观察，新的公开可用性布尔值明确可用时立即在同一轮爆发派发；持续不可用或 UNKNOWN 必须由两个不同 `RuntimeSnapshot.cycleId` 的非 GCD 锁定样本确认后才跳过，重复评估同一快照不得重复计数。该规则仅限 `DEMONHUNTER_3` 的后置 `1217605`，前置注入、其他技能与其他专精保持原预检规则，不读取具体资源数值，也不改变 BindingToken、TEAP 或 TEK。
 
 - **噬灭资源不足不再卡校验**：用户明确授权对已验证动作栏来源且具有真实 BindingToken 的可选注入步骤读取公开可用性布尔值。共享快照优先按精确 SpellID 调用 `C_Spell.IsSpellUsable()`，并保留 `IsUsableAction` 动作槽兼容回退；资源判定提前到冷却 UNKNOWN 继续派发分支之前。普通注入仍只在明确 `usable=false` 且 `notEnoughResource=true` 时跳过；针对 `DEMONHUNTER_3` 的 `1217605`（虚空变形），兼容 Retail 对光环型噬灭特殊资源只返回 `usable=false`、却不设置通用 `insufficientPower` 的实机形态。该精确专精/技能例外同样只作用于可选注入：`simple` 在首次派发前或等待确认时跳过并继续，`focused` 不创建或释放计划；窗口步骤、其他专精/技能、UNKNOWN、具体资源数值、BindingToken、TEAP 与 TEK 均不受影响。

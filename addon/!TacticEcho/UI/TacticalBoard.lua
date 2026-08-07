@@ -158,8 +158,11 @@ end
 
 local function statusText(primary)
     local visual = primary and primary.visual or {}
+    local autoBurstEnabled = type(TacticEchoDB) == "table"
+        and type(TacticEchoDB.tactics) == "table"
+        and TacticEchoDB.tactics.autoBurstEnabled == true
     local labels = {
-        dispatchable = "HAD",
+        dispatchable = autoBurstEnabled and "HAD" or "LCC",
         primary = "官方推荐",
         display_only = "仅显示",
         blocked = "已阻断",

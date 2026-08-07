@@ -33,6 +33,10 @@ local hotkeyOwner
 local hotkeyCapture
 local pendingToggleHotkey
 local pendingApplyAfterCombat = false
+local autoBurstHotkeyOwner
+local autoBurstHotkeyCapture
+local pendingAutoBurstHotkey
+local pendingAutoBurstApplyAfterCombat = false
 local pendingCompactPositionSave = false
 local compactToggleButton
 
@@ -783,9 +787,18 @@ local function setHotkeyHint(message)
     setLabel("footerStatus", message)
 end
 
+local function setAutoBurstHotkeyHint(message)
+    setLabel("generalAutoBurstHotkey", message)
+    setLabel("footerStatus", message)
+end
+
 function ControlPanel:ApplyToggleHotkey(binding, fromStored)
     binding = type(binding) == "string" and binding or ""
     local settings = ensureSettings()
+    if binding ~= "" and binding == settings.autoBurstToggleHotkey then
+        setHotkeyHint("启动/暂停快捷键不能与自动爆发快捷键相同。")
+        return false, "auto_burst_hotkey_conflict"
+    end
     if not fromStored then settings.toggleHotkey = binding end
     pendingToggleHotkey = binding
     if InCombatLockdown and InCombatLockdown() then
@@ -824,6 +837,67 @@ function ControlPanel:ApplyStoredToggleHotkey()
     return self:ApplyToggleHotkey(ensureSettings().toggleHotkey or "", true)
 end
 
+local function ensureAutoBurstHotkeyOwner()
+    if autoBurstHotkeyOwner then return autoBurstHotkeyOwner end
+    autoBurstHotkeyOwner = CreateFrame("Button", "TacticEchoAutoBurstToggleHotkeyButton", UIParent)
+    autoBurstHotkeyOwner:SetSize(1, 1)
+    autoBurstHotkeyOwner:SetPoint("TOPLEFT", UIParent, "TOPLEFT", -12, 12)
+    autoBurstHotkeyOwner:SetAlpha(0)
+    autoBurstHotkeyOwner:RegisterForClicks("AnyUp")
+    autoBurstHotkeyOwner:SetScript("OnClick", function()
+        if TE.ControlPanel then TE.ControlPanel:ToggleAutoBurst("hotkey") end
+    end)
+    autoBurstHotkeyOwner:Show()
+    return autoBurstHotkeyOwner
+end
+
+function ControlPanel:ApplyAutoBurstHotkey(binding, fromStored)
+    binding = type(binding) == "string" and binding or ""
+    local settings = ensureSettings()
+    if binding ~= "" and binding == settings.toggleHotkey then
+        setAutoBurstHotkeyHint("自动爆发快捷键不能与启动/暂停快捷键相同。")
+        return false, "toggle_hotkey_conflict"
+    end
+    if not fromStored then settings.autoBurstToggleHotkey = binding end
+    pendingAutoBurstHotkey = binding
+    if InCombatLockdown and InCombatLockdown() then
+        pendingAutoBurstApplyAfterCombat = true
+        setAutoBurstHotkeyHint("自动爆发快捷键已保存，将在脱战后应用：" .. formatHotkey(binding))
+        self:UpdateInputStatus()
+        return false, "deferred_in_combat"
+    end
+    local owner = ensureAutoBurstHotkeyOwner()
+    local clearOk, clearError = pcall(function()
+        if type(ClearOverrideBindings) == "function" then ClearOverrideBindings(owner) end
+    end)
+    if not clearOk then
+        setAutoBurstHotkeyHint("清除旧自动爆发快捷键失败：" .. tostring(clearError))
+        return false, "clear_override_failed"
+    end
+    if binding ~= "" then
+        if type(SetOverrideBindingClick) ~= "function" then
+            setAutoBurstHotkeyHint("当前客户端不支持临时覆盖快捷键")
+            return false, "override_binding_unavailable"
+        end
+        local ok, err = pcall(SetOverrideBindingClick, owner, true, binding,
+            "TacticEchoAutoBurstToggleHotkeyButton", "LeftButton")
+        if not ok then
+            setAutoBurstHotkeyHint("应用自动爆发快捷键失败：" .. tostring(err))
+            return false, "override_binding_failed"
+        end
+    end
+    pendingAutoBurstApplyAfterCombat = false
+    settings.autoBurstToggleHotkey = binding
+    setAutoBurstHotkeyHint(binding == "" and "自动爆发快捷键已清除。"
+        or ("自动爆发快捷键已应用：" .. formatHotkey(binding)))
+    self:UpdateInputStatus()
+    return true
+end
+
+function ControlPanel:ApplyStoredAutoBurstHotkey()
+    return self:ApplyAutoBurstHotkey(ensureSettings().autoBurstToggleHotkey or "", true)
+end
+
 local function ensureHotkeyCapture()
     if hotkeyCapture then return hotkeyCapture end
     hotkeyCapture = CreateFrame("EditBox", "TacticEchoToggleHotkeyCapture", UIParent, "InputBoxTemplate")
@@ -854,11 +928,50 @@ local function ensureHotkeyCapture()
     return hotkeyCapture
 end
 
+local function ensureAutoBurstHotkeyCapture()
+    if autoBurstHotkeyCapture then return autoBurstHotkeyCapture end
+    autoBurstHotkeyCapture = CreateFrame("EditBox", "TacticEchoAutoBurstHotkeyCapture", UIParent, "InputBoxTemplate")
+    autoBurstHotkeyCapture:SetSize(1, 1)
+    autoBurstHotkeyCapture:SetPoint("CENTER", UIParent, "CENTER", 0, 0)
+    autoBurstHotkeyCapture:SetAlpha(0)
+    autoBurstHotkeyCapture:SetFrameStrata("TOOLTIP")
+    autoBurstHotkeyCapture:SetAutoFocus(false)
+    autoBurstHotkeyCapture:EnableKeyboard(true)
+    if type(autoBurstHotkeyCapture.SetPropagateKeyboardInput) == "function" then
+        autoBurstHotkeyCapture:SetPropagateKeyboardInput(false)
+    end
+    autoBurstHotkeyCapture:SetScript("OnEscapePressed", function(box)
+        box:ClearFocus(); box:Hide()
+        setAutoBurstHotkeyHint("自动爆发快捷键录入已取消。")
+    end)
+    autoBurstHotkeyCapture:SetScript("OnKeyDown", function(box, key)
+        local captured = normalizeCapturedHotkey(key)
+        if not captured then return end
+        box:ClearFocus(); box:Hide()
+        if captured == "__cancel" then
+            setAutoBurstHotkeyHint("自动爆发快捷键录入已取消。")
+            return
+        end
+        pendingAutoBurstHotkey = captured
+        setAutoBurstHotkeyHint("待应用的自动爆发快捷键：" .. formatHotkey(captured) .. "。点击“应用”提交。")
+        ControlPanel:UpdateInputStatus()
+    end)
+    autoBurstHotkeyCapture:Hide()
+    return autoBurstHotkeyCapture
+end
+
 function ControlPanel:BeginToggleHotkeyCapture()
     local capture = ensureHotkeyCapture()
     capture:SetText("")
     capture:Show(); capture:SetFocus()
     setHotkeyHint("请按下启动/暂停快捷键组合；按 Esc 取消。该键只以临时覆盖方式服务于 TE，不会写入游戏动作条绑定。")
+end
+
+function ControlPanel:BeginAutoBurstHotkeyCapture()
+    local capture = ensureAutoBurstHotkeyCapture()
+    capture:SetText("")
+    capture:Show(); capture:SetFocus()
+    setAutoBurstHotkeyHint("请按下自动爆发开关快捷键组合；按 Esc 取消。该键只切换自动爆发设置。")
 end
 
 function ControlPanel:ApplyVisuals(saveProfile)
@@ -898,8 +1011,22 @@ function ControlPanel:ToggleRun()
     if state == "armed" then self:PauseDynamic() else self:StartDynamic() end
 end
 
+function ControlPanel:ToggleAutoBurst(source)
+    local tactics = select(1, ensureTactics())
+    tactics.autoBurstEnabled = tactics.autoBurstEnabled ~= true
+    panelStatus(tactics.autoBurstEnabled == true
+        and "自动爆发已开启；可派发状态显示 HAD。"
+        or "自动爆发已关闭；可派发状态显示 LCC。")
+    self:ApplyVisuals(false)
+    return tactics.autoBurstEnabled == true, source
+end
+
 function ControlPanel:SetToggleHotkey(binding)
     return self:ApplyToggleHotkey(binding, false)
+end
+
+function ControlPanel:SetAutoBurstHotkey(binding)
+    return self:ApplyAutoBurstHotkey(binding, false)
 end
 
 local function savePanelPosition(presentation)
@@ -1410,6 +1537,11 @@ function ControlPanel:UpdateInputStatus()
             .. "\n脱战停止：脱战显示暂停，进战后仍暂停，需手动启动。"
             .. "\n“运行中”仅代表用户已启动动态链路；实际派发仍受 TEAP、前台与安全门禁约束。")
         setLabel("generalHotkey", settings.toggleHotkey ~= "" and ("TE 快捷键：" .. settings.toggleHotkey) or "TE 快捷键：未设置")
+        local autoBurstToggleHotkey = type(settings.autoBurstToggleHotkey) == "string"
+            and settings.autoBurstToggleHotkey or ""
+        setLabel("generalAutoBurstHotkey", autoBurstToggleHotkey ~= ""
+            and ("自动爆发快捷键：" .. autoBurstToggleHotkey)
+            or "自动爆发快捷键：未设置")
     end
 
     if page == "hud" then
@@ -1647,6 +1779,16 @@ local function buildGeneral(pane)
     createActionButton(pane, "清除", 508, y - 58, 90, function() ControlPanel:SetToggleHotkey("") end)
     createText(pane, "GameFontDisableSmall", 14, y - 100, 720,
         "TE 快捷键通过脱战时的临时覆盖绑定实现；不会保存或改写游戏动作条键位。动作条技能键位始终由 Blizzard 绑定解析器读取。")
+    createReadout(pane, "generalAutoBurstHotkey", "自动爆发开关快捷键", 14, y - 140, 720, "GameFontHighlightSmall")
+    local autoBurstHotkeyBox = createEditBox(pane, "快捷键", LEFT_X, y - 198, 150,
+        ensureSettings().autoBurstToggleHotkey)
+    createActionButton(pane, "录入", 326, y - 198, 72, function() ControlPanel:BeginAutoBurstHotkeyCapture() end)
+    createActionButton(pane, "应用", 408, y - 198, 90, function()
+        ControlPanel:SetAutoBurstHotkey(pendingAutoBurstHotkey or autoBurstHotkeyBox:GetText())
+    end)
+    createActionButton(pane, "清除", 508, y - 198, 90, function() ControlPanel:SetAutoBurstHotkey("") end)
+    createText(pane, "GameFontDisableSmall", 14, y - 240, 720,
+        "该快捷键只切换自动爆发，不改变整体启动/暂停状态、官方推荐、BindingToken、TEAP 或 TEK 门禁。")
 end
 
 local function buildHUD(pane)
@@ -2540,6 +2682,7 @@ TE:RegisterEventsSafe(eventFrame, { "PLAYER_LOGIN", "PLAYER_REGEN_ENABLED" })
 eventFrame:SetScript("OnEvent", function(_, event)
     if event == "PLAYER_REGEN_ENABLED" then
         if pendingApplyAfterCombat then ControlPanel:ApplyStoredToggleHotkey() end
+        if pendingAutoBurstApplyAfterCombat then ControlPanel:ApplyStoredAutoBurstHotkey() end
         if pendingCompactPositionSave then
             pendingCompactPositionSave = false
             if root().minimized == true then savePanelPosition("compact") end
@@ -2549,6 +2692,7 @@ eventFrame:SetScript("OnEvent", function(_, event)
     local store = root()
     ControlPanel:Create()
     ControlPanel:ApplyStoredToggleHotkey()
+    ControlPanel:ApplyStoredAutoBurstHotkey()
     if store.visible and store.minimized == true then
         frame:Show()
         ControlPanel:UpdateInputStatus()

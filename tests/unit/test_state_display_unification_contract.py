@@ -61,7 +61,7 @@ class StateDisplayUnificationContractTests(unittest.TestCase):
         board = BOARD.read_text(encoding="utf-8")
         styles = STYLES.read_text(encoding="utf-8")
         icon = ICON.read_text(encoding="utf-8")
-        self.assertIn('dispatchable = "HAD"', board)
+        self.assertIn('dispatchable = autoBurstEnabled and "HAD" or "LCC"', board)
         self.assertIn('dispatchable = "可用"', icon)
         self.assertNotIn('label = "HAD"', styles)
         self.assertIn('channeling = "引导中"', board)
