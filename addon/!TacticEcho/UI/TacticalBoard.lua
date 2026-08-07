@@ -400,7 +400,7 @@ local function renderInternal(self, snapshot)
         model.tactical = { burst = {} }
     end
 
-    if model.tactical and (hud.compact == true or hud.queueMode == "primary") then
+    if model.tactical and hud.queueMode == "primary" then
         for _, item in ipairs(model.tactical.burst or {}) do item.hidden = true end
     end
 

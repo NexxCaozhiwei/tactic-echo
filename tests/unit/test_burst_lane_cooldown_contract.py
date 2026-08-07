@@ -14,8 +14,8 @@ def test_burst_and_interrupt_control_are_separate_layout_lanes() -> None:
     assert "local interruptControlLane = {" in layout
     assert 'appendLane(burstLane, base.minX, laneY, hud.burstGrowth or "RIGHT")' in layout
     assert 'appendLane(interruptControlLane, base.minX, laneY, hud.tacticalGrowth or "RIGHT")' in layout
-    assert '"爆发队列方向"' in panel
-    assert '"打断控制方向"' in panel
+    assert '"爆发方向"' in panel
+    assert '"打断控制方向"' not in panel
 
 def test_burst_window_and_followup_cooldowns_remain_renderable() -> None:
     planner = read("Tactics/BurstPlanner.lua")

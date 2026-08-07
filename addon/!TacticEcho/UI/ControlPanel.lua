@@ -1,13 +1,7 @@
 -- Tactic Echo settings center (TEUI v2).
---
--- The settings center intentionally separates three concerns:
---   1. visual presentation (HUD / icon labels / layout),
---   2. display-only tactical advisory policy (burst, interrupt, defense), and
---   3. configuration profiles.
---
--- No setting in this file creates a recommendation, writes a binding,
--- changes a BindingToken, mutates TEAP, or asks TEK to send input. Tactical
--- modules remain display-only even when their policy pages are enabled.
+-- The four current pages cover runtime, HUD, AutoBurst and profiles. This file
+-- only changes settings/presentation and never creates a recommendation,
+-- BindingToken, TEAP frame or TEK input request.
 local TE = _G.TacticEcho
 
 local ControlPanel = {}
@@ -21,8 +15,7 @@ local normalFooter
 local compactView
 local activePage = "general"
 local panes = {}
-local burstSubpages = {}
-local interruptSubpages = {}
+local profilesAdvancedExpanded = false
 local navButtons = {}
 local labels = {}
 local controls = {}
@@ -62,39 +55,18 @@ local CONTROL_GAP = 8
 
 local PAGE_META = {
     general = { label = "常规", description = "运行状态、手动启停 / 脱战策略与 Tactic Echo 自身快捷键。" },
-    hud = { label = "HUD", description = "四模块显示、图标大小、队列模式、全局标签和布局。" },
-    main = { label = "主键", description = "主推荐队列的按键、充能、冷却时间和转盘遮罩样式。" },
-    burst = { label = "爆发", description = "爆发窗口辅助、可排序自动爆发与爆发图标样式。" },
-    interrupt = { label = "打断与控制", description = "打断与控制的自动化预设、目标优先级、读条策略与图标样式。" },
-    defense = { label = "防御与生存", description = "专精防御提示、治疗石与血瓶提示的显示策略。" },
-    monitor = { label = "监控与调试", description = "动作条、专精、推荐链路、协议与安全诊断。" },
-    profiles = { label = "配置文件", description = "Default、角色、职业、专精的配置保存与自动切换。" },
+    hud = { label = "HUD", description = "主键与自动爆发队列的显示、大小、方向和常用外观。" },
+    burst = { label = "自动爆发", description = "自动爆发开关、执行模式、当前专精顺序与技能列表。" },
+    profiles = { label = "配置文件", description = "保存、载入和管理配置；范围自动切换位于高级设置。" },
 }
 
-local NAV_ORDER = { "general", "hud", "main", "burst", "interrupt", "defense", "monitor", "profiles" }
+local NAV_ORDER = { "general", "hud", "burst", "profiles" }
 local LEGACY_PAGE_ALIAS = {
-    tactics = "hud", actionbar = "monitor", safety = "monitor", defensive = "defense",
+    main = "hud", tactics = "hud", interrupt = "hud", control = "hud",
+    defense = "hud", defensive = "hud", actionbar = "general",
+    safety = "general", monitor = "general", debug = "general",
 }
-PAGE_META.interrupt = nil
-PAGE_META.defense = nil
-PAGE_META.monitor = nil
 PAGE_META.hud.description = "主键与自动爆发 HUD 的显示、图标大小、队列模式、标签和布局。"
-NAV_ORDER = { "general", "hud", "main", "burst", "profiles" }
-LEGACY_PAGE_ALIAS.actionbar = "general"
-LEGACY_PAGE_ALIAS.safety = "general"
-LEGACY_PAGE_ALIAS.defensive = "hud"
-LEGACY_PAGE_ALIAS.interrupt = "hud"
-LEGACY_PAGE_ALIAS.control = "hud"
-LEGACY_PAGE_ALIAS.defense = "hud"
-LEGACY_PAGE_ALIAS.monitor = "general"
-LEGACY_PAGE_ALIAS.debug = "general"
--- Legacy labels are retained for external slash/menu integrations only. They
--- map into the eight pages above and never create duplicate navigation entries.
-local LEGACY_PAGE_LABELS = {
-    actionbar = { label = "动态动作条" },
-    tactics = { label = "战术显示" },
-    safety = { label = "派发与安全" },
-}
 
 local COLOR_PRESETS = {
     white = { label = "白色", color = { r = 1.00, g = 1.00, b = 1.00, a = 1.00 } },
@@ -147,6 +119,7 @@ local function root()
     TacticEchoDB.ui.settingsCenter = type(TacticEchoDB.ui.settingsCenter) == "table" and TacticEchoDB.ui.settingsCenter or {}
     local store = TacticEchoDB.ui.settingsCenter
     if TacticEchoDB.ui.settingsCenter.minimized == nil then TacticEchoDB.ui.settingsCenter.minimized = false end
+    store.burstSubpage = nil
     store.compact = type(store.compact) == "table" and store.compact or {}
     return store
 end
@@ -285,14 +258,6 @@ local function setModuleIconSize(key, value)
     elseif key == "burst" or key == "interrupt" then
         hud.tacticalSize = value
     end
-end
-
-local function getCurrentBurstOverride()
-    local tactics = select(1, ensureTactics())
-    local context = TE.Context and TE.Context:GetPlayer() or {}
-    local key = tostring(context.class or "UNKNOWN") .. "_" .. tostring(tonumber(context.specIndex) or 0)
-    tactics.burstProfiles[key] = type(tactics.burstProfiles[key]) == "table" and tactics.burstProfiles[key] or {}
-    return tactics.burstProfiles[key], key, context
 end
 
 local function panelBackdrop(target, r, g, b, a, br, bg, bb, ba)
@@ -473,13 +438,6 @@ local function createNumberStepper(parent, label, x, y, width, getter, setter, s
     registerControl(refresh)
     refresh()
     return minus, plus
-end
-
-local function createColorChoice(parent, label, x, y, getter, setter)
-    local choices = {}
-    for key, preset in pairs(COLOR_PRESETS) do choices[#choices + 1] = { value = key, label = preset.label } end
-    table.sort(choices, function(left, right) return left.label < right.label end)
-    return createChoice(parent, label, x, y, 150, choices, getter, setter)
 end
 
 local function createReadout(parent, key, title, x, y, width, template)
@@ -707,31 +665,6 @@ local function getSnapshot()
         return TE.TacticalAdvisors:GetSnapshot()
     end
     return {}
-end
-
-local function specialActionObservation(snapshot)
-    local state = snapshot and snapshot.specialActionBar or nil
-    if type(state) ~= "table" then return nil end
-    if state.active == true then
-        return "替换型特殊动作条已阻断：" .. tostring(state.reason or "unknown")
-    end
-    if state.extraActionVisible == true then
-        local sources = type(state.extraActionSources) == "table" and table.concat(state.extraActionSources, ", ") or ""
-        return "额外动作条：已显示（仅观察，不阻断）" .. (sources ~= "" and " · " .. sources or "")
-    end
-    return nil
-end
-
-local function getBindingSummary()
-    local resolver = TE.ActionBarBindingResolver
-    if not resolver or type(resolver.GetCacheSummary) ~= "function" then return "动作条解析器：未加载" end
-    local ok, summary = pcall(resolver.GetCacheSummary, resolver)
-    if not ok or type(summary) ~= "table" then return "动作条解析器：读取失败" end
-    return "扫描代次：" .. tostring(summary.scanGeneration or "-")
-        .. "  ·  映射技能：" .. tostring(summary.spellCount or summary.mappedSpells or "-")
-        .. "  ·  ButtonCache：" .. tostring(summary.buttonCount or summary.buttons or "-")
-        .. "\n当前动作条页：" .. tostring(summary.mainPage or "-")
-        .. "  ·  最近原因：" .. tostring(summary.lastReason or "-")
 end
 
 local function profileSummary()
@@ -1094,63 +1027,6 @@ function ControlPanel:Restore()
     self:SetMinimized(false)
 end
 
-function ControlPanel:SetBurstSubpage(subpage)
-    subpage = subpage == "style" and "style" or "settings"
-    root().burstSubpage = subpage
-    for key, entry in pairs(burstSubpages) do
-        if entry.pane then entry.pane:SetShown(key == subpage) end
-        if entry.button then
-            entry.button.selected = key == subpage
-            setButtonVisual(entry.button, entry.button.selected)
-        end
-    end
-    if activePage == "burst" and panes.burst and type(panes.burst.SetVerticalScroll) == "function" then
-        panes.burst:SetVerticalScroll(0)
-    end
-    if activePage == "burst" and labels.pageTitle then
-        labels.pageTitle:SetText("爆发 · " .. (subpage == "style" and "样式设置" or "爆发设置"))
-    end
-    if activePage == "burst" and labels.pageDescription then
-        labels.pageDescription:SetText(subpage == "style"
-            and "爆发卡片的按键、充能、CD、状态标签、转盘与光效样式。"
-            or "爆发显示策略、当前专精的可排序爆发序列与注入技能规则。")
-    end
-end
-
-function ControlPanel:SetInterruptSubpage(subpage)
-    subpage = ({ interrupt = true, control = true, style = true })[subpage] and subpage or "interrupt"
-    root().interruptSubpage = subpage
-    for key, entry in pairs(interruptSubpages) do
-        if entry.pane then entry.pane:SetShown(key == subpage) end
-        if entry.button then
-            entry.button.selected = key == subpage
-            setButtonVisual(entry.button, entry.button.selected)
-        end
-    end
-    if activePage == "interrupt" and panes.interrupt and type(panes.interrupt.SetVerticalScroll) == "function" then
-        panes.interrupt:SetVerticalScroll(0)
-    end
-    local pageInfo = {
-        interrupt = {
-            title = "打断设置",
-            description = "打断提示、P2 动作条/宏识别、已暂停自动打断状态与目标来源诊断。",
-        },
-        control = {
-            title = "控制设置",
-            description = "控制提示、P2 单体/群控动作条宏识别、自动控制预设与目标来源优先级。",
-        },
-        style = {
-            title = "样式设置",
-            description = "打断与控制 HUD 图标的按键、充能、CD、状态标签、转盘与光效样式。",
-        },
-    }
-    local info = pageInfo[subpage] or pageInfo.interrupt
-    if activePage == "interrupt" and labels.pageTitle then
-        labels.pageTitle:SetText("打断与控制 · " .. info.title)
-    end
-    if activePage == "interrupt" and labels.pageDescription then labels.pageDescription:SetText(info.description) end
-end
-
 function ControlPanel:Show(page, subpage)
     page = LEGACY_PAGE_ALIAS[page] or page
     if not PAGE_META[page] then page = "general" end
@@ -1169,11 +1045,6 @@ function ControlPanel:Show(page, subpage)
     if labels.pageTitle then labels.pageTitle:SetText(PAGE_META[activePage].label) end
     if labels.pageDescription then labels.pageDescription:SetText(PAGE_META[activePage].description) end
     root().page = activePage
-    if activePage == "burst" then
-        self:SetBurstSubpage(subpage or root().burstSubpage)
-    elseif activePage == "interrupt" then
-        self:SetInterruptSubpage(subpage or root().interruptSubpage)
-    end
     frame:Show()
     self:UpdateInputStatus()
 end
@@ -1504,12 +1375,7 @@ function ControlPanel:UpdateInputStatus()
     local tactics, hud = ensureTactics()
     local snapshot = getSnapshot()
     local context = snapshot.context or (TE.Context and TE.Context:GetPlayer()) or {}
-    local encoded = TE.SignalFrame and TE.SignalFrame:GetLastEncoded() or {}
     local primary = snapshot.primaryDisplay or snapshot.primary or {}
-    local advisory = snapshot.advisory or {}
-    local interrupt = snapshot.interrupt or {}
-    local defense = snapshot.defensives or {}
-    local reaction = snapshot.reaction or {}
     local page = activePage
 
     local compactStatus = self:GetCompactStatus()
@@ -1521,21 +1387,12 @@ function ControlPanel:UpdateInputStatus()
     setLabel("footerState", "当前配置：" .. (TE.ProfileManager and TE.ProfileManager:GetActiveName() or "Default"))
 
     if page == "general" then
-        local specialObservation = specialActionObservation(snapshot)
-        local runtimeReasonLine = compactStatus.reasonText and ("\n原因：" .. compactStatus.reasonText) or ""
         setLabel("generalRuntime", "当前状态：" .. compactStatus.label
-            .. runtimeReasonLine
-            .. "\n当前职业/专精：" .. tostring(context.class or "-") .. " / " .. tostring(context.specName or "未知")
             .. "\n官方主推荐：" .. tostring(primary.spellName or "等待") .. "  ·  键位：" .. tostring(primary.binding or "无")
-            .. "\n动作条映射：" .. (primary.binding and "已确认" or "等待或无绑定")
-            .. (specialObservation and ("\n" .. specialObservation) or ""))
+            .. "\n自动爆发：" .. (tactics.autoBurstEnabled == true and "已开启（HAD）" or "已关闭（LCC）"))
         local policyLabel = TE.SignalFrame and type(TE.SignalFrame.GetSessionPolicyLabel) == "function"
             and TE.SignalFrame:GetSessionPolicyLabel() or tostring(settings.sessionPolicy)
-        setLabel("generalPolicy", "当前策略：" .. policyLabel
-            .. "\n手动启停：脱战仍保持运行，直到手动暂停。"
-            .. "\n自动启停：未进战斗或脱战时显示待命，进战自动恢复运行。"
-            .. "\n脱战停止：脱战显示暂停，进战后仍暂停，需手动启动。"
-            .. "\n“运行中”仅代表用户已启动动态链路；实际派发仍受 TEAP、前台与安全门禁约束。")
+        setLabel("generalPolicy", "当前：" .. policyLabel)
         setLabel("generalHotkey", settings.toggleHotkey ~= "" and ("TE 快捷键：" .. settings.toggleHotkey) or "TE 快捷键：未设置")
         local autoBurstToggleHotkey = type(settings.autoBurstToggleHotkey) == "string"
             and settings.autoBurstToggleHotkey or ""
@@ -1544,75 +1401,7 @@ function ControlPanel:UpdateInputStatus()
             or "自动爆发快捷键：未设置")
     end
 
-    if page == "hud" then
-        setLabel("hudState", "HUD：" .. (hud.enabled and "显示" or "隐藏")
-            .. "  ·  队列：" .. tostring(hud.queueMode)
-            .. "  ·  候选上限：" .. tostring(hud.maxCandidates)
-            .. "\n布局：" .. tostring(hud.layoutPreset) .. "  ·  主队列：" .. tostring(hud.primaryGrowth)
-            .. "  ·  战术栏：" .. tostring(hud.tacticalGrowth))
-    elseif page == "main" then
-        setLabel("mainState", "主推荐按键：" .. tostring(primary.binding or "无绑定")
-            .. "\n标签、充能、CD 时间和转盘均可独立设置；所有样式仅影响显示层。")
-    elseif page == "burst" then
-        setLabel("burstState", "状态：" .. tostring((advisory.burst or {}).state or "等待")
-            .. "  ·  配置：" .. tostring((advisory.burst or {}).profileKey or "当前专精暂无")
-            .. "\n说明：" .. tostring((advisory.burst or {}).notice or "爆发模块只读"))
-    elseif page == "interrupt" then
-        local reactionSelected = type(reaction.selected) == "table" and reaction.selected or nil
-        local reactionItem = reactionSelected and reactionSelected.item or nil
-        local reactionAuto = type(reaction.auto) == "table" and reaction.auto or {}
-        local reactionText = reaction.active == true
-            and ("P3 高亮：" .. tostring(reaction.state or "候选") .. "  ·  " .. tostring(reactionItem and reactionItem.spellName or "无")
-                .. "\n说明：" .. tostring(reaction.notice or "只读候选"))
-            or ("P3 监测：" .. tostring(reaction.state or "monitoring") .. "  ·  " .. tostring(reaction.notice or "等待可打断或可控制读条"))
-        reactionText = reactionText .. "\nP5.8 自动打断（已暂停）：" .. tostring(reactionAuto.state or "未初始化")
-            .. "  ·  " .. tostring(reactionAuto.reason or "-")
-            .. (reactionAuto.confirmationReason and ("  ·  判定=" .. tostring(reactionAuto.confirmationReason)) or "")
-            .. (reactionAuto.routeReason and ("  ·  路由=" .. tostring(reactionAuto.routeReason)) or "")
-            .. (reactionAuto.routeRefresh and ("  ·  重扫=" .. tostring(reactionAuto.routeRefresh)) or "")
-            .. (reactionAuto.compatibilityFallback == true and ("  ·  兼容=" .. tostring(reactionAuto.compatibilityFallbackReason or "active_cast")) or "")
-            .. ((tonumber(reactionAuto.compatibilityEvidenceSamples) or 0) > 0 and ("  ·  采样=" .. tostring(reactionAuto.compatibilityEvidenceSamples) .. "/3") or "")
-            .. (reactionAuto.cooldownActive == true and "  ·  打断CD中" or "")
-            .. (reactionAuto.cooldownExactActionVetoEvidence == true and "  ·  槽位CD证据" or "")
-            .. (reactionAuto.macroManagedTargetFallback == true and "  ·  焦点回退宏" or "")
-        setLabel("interruptState", "打断：" .. tostring(interrupt.state or "monitoring")
-            .. "  ·  建议：" .. tostring(interrupt.suggestion and interrupt.suggestion.spellName or "无")
-            .. "\n控制：" .. tostring((advisory.control or {}).state or "monitoring")
-            .. "  ·  " .. tostring((advisory.control or {}).notice or "等待目标读条")
-            .. "\n" .. reactionText
-            .. "\n" .. formatReactionDiagnostics(reaction))
-        setLabel("interruptBindingState", formatInterruptBindingState())
-        setLabel("controlBindingState", formatControlBindingState())
-    elseif page == "defense" then
-        setLabel("defenseState", "防御：" .. tostring(defense.state or "monitoring")
-            .. "  ·  配置：" .. tostring(defense.profileKey or "-")
-            .. "\n来源：" .. tostring(defense.profileSource or "-")
-            .. "  ·  当前建议：" .. tostring(defense.items and defense.items[1] and defense.items[1].spellName or "无")
-            .. "\n说明：" .. tostring(defense.notice or "等待低血或高压兼容信号"))
-    elseif page == "monitor" then
-        setLabel("monitorMapping", getBindingSummary())
-        setLabel("monitorSpec", "当前职业：" .. tostring(context.class or "-")
-            .. "\n当前专精：" .. tostring(context.specName or "未知") .. "（Index=" .. tostring(context.specIndex or "-") .. "，ID=" .. tostring(context.specID or "-") .. "）"
-            .. "\n防御资料：" .. tostring(defense.profileKey or "-") .. " / " .. tostring(defense.profileSource or "-"))
-        setLabel("monitorRecommendation", "官方：" .. tostring(primary.spellName or "等待") .. " / " .. tostring(primary.binding or "无")
-            .. "\n爆发：" .. tostring((advisory.burst or {}).state or "-")
-            .. "  ·  打断：" .. tostring(interrupt.state or "-")
-            .. "  ·  防御：" .. tostring(defense.state or "-")
-            .. "\n队列：" .. tostring(snapshot.queue and snapshot.queue.source or "等待"))
-        local encodedFields = type(encoded and encoded.fields) == "table" and encoded.fields or {}
-        local rawProtocolState = encoded and encoded.state or (snapshot.primary and snapshot.primary.state) or "-"
-        local rawProtocolReason = snapshot.primary and snapshot.primary.reason or "-"
-        local castLock = TE.SignalFrame and type(TE.SignalFrame.GetCastLockInfo) == "function" and TE.SignalFrame:GetCastLockInfo() or {}
-        setLabel("monitorProtocol", "TEAP：v3 固定布局，仅官方主推荐可进入现有安全链。"
-            .. "\n第4格：" .. tostring(encodedFields[4] or "-")
-            .. "  ·  协议状态：" .. tostring(rawProtocolState)
-            .. "  ·  原因码：" .. tostring(rawProtocolReason)
-            .. "\n锁类型：" .. tostring(castLock.kind or "-")
-            .. "  ·  施法 SpellID：" .. tostring(castLock.spellID or "-")
-            .. "  ·  castGUID：" .. castGuidMatchDiagnostic()
-            .. "\n最近帧：序号=" .. tostring(encoded and encoded.sequence or "-")
-            .. "  ·  Token=" .. tostring(encoded and encoded.bindingToken or 0))
-    elseif page == "profiles" then
+    if page == "profiles" then
         setLabel("profileState", profileSummary())
         setLabel("profileScopes", (function()
             local manager = TE.ProfileManager
@@ -1633,166 +1422,45 @@ function ControlPanel:UpdateInputStatus()
     refreshControls(activePage)
 end
 
-local function buildTextStyleSection(pane, style, label, y, options)
-    options = type(options) == "table" and options or {}
-    y = createSection(pane, label, y)
-    createCheckbox(pane, "显示", 14, y, function() return style.enabled end, function(value) style.enabled = value end)
-    createChoice(pane, "字体", RIGHT_X, y, 160, {
-        { value = "normal", label = "标准" }, { value = "highlight", label = "高亮" }, { value = "disable", label = "弱化" },
-    }, function() return style.fontPreset end, function(value) style.fontPreset = value end)
-    -- CD digits are uniformly rendered by the HUD badge. The old native-mode
-    -- picker was removed because DurationObject uses a separate MM:SS formatter
-    -- and would bypass the current module's font/position settings.
-    y = y - 38
-    createNumberStepper(pane, "字号", 14, y, 64, function() return style.fontSize end, function(value) style.fontSize = value end, 1, 8, 30, "")
-    createNumberStepper(pane, "缩放", RIGHT_X, y, 64, function() return math.floor(style.scale * 100 + 0.5) end, function(value) style.scale = value / 100 end, 10, 60, 200, "%")
-    y = y - 38
-    createChoice(pane, "位置", 14, y, 160, {
-        { value = "TOPLEFT", label = "左上" }, { value = "TOPRIGHT", label = "右上" }, { value = "CENTER", label = "中间" },
-        { value = "BOTTOMLEFT", label = "左下" }, { value = "BOTTOMRIGHT", label = "右下" },
-    }, function() return style.point end, function(value) style.point = value end)
-    createColorChoice(pane, "颜色", RIGHT_X, y, function() return style.colorKey end, function(value)
-        style.colorKey = value; style.color = copyColor(COLOR_PRESETS[value].color)
-    end)
-    y = y - 38
-    createNumberStepper(pane, "横向偏移", 14, y, 64, function() return style.offsetX end, function(value) style.offsetX = value end, 1, -30, 30, "")
-    createNumberStepper(pane, "纵向偏移", RIGHT_X, y, 64, function() return style.offsetY end, function(value) style.offsetY = value end, 1, -30, 30, "")
-    return y - 62
-end
-
-local function buildIconStyleEditor(pane, moduleKey, title, y)
-    local style = getModuleStyle(moduleKey)
-    y = createSection(pane, title .. "图标样式", y)
-    createText(pane, "GameFontDisableSmall", 14, y, 720,
-        "以下设置只改变 " .. title .. " 图标的文字与冷却表现，不改变推荐顺序、动作条绑定或派发资格。\nCD 时间与施法、暂停、引导、蓄力、阻止、未绑定等状态标签可独立定位。")
-    y = y - 48
-    y = buildTextStyleSection(pane, style.keyLabel, "按键标签", y)
-    y = buildTextStyleSection(pane, style.chargeLabel, "充能次数", y)
-    y = buildTextStyleSection(pane, style.cooldownText, "CD 时间（HUD 统一秒数）", y)
-    y = buildTextStyleSection(pane, style.stateText, "状态标签（施法 / 暂停等）", y)
-
-    y = createSection(pane, "图标外观", y)
-    style.appearance = type(style.appearance) == "table" and style.appearance or {}
-    createChoice(pane, "风格", 14, y, 230, {
-        { value = "native", label = "WoW 原生动作条" }, { value = "minimal", label = "极简" },
-    }, function() return style.appearance.theme or "native" end, function(value) style.appearance.theme = value end,
-        "原生风格使用 Blizzard 动作条圆角遮罩、背景与边框图集；极简风格保留图标与现有状态提示。")
-    createCheckbox(pane, "圆角技能图标", RIGHT_X, y, function() return style.appearance.roundedIcons ~= false end, function(value) style.appearance.roundedIcons = value end)
-    y = y - 34
-    createCheckbox(pane, "显示动作条边框", 14, y, function() return style.appearance.showBorder ~= false end, function(value) style.appearance.showBorder = value end)
-    createCheckbox(pane, "悬停高亮", RIGHT_X, y, function() return style.appearance.hoverHighlight ~= false end, function(value) style.appearance.hoverHighlight = value end)
-    y = y - 34
-    createCheckbox(pane, "按下反馈", 14, y, function() return style.appearance.pressedHighlight ~= false end, function(value) style.appearance.pressedHighlight = value end)
-    createCheckbox(pane, "当前施法高亮", RIGHT_X, y, function() return style.appearance.castHighlight ~= false end, function(value) style.appearance.castHighlight = value end)
-    y = y - 34
-    createCheckbox(pane, "0.1 秒淡入淡出", 14, y, function() return style.appearance.fadeTransitions ~= false end, function(value) style.appearance.fadeTransitions = value end)
-    createCheckbox(pane, "启用 Masque 兼容", RIGHT_X, y, function() return style.appearance.masque == true end, function(value) style.appearance.masque = value end,
-        "仅在已安装 Masque 时生效；未安装时自动保持原生外观。")
-
-    y = y - 54
-    y = createSection(pane, "技能 CD 转盘", y)
-    createCheckbox(pane, "显示技能 CD 转盘", 14, y, function() return style.cooldownSwipe.enabled end, function(value) style.cooldownSwipe.enabled = value end,
-        "仅绘制技能自身冷却。动态光效使用独立暴雪图集层，不会给技能图标本身染色。")
-    createChoice(pane, "方向", RIGHT_X, y, 160, {
-        { value = false, label = "正向" }, { value = true, label = "反向" },
-    }, function() return style.cooldownSwipe.reverse end, function(value) style.cooldownSwipe.reverse = value end)
-    y = y - 38
-    createNumberStepper(pane, "CD 遮罩透明度", 14, y, 64, function() return math.floor(style.cooldownSwipe.alpha * 100 + 0.5) end,
-        function(value) style.cooldownSwipe.alpha = value / 100 end, 5, 0, 95, "%")
-
-    y = y - 54
-    y = createSection(pane, "公共冷却（GCD）转盘", y)
-    createCheckbox(pane, "显示共 CD 转盘", 14, y, function() return style.gcdSwipe.enabled end, function(value) style.gcdSwipe.enabled = value end,
-        "读取暴雪全局冷却 SpellID 61304，仅用于图标显示，不改变推荐或派发。")
-    createChoice(pane, "方向", RIGHT_X, y, 160, {
-        { value = false, label = "正向" }, { value = true, label = "反向" },
-    }, function() return style.gcdSwipe.reverse end, function(value) style.gcdSwipe.reverse = value end)
-    y = y - 38
-    createNumberStepper(pane, "共 CD 透明度", 14, y, 64, function() return math.floor(style.gcdSwipe.alpha * 100 + 0.5) end,
-        function(value) style.gcdSwipe.alpha = value / 100 end, 5, 0, 95, "%")
-    createText(pane, "GameFontDisableSmall", RIGHT_X, y - 4, 390, "技能 CD 与公共冷却重合时只渲染一次，避免两个转盘叠加导致图标变暗。")
-
-    y = y - 54
-    y = createSection(pane, "静态边框高亮", y)
-    createCheckbox(pane, "启用静态边框高亮", 14, y, function() return style.highlight.enabled end, function(value) style.highlight.enabled = value end,
-        "用于可读性：触发 / 爆发为金色边框，紧急防御为红色边框；不改变技能图标本身。")
-    createCheckbox(pane, "触发 / 爆发状态边框", RIGHT_X, y, function() return style.highlight.proc end, function(value) style.highlight.proc = value end)
-    y = y - 34
-    createCheckbox(pane, "紧急防御状态边框", 14, y, function() return style.highlight.emergency end, function(value) style.highlight.emergency = value end)
-
-    y = y - 54
-    y = createSection(pane, "光效与动画", y)
-    style.effects = type(style.effects) == "table" and style.effects or {}
-    createCheckbox(pane, "启用动态光效", 14, y, function() return style.effects.enabled ~= false end, function(value) style.effects.enabled = value end,
-        "使用暴雪图集做显示层效果。所有效果只反映当前卡片状态，不改推荐、按键绑定、TEAP 或 TEK。")
-    -- The master toggle occupies this line by itself.  Start the effect matrix
-    -- on the next row; previously the first effect checkbox shared the exact
-    -- same anchor and overlapped on every module page.
-    y = y - 34
-
-    local effectRows = {
-        main = { { "主推荐跑马边框", "marching" }, { "Proc 光效", "proc" }, { "按键就绪闪烁", "hotkeyFlash" }, { "引导条填充", "channelFill" } },
-        burst = { { "爆发光效", "burst" }, { "Proc 光效", "proc" }, { "按键就绪闪烁", "hotkeyFlash" }, { "引导条填充", "channelFill" } },
-        interrupt = { { "打断光效", "interrupt" }, { "突进光效", "mobility" }, { "Proc 光效", "proc" }, { "按键就绪闪烁", "hotkeyFlash" }, { "引导条填充", "channelFill" } },
-        defense = { { "Proc 光效", "proc" }, { "按键就绪闪烁", "hotkeyFlash" }, { "引导条填充", "channelFill" } },
-    }
-    local row = effectRows[moduleKey] or effectRows.main
-    local column = 0
-    for _, entry in ipairs(row) do
-        local x = column == 0 and 14 or RIGHT_X
-        createCheckbox(pane, entry[1], x, y, function() return style.effects[entry[2]] ~= false end, function(value) style.effects[entry[2]] = value end)
-        if column == 1 then y = y - 34 end
-        column = 1 - column
-    end
-    if column == 1 then y = y - 34 end
-    createText(pane, "GameFontDisableSmall", 14, y - 12, 720,
-        "跑马边框按模块状态显示：打断为红橙、爆发为紫、突进为金；Proc 使用暴雪动作条触发光效。持续刷新会缓存同一状态，不会每 0.2 秒重启动画。")
-    return y - 60
-end
-
 local function buildGeneral(pane)
-    local y = createSection(pane, "运行状态", -12)
+    local y = createSection(pane, "运行", -12)
     createReadout(pane, "generalRuntime", "当前状态", 14, y, 720, "GameFontHighlightSmall")
-    createActionButton(pane, "启动", 14, y - 92, 94, function() ControlPanel:StartDynamic() end)
-    createActionButton(pane, "暂停", 118, y - 92, 94, function() ControlPanel:PauseDynamic() end)
-    createActionButton(pane, "重扫动作条", 222, y - 92, 130, function() ControlPanel:RefreshActionBar("teui_general") end)
-    createActionButton(pane, "重置紧凑条位置", 362, y - 92, 132, function() ControlPanel:ResetCompactPosition() end)
-    y = y - 138
-    y = createSection(pane, "脱战策略", y)
-    createChoice(pane, "策略", 14, y, 280, {
-        { value = "manual_keep", label = "手动启停（脱战保持运行）" },
-        { value = "pause_out_of_combat", label = "自动启停（进战运行，脱战待命，默认）" },
-        { value = "close_out_of_combat", label = "脱战停止（进战需手动运行）" },
+    createActionButton(pane, "启动 / 暂停", 14, y - 72, 126, function() ControlPanel:ToggleRun() end)
+    createActionButton(pane, "重扫动作条", 150, y - 72, 118, function() ControlPanel:RefreshActionBar("teui_general") end)
+    y = y - 118
+    y = createSection(pane, "运行方式", y)
+    createChoice(pane, "脱战策略", 14, y, 300, {
+        { value = "pause_out_of_combat", label = "自动启停（推荐）" },
+        { value = "manual_keep", label = "手动启停" },
+        { value = "close_out_of_combat", label = "脱战后保持停止" },
     }, function() return ensureSettings().sessionPolicy end, function(value)
         ensureSettings().sessionPolicy = value
         if TE.SignalFrame and type(TE.SignalFrame.SetSessionPolicy) == "function" then TE.SignalFrame:SetSessionPolicy(value) end
     end)
-    createReadout(pane, "generalPolicy", "说明", 14, y - 70, 720, "GameFontDisableSmall")
-    y = y - 160
-    y = createSection(pane, "快捷键设置", y)
-    createReadout(pane, "generalHotkey", "TE 自身快捷键", 14, y, 720, "GameFontHighlightSmall")
+    createReadout(pane, "generalPolicy", "当前策略", RIGHT_X, y, 330, "GameFontDisableSmall")
+    y = y - 96
+    y = createSection(pane, "整体启停快捷键", y)
+    createReadout(pane, "generalHotkey", "当前快捷键", 14, y, 720, "GameFontHighlightSmall")
     local hotkeyBox = createEditBox(pane, "快捷键", LEFT_X, y - 58, 150, ensureSettings().toggleHotkey)
     createActionButton(pane, "录入", 326, y - 58, 72, function() ControlPanel:BeginToggleHotkeyCapture() end)
     createActionButton(pane, "应用", 408, y - 58, 90, function()
         ControlPanel:SetToggleHotkey(pendingToggleHotkey or hotkeyBox:GetText())
     end)
     createActionButton(pane, "清除", 508, y - 58, 90, function() ControlPanel:SetToggleHotkey("") end)
-    createText(pane, "GameFontDisableSmall", 14, y - 100, 720,
-        "TE 快捷键通过脱战时的临时覆盖绑定实现；不会保存或改写游戏动作条键位。动作条技能键位始终由 Blizzard 绑定解析器读取。")
-    createReadout(pane, "generalAutoBurstHotkey", "自动爆发开关快捷键", 14, y - 140, 720, "GameFontHighlightSmall")
-    local autoBurstHotkeyBox = createEditBox(pane, "快捷键", LEFT_X, y - 198, 150,
+    y = y - 118
+    y = createSection(pane, "自动爆发快捷键", y)
+    createReadout(pane, "generalAutoBurstHotkey", "当前快捷键", 14, y, 720, "GameFontHighlightSmall")
+    local autoBurstHotkeyBox = createEditBox(pane, "快捷键", LEFT_X, y - 58, 150,
         ensureSettings().autoBurstToggleHotkey)
-    createActionButton(pane, "录入", 326, y - 198, 72, function() ControlPanel:BeginAutoBurstHotkeyCapture() end)
-    createActionButton(pane, "应用", 408, y - 198, 90, function()
+    createActionButton(pane, "录入", 326, y - 58, 72, function() ControlPanel:BeginAutoBurstHotkeyCapture() end)
+    createActionButton(pane, "应用", 408, y - 58, 90, function()
         ControlPanel:SetAutoBurstHotkey(pendingAutoBurstHotkey or autoBurstHotkeyBox:GetText())
     end)
-    createActionButton(pane, "清除", 508, y - 198, 90, function() ControlPanel:SetAutoBurstHotkey("") end)
-    createText(pane, "GameFontDisableSmall", 14, y - 240, 720,
-        "该快捷键只切换自动爆发，不改变整体启动/暂停状态、官方推荐、BindingToken、TEAP 或 TEK 门禁。")
+    createActionButton(pane, "清除", 508, y - 58, 90, function() ControlPanel:SetAutoBurstHotkey("") end)
 end
 
 local function buildHUD(pane)
-    local tactics, hud = ensureTactics()
+    local _, hud = ensureTactics()
     do
         local y = createSection(pane, "HUD 显示", -12)
         createCheckbox(pane, "启用 HUD", LEFT_X, y, function() return hud.enabled end, function(value) hud.enabled = value end)
@@ -1801,224 +1469,88 @@ local function buildHUD(pane)
         createChoice(pane, "脱战显示", LEFT_X, y, 240, {
             { value = "show", label = "保持显示" }, { value = "dim", label = "淡化显示" }, { value = "hide", label = "隐藏 HUD" },
         }, function() return hud.outOfCombatMode end, function(value) hud.outOfCombatMode = value end)
-        createCheckbox(pane, "简洁 HUD", RIGHT_X, y, function() return hud.compact end, function(value) hud.compact = value end)
-        y = y - 38
-        createCheckbox(pane, "显示拖动把手", LEFT_X, y, function() return hud.showDragHandle end, function(value) hud.showDragHandle = value end)
+        createCheckbox(pane, "显示拖动把手", RIGHT_X, y, function() return hud.showDragHandle end, function(value) hud.showDragHandle = value end)
 
         y = y - 76
-        y = createSection(pane, "主键与爆发", y)
+        y = createSection(pane, "显示内容", y)
         local mainStyle = getModuleStyle("main")
         local burstStyle = getModuleStyle("burst")
-        createCheckbox(pane, "显示主键", LEFT_X, y, function() return mainStyle.show ~= false end, function(value) mainStyle.show = value end)
-        createCheckbox(pane, "显示爆发", RIGHT_X, y, function() return burstStyle.show ~= false end, function(value) burstStyle.show = value end)
-        y = y - 38
-        createNumberStepper(pane, "主键图标", LEFT_X, y, 56, function() return mainStyle.iconSize end, function(value) setModuleIconSize("main", value) end, 2, 44, 120, "")
-        createNumberStepper(pane, "爆发图标", RIGHT_X, y, 56, function() return burstStyle.iconSize end, function(value) setModuleIconSize("burst", value) end, 2, 28, 88, "")
-
-        y = y - 76
-        y = createSection(pane, "队列模式", y)
-        createChoice(pane, "模式", LEFT_X, y, 260, {
-            { value = "tactical", label = "主键 + 爆发" },
+        createChoice(pane, "内容", LEFT_X, y, 260, {
+            { value = "tactical", label = "主键 + 自动爆发" },
             { value = "primary", label = "仅主键" },
         }, function()
             return hud.queueMode == "primary" and "primary" or "tactical"
         end, function(value)
             hud.queueMode = value == "primary" and "primary" or "tactical"
+            hud.compact = false
+            mainStyle.show = true
+            burstStyle.show = hud.queueMode ~= "primary"
         end)
+        y = y - 38
+        createNumberStepper(pane, "主键大小", LEFT_X, y, 56, function() return mainStyle.iconSize end, function(value) setModuleIconSize("main", value) end, 2, 44, 120, "")
+        createNumberStepper(pane, "爆发大小", RIGHT_X, y, 56, function() return burstStyle.iconSize end, function(value) setModuleIconSize("burst", value) end, 2, 28, 88, "")
+
+        y = y - 76
+        y = createSection(pane, "排列", y)
         createChoice(pane, "爆发方向", RIGHT_X, y, 170, {
             { value = "RIGHT", label = "向右" }, { value = "LEFT", label = "向左" }, { value = "UP", label = "向上" }, { value = "DOWN", label = "向下" },
         }, function() return hud.burstGrowth end, function(value) hud.burstGrowth = value end)
         y = y - 38
-        createChoice(pane, "主键方向", LEFT_X, y, 170, {
-            { value = "RIGHT", label = "向右" }, { value = "LEFT", label = "向左" }, { value = "UP", label = "向上" }, { value = "DOWN", label = "向下" },
-        }, function() return hud.primaryGrowth end, function(value) hud.primaryGrowth = value end)
-        createNumberStepper(pane, "图标间距", RIGHT_X, y, 56, function() return hud.gap end, function(value) hud.gap = value end, 1, 2, 24, "")
+        createNumberStepper(pane, "图标间距", LEFT_X, y, 56, function() return hud.gap end, function(value) hud.gap = value end, 1, 2, 24, "")
 
         y = y - 76
         y = createSection(pane, "外观", y)
-        createNumberStepper(pane, "全局缩放", LEFT_X, y, 64, function() return math.floor(hud.scale * 100 + 0.5) end,
+        createNumberStepper(pane, "HUD 缩放", LEFT_X, y, 64, function() return math.floor(hud.scale * 100 + 0.5) end,
             function(value) hud.scale = value / 100 end, 5, 60, 200, "%")
-        createNumberStepper(pane, "全局透明度", RIGHT_X, y, 64, function() return math.floor(hud.alpha * 100 + 0.5) end,
+        createNumberStepper(pane, "HUD 透明度", RIGHT_X, y, 64, function() return math.floor(hud.alpha * 100 + 0.5) end,
             function(value) hud.alpha = value / 100 end, 5, 20, 100, "%")
         y = y - 38
         createNumberStepper(pane, "底纹透明度", LEFT_X, y, 64, function() return math.floor(hud.backdropAlpha * 100 + 0.5) end,
             function(value) hud.backdropAlpha = value / 100 end, 2, 0, 100, "%")
-        createCheckbox(pane, "显示按键标签", RIGHT_X, y, function() return hud.showKeyLabels end, function(value) hud.showKeyLabels = value end)
+        createCheckbox(pane, "显示按键", RIGHT_X, y, function() return hud.showKeyLabels end, function(value) hud.showKeyLabels = value end)
         y = y - 38
         createCheckbox(pane, "显示状态文字", LEFT_X, y, function() return hud.showStatusText end, function(value) hud.showStatusText = value end)
-        createCheckbox(pane, "显示来源标签", RIGHT_X, y, function() return hud.showSourceTags end, function(value) hud.showSourceTags = value end)
+        createCheckbox(pane, "显示冷却秒数", RIGHT_X, y, function()
+            return mainStyle.cooldownText.enabled ~= false and burstStyle.cooldownText.enabled ~= false
+        end, function(value)
+            mainStyle.cooldownText.enabled = value
+            burstStyle.cooldownText.enabled = value
+        end)
+        y = y - 38
+        createNumberStepper(pane, "冷却字号", LEFT_X, y, 56, function() return mainStyle.cooldownText.fontSize end, function(value)
+            mainStyle.cooldownText.fontSize = value
+            burstStyle.cooldownText.fontSize = value
+        end, 1, 8, 30, "")
 
         y = y - 76
-        createActionButton(pane, "锁定 / 解锁 HUD", LEFT_X, y, 138, function() hud.locked = not hud.locked; ControlPanel:ApplyVisuals(true) end)
-        createActionButton(pane, "重置 HUD 布局", 162, y, 138, function() ControlPanel:ResetTacticalLayout() end)
-        createActionButton(pane, "恢复显示默认", 310, y, 118, function() ControlPanel:ResetDisplaySettings() end)
-        createActionButton(pane, "隐藏 HUD", 438, y, 98, function() hud.enabled = false; ControlPanel:ApplyVisuals(true) end)
+        createActionButton(pane, "锁定 / 解锁", LEFT_X, y, 118, function() hud.locked = not hud.locked; ControlPanel:ApplyVisuals(true) end)
+        createActionButton(pane, "重置布局", 142, y, 104, function() ControlPanel:ResetTacticalLayout() end)
+        createActionButton(pane, "恢复默认", 256, y, 104, function() ControlPanel:ResetDisplaySettings() end)
+        createActionButton(pane, "隐藏 HUD", 370, y, 96, function() hud.enabled = false; ControlPanel:ApplyVisuals(true) end)
         return
     end
-    local tactics, hud = ensureTactics()
-    local y = createSection(pane, "HUD 显示 / 隐藏", -12)
-    createCheckbox(pane, "启用战术 HUD", LEFT_X, y, function() return hud.enabled end, function(value) hud.enabled = value end)
-    createCheckbox(pane, "无官方推荐时隐藏", RIGHT_X, y, function() return hud.hideWhenIdle end, function(value) hud.hideWhenIdle = value end)
-    y = y - 38
-    createChoice(pane, "脱战显示", LEFT_X, y, 240, {
-        { value = "show", label = "保持显示" }, { value = "dim", label = "淡化显示" }, { value = "hide", label = "隐藏 HUD" },
-    }, function() return hud.outOfCombatMode end, function(value) hud.outOfCombatMode = value end)
-    createCheckbox(pane, "简洁 HUD 模式", RIGHT_X, y, function() return hud.compact end, function(value) hud.compact = value end,
-        "仅保留主推荐与状态文字；不会停止官方推荐、动作条扫描或战术策略。")
-    y = y - 38
-    createCheckbox(pane, "显示拖动抓手", LEFT_X, y, function() return hud.showDragHandle end, function(value) hud.showDragHandle = value end)
-    createText(pane, "GameFontDisableSmall", RIGHT_X, y - 4, 315,
-        "目标框打断提示与位移脱险提示在“打断与控制”页面设置。")
-
-    y = y - 76
-    y = createSection(pane, "全局外观", y)
-    createNumberStepper(pane, "HUD 全局缩放", LEFT_X, y, 64, function() return math.floor(hud.scale * 100 + 0.5) end,
-        function(value) hud.scale = value / 100 end, 5, 60, 200, "%")
-    createNumberStepper(pane, "HUD 全局透明度", RIGHT_X, y, 64, function() return math.floor(hud.alpha * 100 + 0.5) end,
-        function(value) hud.alpha = value / 100 end, 5, 20, 100, "%")
-    y = y - 38
-    createNumberStepper(pane, "HUD 底纹透明度", LEFT_X, y, 64, function() return math.floor(hud.backdropAlpha * 100 + 0.5) end,
-        function(value) hud.backdropAlpha = value / 100 end, 2, 0, 100, "%")
-    createText(pane, "GameFontDisableSmall", RIGHT_X, y - 4, 315,
-        "全局缩放与透明度影响主 HUD；模块图标大小仍可单独调整。")
-
-    y = y - 76
-    y = createSection(pane, "脱战外观", y)
-    createNumberStepper(pane, "脱战透明度", LEFT_X, y, 64, function() return math.floor(hud.outOfCombatAlpha * 100 + 0.5) end,
-        function(value) hud.outOfCombatAlpha = value / 100 end, 5, 20, 100, "%")
-    createNumberStepper(pane, "脱战缩放", RIGHT_X, y, 64, function() return math.floor(hud.outOfCombatScale * 100 + 0.5) end,
-        function(value) hud.outOfCombatScale = value / 100 end, 5, 60, 200, "%")
-    createText(pane, "GameFontDisableSmall", LEFT_X, y - 38, 700,
-        "仅当“脱战显示”设为“淡化显示”时生效。保持显示模式使用 HUD 全局透明度与缩放；隐藏模式不渲染 HUD。")
-
-    y = y - 102
-    y = createSection(pane, "模块显示与图标大小", y)
-    local mainStyle = getModuleStyle("main")
-    local burstStyle = getModuleStyle("burst")
-    local interruptStyle = getModuleStyle("interrupt")
-    local defenseStyle = getModuleStyle("defense")
-    createCheckbox(pane, "显示主键", LEFT_X, y, function() return mainStyle.show ~= false end, function(value) mainStyle.show = value end,
-        "只隐藏主推荐及候选队列的 HUD 图标；不会停止官方推荐或动作条扫描。")
-    createCheckbox(pane, "显示爆发", RIGHT_X, y, function() return burstStyle.show ~= false end, function(value) burstStyle.show = value end,
-        "只隐藏爆发提示图标；不会关闭爆发逻辑或改变主键推荐。")
-    y = y - 34
-    createCheckbox(pane, "显示打断与控制", LEFT_X, y, function() return interruptStyle.show ~= false end, function(value) interruptStyle.show = value end,
-        "打断与控制共用一个显示开关；策略仍在后台只读监测。")
-    createCheckbox(pane, "显示防御与生存", RIGHT_X, y, function() return defenseStyle.show ~= false end, function(value) defenseStyle.show = value end,
-        "只隐藏防御技能、治疗石和治疗药水的 HUD 提示。")
-    y = y - 42
-    createNumberStepper(pane, "主键图标", LEFT_X, y, 56, function() return mainStyle.iconSize end, function(value) setModuleIconSize("main", value) end, 2, 44, 120, "")
-    createNumberStepper(pane, "爆发图标", RIGHT_X, y, 56, function() return burstStyle.iconSize end, function(value) setModuleIconSize("burst", value) end, 2, 28, 88, "")
-    y = y - 38
-    createNumberStepper(pane, "打断控制图标", LEFT_X, y, 56, function() return interruptStyle.iconSize end, function(value) setModuleIconSize("interrupt", value) end, 2, 28, 88, "")
-    createNumberStepper(pane, "防御生存图标", RIGHT_X, y, 56, function() return defenseStyle.iconSize end, function(value) setModuleIconSize("defense", value) end, 2, 28, 88, "")
-
-    y = y - 76
-    y = createSection(pane, "队列模式", y)
-    createChoice(pane, "模式", LEFT_X, y, 280, {
-        { value = "primary", label = "仅主推荐" }, { value = "queue", label = "主推荐 + 候选队列" }, { value = "tactical", label = "完整战术 HUD（默认）" },
-    }, function() return hud.queueMode end, function(value) hud.queueMode = value end)
-    createNumberStepper(pane, "候选数量", RIGHT_X, y, 64, function() return hud.maxCandidates end, function(value) hud.maxCandidates = value end, 1, 1, 3, "")
-    y = y - 38
-    createCheckbox(pane, "启用候选预测", LEFT_X, y, function() return tactics.candidatePredictionEnabled end, function(value) tactics.candidatePredictionEnabled = value end,
-        "关闭后不再生成只读候选预测；不会影响官方主推荐。")
-    createChoice(pane, "候选来源", RIGHT_X, y, 180, {
-        { value = "prediction", label = "预测" }, { value = "history", label = "最近推荐" },
-    }, function() return tactics.previewMode end, function(value) tactics.previewMode = value end)
-    y = y - 38
-    createChoice(pane, "战术队列优先级", LEFT_X, y, 230, {
-        { value = "output_first", label = "输出优先" }, { value = "safety_first", label = "安全优先" },
-    }, function() return tactics.queuePriorityPreset end, function(value)
-        tactics.queuePriorityPreset = value
-        tactics.queueOrder = nil -- switching presets intentionally clears any future custom order.
-    end)
-    createCheckbox(pane, "显示候选预览", RIGHT_X, y, function() return hud.showHistory end, function(value) hud.showHistory = value end)
-    createReadout(pane, "hudState", "当前布局", LEFT_X, y - 48, 720, "GameFontHighlightSmall")
-
-    y = y - 148
-    y = createSection(pane, "图标标签", y)
-    createCheckbox(pane, "全局显示按键标签", LEFT_X, y, function() return hud.showKeyLabels end, function(value) hud.showKeyLabels = value end)
-    createCheckbox(pane, "显示图标状态文字", RIGHT_X, y, function() return hud.showStatusText end, function(value) hud.showStatusText = value end)
-    createCheckbox(pane, "显示来源标签", LEFT_X, y - 34, function() return hud.showSourceTags end, function(value) hud.showSourceTags = value end)
-    createText(pane, "GameFontDisableSmall", RIGHT_X, y - 38, 315, "按键、充能与 CD 的字体细节在各模块页面单独设置。")
-
-    y = y - 92
-    y = createSection(pane, "布局设置", y)
-    createChoice(pane, "HUD 布局", LEFT_X, y, 250, {
-        { value = "queue_horizontal", label = "横向主队列" }, { value = "queue_vertical", label = "纵向主队列" }, { value = "surround", label = "主推荐环绕" },
-    }, function() return hud.layoutPreset end, function(value)
-        hud.layoutPreset = value; hud.orientation = value == "queue_vertical" and "vertical" or "horizontal"
-    end)
-    createChoice(pane, "候选增长", RIGHT_X, y, 170, {
-        { value = "RIGHT", label = "向右" }, { value = "LEFT", label = "向左" }, { value = "UP", label = "向上" }, { value = "DOWN", label = "向下" },
-    }, function() return hud.primaryGrowth end, function(value) hud.primaryGrowth = value end)
-    y = y - 38
-    createChoice(pane, "打断控制方向", LEFT_X, y, 250, {
-        { value = "RIGHT", label = "向右" }, { value = "LEFT", label = "向左" }, { value = "UP", label = "向上" }, { value = "DOWN", label = "向下" },
-    }, function() return hud.tacticalGrowth end, function(value) hud.tacticalGrowth = value end,
-        "仅控制打断、控制和位移提示在其独立区域中的排列；不会影响爆发队列。")
-    createCheckbox(pane, "独立拆分防御队列", RIGHT_X, y, function() return hud.defenseDetached end, function(value) hud.defenseDetached = value end)
-    y = y - 38
-    createChoice(pane, "爆发队列方向", LEFT_X, y, 250, {
-        { value = "RIGHT", label = "向右" }, { value = "LEFT", label = "向左" }, { value = "UP", label = "向上" }, { value = "DOWN", label = "向下" },
-    }, function() return hud.burstGrowth end, function(value) hud.burstGrowth = value end,
-        "爆发窗口技能固定为队列第一个图标，后续爆发技能、饰品、药水和种族技能沿此方向排布。")
-    createText(pane, "GameFontDisableSmall", RIGHT_X, y - 4, 315, "爆发与打断控制始终属于独立区域；方向可以分别调整。")
-    y = y - 38
-    createNumberStepper(pane, "主键候选图标", LEFT_X, y, 56, function() return hud.candidateSize end, function(value) hud.candidateSize = value end, 2, 26, 88, "")
-    createNumberStepper(pane, "图标间距", RIGHT_X, y, 56, function() return hud.gap end, function(value) hud.gap = value end, 1, 2, 24, "")
-    y = y - 38
-    createCheckbox(pane, "锁定独立防御队列", LEFT_X, y, function() return hud.defenseLocked end, function(value) hud.defenseLocked = value end,
-        "仅在“独立拆分防御队列”启用时生效。")
-    createText(pane, "GameFontDisableSmall", RIGHT_X, y - 4, 315, "独立防御队列的缩放、透明度仅影响拆分后的防御栏。")
-    y = y - 38
-    createNumberStepper(pane, "独立防御缩放", LEFT_X, y, 56, function() return math.floor(hud.defenseScale * 100 + 0.5) end,
-        function(value) hud.defenseScale = value / 100 end, 5, 60, 200, "%")
-    createNumberStepper(pane, "独立防御透明度", RIGHT_X, y, 56, function() return math.floor(hud.defenseAlpha * 100 + 0.5) end,
-        function(value) hud.defenseAlpha = value / 100 end, 5, 20, 100, "%")
-    y = y - 50
-    createActionButton(pane, "锁定 / 解锁 HUD", LEFT_X, y, 138, function() hud.locked = not hud.locked; ControlPanel:ApplyVisuals(true) end)
-    createActionButton(pane, "重置 HUD 布局", 162, y, 138, function() ControlPanel:ResetTacticalLayout() end)
-    createActionButton(pane, "恢复显示默认", 310, y, 118, function() ControlPanel:ResetDisplaySettings() end)
-    createActionButton(pane, "隐藏 HUD", 438, y, 98, function() hud.enabled = false; ControlPanel:ApplyVisuals(true) end)
-end
-
-local function buildMain(pane)
-    local y = buildIconStyleEditor(pane, "main", "主键", -12)
-    createReadout(pane, "mainState", "当前主推荐状态", 14, y, 720, "GameFontHighlightSmall")
 end
 
 local function buildBurstSettings(pane)
     local y = -12
     local tactics = select(1, ensureTactics())
-    y = createSection(pane, "爆发逻辑", y)
-    createCheckbox(pane, "启用爆发窗口辅助", 14, y, function() return tactics.burstEnabled end, function(value) tactics.burstEnabled = value end,
-        "显示层独立检查当前专精的已知、已绑定爆发窗口与注入技能；关闭后不显示爆发候选栏。")
-    createCheckbox(pane, "显示爆发候选栏", RIGHT_X, y, function() return tactics.burstShowCandidates end, function(value) tactics.burstShowCandidates = value end)
-    y = y - 38
-
     y = createSection(pane, "自动爆发", y)
     createCheckbox(pane, "启用自动爆发", 14, y, function() return tactics.autoBurstEnabled == true end, function(value)
         tactics.autoBurstEnabled = value == true
-    end, "仅在系统处于运行状态、官方推荐命中当前专精窗口技能、且顺序中的可选步骤通过真实绑定与冷却预检时创建计划。普通官方推荐不会因此获得派发资格。")
-    createCheckbox(pane, "完整调试日志", RIGHT_X, y, function() return tactics.autoBurstDebug == true end, function(value)
-        tactics.autoBurstDebug = value == true
-    end)
+    end, "命中窗口技能后，按下方顺序执行已启用并通过检查的步骤。")
     y = y - 38
-    createChoice(pane, "组装模式", 14, y, 270, {
-        { value = "simple", label = "简易：排除 CD / 未知步骤" },
-        { value = "focused", label = "集中：任一启用步骤不可用则不组装" },
+    createChoice(pane, "执行模式", 14, y, 300, {
+        { value = "simple", label = "简易：跳过本轮不可用步骤" },
+        { value = "focused", label = "严格：任一步骤不可用则不启动" },
     }, function() return tactics.autoBurstMode end, function(value)
         tactics.autoBurstMode = value == "focused" and "focused" or "simple"
-    end, "预检发生在计划创建前。共享 GCD 不视为自身 CD；明确自身 CD、冷却读取未知、无真实绑定、未装备或装备身份变化的可选步骤不会被写入本轮计划。")
-    createText(pane, "GameFontDisableSmall", RIGHT_X, y - 3, 360,
-        "顺序中的窗口技能固定存在。注入和饰品只作为受控 Burst 步骤，不会放开普通脱战或普通官方技能派发。")
-    y = y - 58
+    end, "简易模式尽量完成可用步骤；严格模式要求所有启用步骤都可用。")
+    y = y - 48
 
     y = createSection(pane, "爆发顺序（当前专精）", y)
     createText(pane, "GameFontDisableSmall", 14, y, 720,
-        "窗口出现后，TE 先按此顺序读取每个已启用可选步骤的真实绑定、自身 CD 与装备状态；简易模式只保留可用步骤，集中模式要求全部已启用步骤均可用。窗口之前存在实际步骤时，才会执行四帧 observation-only handoff。")
-    y = y - 50
+        "HUD 与自动爆发都使用此顺序。窗口技能固定保留；注入和饰品可调整位置或停用。")
+    y = y - 38
 
     local function sequenceBurstContext()
         return (TE.Context and TE.Context:GetPlayer()) or {}
@@ -2102,8 +1634,8 @@ local function buildBurstSettings(pane)
     refreshSequenceRows()
     y = y - 8
     createText(pane, "GameFontDisableSmall", 14, y, 720,
-        "注入技能 1–3 由本页下方“注入技能”列表的当前专精已启用前 3 项自动匹配。上方只控制参与、停用和顺序；要更换 SpellID，请在下方列表调整。饰品 13 / 14 固定代表装备栏，计划创建时才锁定本轮实际 ItemID。")
-    y = y - 40
+        "要更换窗口或注入技能，请使用下方技能列表。饰品 13 / 14 始终代表对应装备栏。")
+    y = y - 34
 
     local function getSequenceEntry(key)
         if not (TE.BurstProfiles and type(TE.BurstProfiles.GetAutoBurstSequence) == "function") then return nil end
@@ -2122,89 +1654,13 @@ local function buildBurstSettings(pane)
         local entry = getSequenceEntry("trinket:13")
         return entry and entry.offGCDExplicit == true
     end, function(value) setTrinketOffGCD("trinket:13", value) end,
-        "仅在该饰品经实测确认不会触发公共冷却时勾选。TE 不会根据图标、物品类型或宏内容自行推断脱 GCD。")
+        "只在实测确认该饰品不触发公共冷却时勾选。")
     createCheckbox(pane, "饰品 14 已确认脱 GCD", RIGHT_X, y, function()
         local entry = getSequenceEntry("trinket:14")
         return entry and entry.offGCDExplicit == true
     end, function(value) setTrinketOffGCD("trinket:14", value) end,
-        "仅在该饰品经实测确认不会触发公共冷却时勾选。未勾选的饰品仍可参与序列，但会按普通 GCD 步骤在后续帧重新验证。")
+        "只在实测确认该饰品不触发公共冷却时勾选。")
     y = y - 54
-
-    createReadout(pane, "autoBurstRuntime", "自动爆发诊断", LEFT_X, y, 720, "GameFontHighlightSmall")
-    registerControl(function()
-        local data = TE.AutoBurst and type(TE.AutoBurst.GetDiagnostics) == "function" and TE.AutoBurst:GetDiagnostics() or nil
-        if type(data) ~= "table" then setLabel("autoBurstRuntime", "AutoBurst 未加载") return end
-        local rule = data.resolvedRule or {}
-        local decision = data.lastDecision or {}
-        local steps = rule.steps or {}
-        local labels = {}
-        for _, step in ipairs(steps) do
-            if step.category == "window" then
-                labels[#labels + 1] = "窗口"
-            elseif step.actionKind == "inventory" then
-                labels[#labels + 1] = "饰品" .. tostring(step.inventorySlot or "?")
-            else
-                labels[#labels + 1] = "注入" .. tostring(step.spellID or "?")
-            end
-        end
-        setLabel("autoBurstRuntime", "规则=" .. tostring(rule.profileKey or data.ruleReason or "未解析")
-            .. " · 顺序=" .. (#labels > 0 and table.concat(labels, "→") or "无")
-            .. " · 模式=" .. tostring(data.mode or "-")
-            .. " · 最近=" .. tostring(decision.reason or data.ruleReason or "等待官方窗口")
-            .. " · 计划=" .. tostring(data.plan and data.plan.state or "IDLE"))
-    end)
-    y = y - 94
-
-    createChoice(pane, "爆发策略", 14, y, 230, {
-        { value = "immediate", label = "立即提示" }, { value = "align", label = "对齐主推荐" }, { value = "hold", label = "保留爆发" },
-    }, function() return tactics.burstPolicy end, function(value) tactics.burstPolicy = value end)
-    createChoice(pane, "显示方式", RIGHT_X, y, 190, {
-        { value = "always", label = "常驻" }, { value = "window", label = "窗口出现" }, { value = "highlight", label = "窗口高亮" }, { value = "compact", label = "简洁" },
-    }, function() return tactics.burstDisplayMode end, function(value) tactics.burstDisplayMode = value end)
-    y = y - 38
-    createChoice(pane, "冷却中图标", 14, y, 230, {
-        { value = "gray", label = "保留并显示倒计时" }, { value = "hide", label = "冷却时隐藏" },
-    }, function() return tactics.burstCooldownDisplay end, function(value) tactics.burstCooldownDisplay = value end,
-        "保留时只显示真实自身 CD；共享 GCD 不会作为爆发技能 CD。CD 数字默认遵从“样式设置”的 HUD 字体、颜色、位置。")
-    createNumberStepper(pane, "后续候选数量", RIGHT_X, y, 64, function() return tactics.burstMaxCandidates end, function(value) tactics.burstMaxCandidates = value end, 1, 0, 4, "")
-    createText(pane, "GameFontDisableSmall", RIGHT_X, y - 32, 360, "第 1 个图标始终保留爆发窗口技能；此项只控制其后的注入技能、饰品、药水和种族技能数量。")
-    y = y - 38
-    createCheckbox(pane, "主推荐爆发状态标记", 14, y, function() return tactics.burstHighlightPrimary end, function(value) tactics.burstHighlightPrimary = value end)
-    y = y - 38
-
-    y = createSection(pane, "爆发候选来源", y)
-    createCheckbox(pane, "职业爆发技能", 14, y, function() return tactics.burstShowClassCooldowns end, function(value) tactics.burstShowClassCooldowns = value end)
-    createCheckbox(pane, "饰品 13 / 14", RIGHT_X, y, function() return tactics.burstShowTrinkets end, function(value) tactics.burstShowTrinkets = value end)
-    createCheckbox(pane, "爆发药水", 14, y - 34, function() return tactics.burstShowPotions end, function(value) tactics.burstShowPotions = value end)
-    createCheckbox(pane, "种族技能", RIGHT_X, y - 34, function() return tactics.burstShowRacial end, function(value) tactics.burstShowRacial = value end)
-    y = y - 72
-    local potionBox = createEditBox(pane, "爆发药水物品 ID", 14, y, 160, tostring(tactics.burstPotionItemID or 0))
-    createActionButton(pane, "保存药水 ID", 370, y - 2, 116, function()
-        tactics.burstPotionItemID = math.max(0, math.floor(tonumber(potionBox:GetText()) or 0))
-        potionBox:SetText(tostring(tactics.burstPotionItemID))
-        refreshTacticalBoard()
-    end)
-    y = y - 38
-    local racialBox = createEditBox(pane, "自定义种族技能 ID", 14, y, 160, tostring(tactics.burstRacialSpellID or 0))
-    createActionButton(pane, "保存种族 ID", 370, y - 2, 116, function()
-        tactics.burstRacialSpellID = math.max(0, math.floor(tonumber(racialBox:GetText()) or 0))
-        racialBox:SetText(tostring(tactics.burstRacialSpellID))
-        refreshTacticalBoard()
-    end)
-    createText(pane, "GameFontDisableSmall", 14, y - 38, 720,
-        "候选栏只负责 HUD 提示；不会改变自动爆发顺序或输入权限。饰品/药水/种族需已配置且可解析真实键位。")
-    y = y - 72
-
-    y = createSection(pane, "当前专精覆盖", y)
-    local override, profileKey = getCurrentBurstOverride()
-    createCheckbox(pane, "当前专精启用", 14, y, function() return override.enabled ~= false end, function(value) override.enabled = value end)
-    createCheckbox(pane, "允许饰品提示", RIGHT_X, y, function() return override.allowTrinketHint ~= false end, function(value) override.allowTrinketHint = value end)
-    createCheckbox(pane, "允许药水提示", 14, y - 34, function() return override.allowPotionHint ~= false end, function(value) override.allowPotionHint = value end)
-    createCheckbox(pane, "允许种族提示", RIGHT_X, y - 34, function() return override.allowRacialHint ~= false end, function(value) override.allowRacialHint = value end)
-    createCheckbox(pane, "允许主推荐状态标记", 14, y - 68, function() return override.allowBurstOverlay ~= false end, function(value) override.allowBurstOverlay = value end)
-    createText(pane, "GameFontDisableSmall", 14, y - 108, 720,
-        "当前专精：" .. tostring(profileKey) .. "。上方候选仅显示；自动爆发只使用本专精的“爆发顺序”，并始终受现有 TEAP/TEK 门禁约束。")
-    y = y - 150
 
     local function currentBurstContext()
         return (TE.Context and TE.Context:GetPlayer()) or {}
@@ -2263,169 +1719,10 @@ local function buildBurstSettings(pane)
         resetLabel = "恢复当前专精全部爆发默认",
     })
 
-    createReadout(pane, "burstState", "爆发状态机", 14, y, 720, "GameFontHighlightSmall")
 end
 
 local function buildBurst(pane)
-    local tabY = -12
-    local settingsButton = createActionButton(pane, "爆发设置", 14, tabY, 128, function()
-        ControlPanel:SetBurstSubpage("settings")
-    end)
-    local styleButton = createActionButton(pane, "样式设置", 152, tabY, 128, function()
-        ControlPanel:SetBurstSubpage("style")
-    end)
-    createText(pane, "GameFontDisableSmall", 300, tabY - 4, 400,
-        "设置负责当前专精的爆发顺序与注入规则；样式只控制爆发图标的文字、转盘、边框和动画。")
-    createLine(pane, 14, -46, 692)
-
-    local settingsPane = CreateFrame("Frame", nil, pane)
-    settingsPane:SetPoint("TOPLEFT", pane, "TOPLEFT", 0, -56)
-    settingsPane:SetSize(CONTENT_PANE_WIDTH, CONTENT_PANE_HEIGHT - 56)
-    local stylePane = CreateFrame("Frame", nil, pane)
-    stylePane:SetPoint("TOPLEFT", pane, "TOPLEFT", 0, -56)
-    stylePane:SetSize(CONTENT_PANE_WIDTH, CONTENT_PANE_HEIGHT - 56)
-
-    buildBurstSettings(settingsPane)
-    buildIconStyleEditor(stylePane, "burst", "爆发", -12)
-    createText(stylePane, "GameFontDisableSmall", 14, -2360, 720,
-        "样式设置不会改变爆发候选来源、当前专精爆发顺序、动作条绑定或派发资格。")
-
-    burstSubpages = {
-        settings = { pane = settingsPane, button = settingsButton },
-        style = { pane = stylePane, button = styleButton },
-    }
-    ControlPanel:SetBurstSubpage(root().burstSubpage)
-end
-
-local REACTION_TARGET_LABELS = {
-    target = "当前目标",
-    focus = "焦点目标",
-    mouseover = "鼠标指向目标",
-}
-local REACTION_TARGET_ORDER = { "target", "focus", "mouseover" }
-
--- The normalizer owns production defaults. This small UI fallback only keeps
--- the settings page readable if a third-party load order invokes it before
--- Config/Normalize.lua; it does not create any automatic input behavior.
-local function ensureAutoReactionSettings(tactics)
-    tactics.autoReaction = type(tactics.autoReaction) == "table" and tactics.autoReaction or {}
-    local reaction = tactics.autoReaction
-    reaction.schema = 2
-    for _, kind in ipairs({ "interrupt", "control" }) do
-        reaction[kind] = type(reaction[kind]) == "table" and reaction[kind] or {}
-        local config = reaction[kind]
-        if config.enabled == nil then config.enabled = false end
-        if kind == "interrupt" then
-            -- P5.8 UI fallback mirrors Config/Normalize: the old checkbox is
-            -- visible as a disabled design-pause notice, never a selectable
-            -- future dispatch preference.
-            config.enabled = false
-            config.suspended = true
-            config.suspensionReason = "auto_interrupt_suspended"
-            if config.compatibilityActiveCast == nil then config.compatibilityActiveCast = false end
-        end
-        if kind == "control" and config.aoeEnabled == nil then config.aoeEnabled = false end
-        config.targetOrder = type(config.targetOrder) == "table" and config.targetOrder or { "target", "focus", "mouseover" }
-        config.targetEnabled = type(config.targetEnabled) == "table" and config.targetEnabled or {}
-        if config.targetEnabled.target == nil then config.targetEnabled.target = true end
-        if config.targetEnabled.focus == nil then config.targetEnabled.focus = false end
-        if config.targetEnabled.mouseover == nil then config.targetEnabled.mouseover = false end
-    end
-    return reaction
-end
-
-local function normalizeReactionOrderInPlace(config)
-    local out, seen = {}, {}
-    for _, source in ipairs(type(config.targetOrder) == "table" and config.targetOrder or {}) do
-        if REACTION_TARGET_LABELS[source] and not seen[source] then
-            out[#out + 1] = source
-            seen[source] = true
-        end
-    end
-    for _, source in ipairs(REACTION_TARGET_ORDER) do
-        if not seen[source] then
-            out[#out + 1] = source
-            seen[source] = true
-        end
-    end
-    config.targetOrder = out
-    return out
-end
-
-local function moveReactionTarget(config, source, delta)
-    local order = normalizeReactionOrderInPlace(config)
-    local index
-    for i, value in ipairs(order) do
-        if value == source then index = i break end
-    end
-    if not index then return false, "目标来源不存在" end
-    local nextIndex = index + (tonumber(delta) or 0)
-    if nextIndex < 1 or nextIndex > #order then return false, "已到边界" end
-    order[index], order[nextIndex] = order[nextIndex], order[index]
-    return true
-end
-
--- Shared editor for the automatic interrupt/control target-source preference.
--- It only saves order and enablement. P1 does not poll casts, emit a token, or
--- perform any input action from these controls.
-local function createReactionTargetPriorityEditor(parent, title, description, y, configGetter)
-    y = createSection(parent, title, y)
-    createText(parent, "GameFontDisableSmall", 14, y, 720, description or "")
-    local topY = y - 34
-    local rows = {}
-
-    for index = 1, #REACTION_TARGET_ORDER do
-        local row = { index = index }
-        row.enabled = CreateFrame("CheckButton", nil, parent, "UICheckButtonTemplate")
-        row.enabled:SetPoint("TOPLEFT", parent, "TOPLEFT", 14, topY - (index - 1) * 36 + 2)
-        row.label = createText(parent, "GameFontHighlightSmall", 44, topY - (index - 1) * 36 - 4, 180, "")
-        row.state = createText(parent, "GameFontDisableSmall", 228, topY - (index - 1) * 36 - 4, 88, "")
-        row.up = createActionButton(parent, "上移", 330, topY - (index - 1) * 36, 58, function()
-            if not row.source then return end
-            local ok, reason = moveReactionTarget(configGetter(), row.source, -1)
-            panelStatus(ok and "目标优先级已上移。" or ("无法上移：" .. tostring(reason or "边界")))
-            ControlPanel:ApplyVisuals(false)
-        end)
-        row.down = createActionButton(parent, "下移", 396, topY - (index - 1) * 36, 58, function()
-            if not row.source then return end
-            local ok, reason = moveReactionTarget(configGetter(), row.source, 1)
-            panelStatus(ok and "目标优先级已下移。" or ("无法下移：" .. tostring(reason or "边界")))
-            ControlPanel:ApplyVisuals(false)
-        end)
-        row.enabled:SetScript("OnClick", function(button)
-            if not row.source then return end
-            local config = configGetter()
-            config.targetEnabled = type(config.targetEnabled) == "table" and config.targetEnabled or {}
-            config.targetEnabled[row.source] = button:GetChecked() == true
-            panelStatus((config.targetEnabled[row.source] and "已启用：" or "已停用：") .. tostring(REACTION_TARGET_LABELS[row.source]))
-            ControlPanel:ApplyVisuals(false)
-        end)
-        rows[index] = row
-    end
-
-    local function refresh()
-        local config = configGetter()
-        local order = normalizeReactionOrderInPlace(config)
-        config.targetEnabled = type(config.targetEnabled) == "table" and config.targetEnabled or {}
-        for index, row in ipairs(rows) do
-            local source = order[index]
-            row.source = source
-            local enabled = source and config.targetEnabled[source] == true
-            row.enabled:SetShown(source ~= nil)
-            row.label:SetShown(source ~= nil)
-            row.state:SetShown(source ~= nil)
-            row.up:SetShown(source ~= nil and index > 1)
-            row.down:SetShown(source ~= nil and index < #order)
-            if source then
-                row.enabled:SetChecked(enabled)
-                row.label:SetText(tostring(index) .. ". " .. tostring(REACTION_TARGET_LABELS[source] or source))
-                row.state:SetText(enabled and "已勾选" or "未勾选")
-            end
-        end
-    end
-    registerControl(refresh)
-    refresh()
-    return topY - #REACTION_TARGET_ORDER * 36 - 18
+    buildBurstSettings(pane)
 end
 
 local function buildProfiles(pane)
@@ -2467,39 +1764,56 @@ local function buildProfiles(pane)
     createText(pane, "GameFontDisableSmall", 14, y - 42, 720,
         "新建会复制当前配置。Default 不可删除。配置只保存设置与战术 HUD 偏好，不复制动作条绑定，也不保存或生成 TEAP / Token。")
     y = y - 96
-    y = createSection(pane, "自动按范围切换", y)
-    createReadout(pane, "profileScopes", "当前映射", 14, y, 720, "GameFontHighlightSmall")
-    y = y - 116
+    y = createSection(pane, "重置", y)
+    createActionButton(pane, "重置 HUD 布局", 14, y, 128, function() ControlPanel:ResetTacticalLayout() end)
+    createActionButton(pane, "恢复显示默认", 152, y, 128, function() ControlPanel:ResetDisplaySettings() end)
+    createActionButton(pane, "重置设置窗口位置", 290, y, 146, function() ControlPanel:ResetPosition() end)
+    y = y - 76
+
+    y = createSection(pane, "高级设置", y)
+    local advancedFrame = CreateFrame("Frame", nil, pane)
+    advancedFrame:SetPoint("TOPLEFT", pane, "TOPLEFT", 0, y - 44)
+    advancedFrame:SetSize(CONTENT_PANE_WIDTH, 260)
+    local advancedButton
+    local function refreshAdvanced()
+        advancedFrame:SetShown(profilesAdvancedExpanded == true)
+        if advancedButton and advancedButton.text then
+            advancedButton.text:SetText(profilesAdvancedExpanded and "收起自动切换" or "展开自动切换")
+        end
+    end
+    advancedButton = createActionButton(pane, "展开自动切换", 14, y, 136, function()
+        profilesAdvancedExpanded = not profilesAdvancedExpanded
+        refreshAdvanced()
+    end)
+
+    local advancedY = createSection(advancedFrame, "按范围自动切换", -12)
+    createReadout(advancedFrame, "profileScopes", "当前映射", 14, advancedY, 720, "GameFontHighlightSmall")
+    advancedY = advancedY - 116
     local manager = TE.ProfileManager
     local keys = manager and manager:GetScopeKeys() or {}
-    createActionButton(pane, "全局 ← 当前", 14, y, 112, function()
+    createActionButton(advancedFrame, "全局 ← 当前", 14, advancedY, 112, function()
         profileAction("全局映射", function() return TE.ProfileManager:SetScopeProfile(keys.global, TE.ProfileManager:GetActiveName()) end)
     end)
-    createActionButton(pane, "角色 ← 当前", 136, y, 112, function()
+    createActionButton(advancedFrame, "角色 ← 当前", 136, advancedY, 112, function()
         profileAction("角色映射", function() return TE.ProfileManager:SetScopeProfile(keys.character, TE.ProfileManager:GetActiveName()) end)
     end)
-    createActionButton(pane, "职业 ← 当前", 258, y, 112, function()
+    createActionButton(advancedFrame, "职业 ← 当前", 258, advancedY, 112, function()
         profileAction("职业映射", function() return TE.ProfileManager:SetScopeProfile(keys.class, TE.ProfileManager:GetActiveName()) end)
     end)
-    createActionButton(pane, "专精 ← 当前", 380, y, 112, function()
+    createActionButton(advancedFrame, "专精 ← 当前", 380, advancedY, 112, function()
         profileAction("专精映射", function() return TE.ProfileManager:SetScopeProfile(keys.spec, TE.ProfileManager:GetActiveName()) end)
     end)
-    y = y - 42
-    createActionButton(pane, "清除全局映射", 14, y, 112, function() profileAction("清除全局", function() return TE.ProfileManager:ClearScopeProfile(keys.global) end) end)
-    createActionButton(pane, "清除角色映射", 136, y, 112, function() profileAction("清除角色", function() return TE.ProfileManager:ClearScopeProfile(keys.character) end) end)
-    createActionButton(pane, "清除职业映射", 258, y, 112, function() profileAction("清除职业", function() return TE.ProfileManager:ClearScopeProfile(keys.class) end) end)
-    createActionButton(pane, "清除专精映射", 380, y, 112, function() profileAction("清除专精", function() return TE.ProfileManager:ClearScopeProfile(keys.spec) end) end)
-    y = y - 90
-    y = createSection(pane, "重置与恢复", y)
-    createActionButton(pane, "重置 HUD 布局", 14, y, 128, function() ControlPanel:ResetTacticalLayout() end)
-    createActionButton(pane, "重置显示设置", 152, y, 128, function() ControlPanel:ResetDisplaySettings() end)
-    createActionButton(pane, "重置后台位置", 290, y, 128, function() ControlPanel:ResetPosition() end)
+    advancedY = advancedY - 42
+    createActionButton(advancedFrame, "清除全局", 14, advancedY, 112, function() profileAction("清除全局", function() return TE.ProfileManager:ClearScopeProfile(keys.global) end) end)
+    createActionButton(advancedFrame, "清除角色", 136, advancedY, 112, function() profileAction("清除角色", function() return TE.ProfileManager:ClearScopeProfile(keys.character) end) end)
+    createActionButton(advancedFrame, "清除职业", 258, advancedY, 112, function() profileAction("清除职业", function() return TE.ProfileManager:ClearScopeProfile(keys.class) end) end)
+    createActionButton(advancedFrame, "清除专精", 380, advancedY, 112, function() profileAction("清除专精", function() return TE.ProfileManager:ClearScopeProfile(keys.spec) end) end)
+    refreshAdvanced()
 end
 
 local BUILDERS = {
     general = buildGeneral,
     hud = buildHUD,
-    main = buildMain,
     burst = buildBurst,
     profiles = buildProfiles,
 }
@@ -2669,8 +1983,6 @@ function ControlPanel:Create()
     for page, pane in pairs(panes) do pane:SetShown(page == activePage) end
     setLabel("pageTitle", meta.label)
     setLabel("pageDescription", meta.description)
-    if activePage == "burst" then ControlPanel:SetBurstSubpage(store.burstSubpage) end
-    if activePage == "interrupt" then ControlPanel:SetInterruptSubpage(store.interruptSubpage) end
     applyPanelPresentation(store.minimized == true)
     restorePanelPosition(store.minimized == true and "compact" or "normal")
     frame:Hide()

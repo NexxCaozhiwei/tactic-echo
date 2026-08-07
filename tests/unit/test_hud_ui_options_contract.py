@@ -28,12 +28,12 @@ class HudUiOptionsContractTests(unittest.TestCase):
         board = BOARD.read_text(encoding="utf-8")
         for token in (
             'hud.backdropAlpha',
-            'hud.keyLabel.fontSize',
-            'hud.keyLabel.point',
-            'hud.layoutPreset',
-            'hud.primaryGrowth',
-            'hud.tacticalGrowth',
-            'hud.defenseDetached',
+            'hud.scale',
+            'hud.alpha',
+            'hud.burstGrowth',
+            'hud.showKeyLabels',
+            'hud.showStatusText',
+            'hud.queueMode',
         ):
             self.assertIn(token, control)
         for token in ('TacticalHudModel.Build', 'TacticalHudLayout:Apply', 'TacticalIconButton.Apply', 'TacticalHudDragHandle'):

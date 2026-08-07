@@ -48,10 +48,9 @@ class Teui079DefenseGcdHotkeyHeaderContractTests(unittest.TestCase):
             '"CooldownFrameTemplate"',
             "sameCooldown",
             "globalOnly",
-            "显示共 CD 转盘",
-            "公共冷却（GCD）转盘",
         ):
-            self.assertIn(marker, self.icon + self.panel)
+            self.assertIn(marker, self.icon)
+        self.assertNotIn("公共冷却（GCD）转盘", self.panel)
 
     def test_hotkey_labels_are_compacted_without_widening_dispatch_policy(self) -> None:
         for marker in (
@@ -82,11 +81,9 @@ class Teui079DefenseGcdHotkeyHeaderContractTests(unittest.TestCase):
             "card.highlight = CreateFrame",
             "card.highlight:SetBackdropBorderColor",
             "updateHighlight(card, item, card.resolvedHighlightStyle)",
-            "启用静态边框高亮",
-            "紧急防御状态边框",
-            "光效与动画",
         ):
-            self.assertIn(marker, self.icon + self.panel)
+            self.assertIn(marker, self.icon)
+        self.assertNotIn("光效与动画", self.panel)
         self.assertNotIn("ActionButton_ShowOverlayGlow", self.icon)
         self.assertIn("rotationhelper_ants_flipbook", effects)
         self.assertIn("UI-HUD-ActionBar-Proc-Loop-Flipbook", effects)

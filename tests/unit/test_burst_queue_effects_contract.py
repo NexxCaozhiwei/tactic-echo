@@ -36,8 +36,8 @@ def test_burst_direction_is_independent_from_interrupt_control_direction() -> No
     panel = read("UI/ControlPanel.lua")
     assert 'hud.burstGrowth or "RIGHT"' in layout
     assert 'hud.tacticalGrowth or "RIGHT"' in layout
-    assert '"爆发队列方向"' in panel
-    assert '"打断控制方向"' in panel
+    assert '"爆发方向"' in panel
+    assert '"打断控制方向"' not in panel
 
 
 def test_effect_pipeline_caches_state_and_preserves_icon_art() -> None:

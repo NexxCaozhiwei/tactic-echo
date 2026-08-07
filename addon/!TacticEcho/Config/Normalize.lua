@@ -258,13 +258,18 @@ local function normalizeHud(tactics)
 
     hud.enabled = boolean(hud.enabled, defaults.enabled)
     hud.locked = boolean(hud.locked, defaults.locked)
-    hud.compact = boolean(hud.compact, defaults.compact)
+    local legacyCompact = boolean(hud.compact, defaults.compact)
     hud.layoutPreset = isEnum(hud.layoutPreset, { queue_horizontal = true, queue_vertical = true, surround = true }, defaults.layoutPreset)
     hud.orientation = hud.layoutPreset == "queue_vertical" and "vertical" or "horizontal"
     hud.primaryGrowth = isEnum(hud.primaryGrowth, { RIGHT = true, LEFT = true, UP = true, DOWN = true }, defaults.primaryGrowth)
     hud.tacticalGrowth = isEnum(hud.tacticalGrowth, { RIGHT = true, LEFT = true, UP = true, DOWN = true }, defaults.tacticalGrowth)
     hud.burstGrowth = isEnum(hud.burstGrowth, { RIGHT = true, LEFT = true, UP = true, DOWN = true }, defaults.burstGrowth)
     hud.queueMode = isEnum(hud.queueMode, { primary = true, queue = true, tactical = true }, defaults.queueMode)
+    if priorSchema < 11 and legacyCompact then hud.queueMode = "primary" end
+    -- 1.1.7 TEUI uses one authoritative content selector. Old compact/module
+    -- visibility switches are migrated into queueMode and can no longer hide
+    -- the AutoBurst sequence independently.
+    hud.compact = false
     hud.maxCandidates = number(hud.maxCandidates, defaults.maxCandidates, 1, 3, true)
     hud.scale = number(hud.scale, defaults.scale, 0.60, 2.00)
     hud.alpha = number(hud.alpha, defaults.alpha, 0.20, 1.00)
@@ -274,10 +279,10 @@ local function normalizeHud(tactics)
     hud.outOfCombatScale = number(hud.outOfCombatScale, defaults.outOfCombatScale, 0.60, 2.00)
     hud.fadeOutOfCombat = hud.outOfCombatMode == "dim" -- retained for old integrations only.
     hud.hideWhenIdle = boolean(hud.hideWhenIdle, defaults.hideWhenIdle)
-    hud.showHistory = boolean(hud.showHistory, defaults.showHistory)
+    hud.showHistory = false
     hud.showKeyLabels = boolean(hud.showKeyLabels, defaults.showKeyLabels)
     hud.showStatusText = boolean(hud.showStatusText, defaults.showStatusText)
-    hud.showSourceTags = boolean(hud.showSourceTags, defaults.showSourceTags)
+    hud.showSourceTags = false
     hud.showTargetPrompt = boolean(hud.showTargetPrompt, defaults.showTargetPrompt)
     hud.targetPromptSchema = 2
     hud.showDragHandle = boolean(hud.showDragHandle, defaults.showDragHandle)
@@ -293,7 +298,9 @@ local function normalizeHud(tactics)
 
     hud.modules = type(hud.modules) == "table" and hud.modules or {}
     local main = normalizeModule(hud, "main")
-    normalizeModule(hud, "burst")
+    local burst = normalizeModule(hud, "burst")
+    main.show = true
+    burst.show = hud.queueMode ~= "primary"
     normalizeModule(hud, "interrupt")
     normalizeModule(hud, "defense")
     hud.keyLabel = main.keyLabel -- legacy diagnostic / profile compatibility.
@@ -316,12 +323,9 @@ local function normalizeTactics(tactics, priorHudSchema)
     tactics.mobilityEnabled = boolean(tactics.mobilityEnabled, defaults.mobilityEnabled)
     tactics.defensiveEnabled = boolean(tactics.defensiveEnabled, defaults.defensiveEnabled)
     tactics.defensiveOutOfCombatStandby = boolean(tactics.defensiveOutOfCombatStandby, defaults.defensiveOutOfCombatStandby)
-    tactics.burstEnabled = boolean(tactics.burstEnabled, defaults.burstEnabled)
-    tactics.burstPolicy = isEnum(tactics.burstPolicy, { immediate = true, align = true, hold = true }, defaults.burstPolicy)
-    tactics.burstDisplayMode = isEnum(tactics.burstDisplayMode, { always = true, window = true, highlight = true, compact = true }, defaults.burstDisplayMode)
     tactics.autoBurstEnabled = boolean(tactics.autoBurstEnabled, defaults.autoBurstEnabled)
     tactics.autoBurstMode = isEnum(tactics.autoBurstMode, { simple = true, focused = true }, defaults.autoBurstMode)
-    tactics.autoBurstDebug = boolean(tactics.autoBurstDebug, defaults.autoBurstDebug)
+    tactics.autoBurstDebug = false
     -- 1.0.26 retires the global legacy manual-rule manual rule.  Settings are now
     -- stored by specialization as stable sequence step identities; deleting
     -- these old values prevents a stale hand-entered SpellID from silently
@@ -333,18 +337,22 @@ local function normalizeTactics(tactics, priorHudSchema)
     tactics.autoBurstInjectionTrinketSlot = nil
     tactics.autoBurstTrinketOffGCDExplicit = nil
     tactics.autoBurstUseProfileFallback = nil
-    tactics.burstShowCandidates = boolean(tactics.burstShowCandidates, defaults.burstShowCandidates)
-    tactics.burstHighlightPrimary = boolean(tactics.burstHighlightPrimary, defaults.burstHighlightPrimary)
-    tactics.burstShowClassCooldowns = boolean(tactics.burstShowClassCooldowns, defaults.burstShowClassCooldowns)
-    tactics.burstShowTrinkets = boolean(tactics.burstShowTrinkets, defaults.burstShowTrinkets)
-    tactics.burstShowPotions = boolean(tactics.burstShowPotions, defaults.burstShowPotions)
-    tactics.burstShowRacial = boolean(tactics.burstShowRacial, defaults.burstShowRacial)
-    -- Number of post-window cards. The window trigger itself always owns slot 1.
-    tactics.burstMaxCandidates = number(tactics.burstMaxCandidates, defaults.burstMaxCandidates, 0, 4, true)
-    tactics.burstPotionItemID = number(tactics.burstPotionItemID, defaults.burstPotionItemID, 0, 99999999, true)
-    tactics.burstRacialSpellID = number(tactics.burstRacialSpellID, defaults.burstRacialSpellID, 0, 99999999, true)
-    tactics.burstCooldownDisplay = isEnum(tactics.burstCooldownDisplay, { gray = true, hide = true }, defaults.burstCooldownDisplay)
-    tactics.burstUnboundDisplay = isEnum(tactics.burstUnboundDisplay, { gray = true, hide = true }, defaults.burstUnboundDisplay)
+    -- Retired display-only burst-window/candidate controls are deleted from
+    -- persisted settings. HUD cards now mirror the real AutoBurst sequence.
+    tactics.burstEnabled = nil
+    tactics.burstPolicy = nil
+    tactics.burstDisplayMode = nil
+    tactics.burstShowCandidates = nil
+    tactics.burstHighlightPrimary = nil
+    tactics.burstShowClassCooldowns = nil
+    tactics.burstShowTrinkets = nil
+    tactics.burstShowPotions = nil
+    tactics.burstShowRacial = nil
+    tactics.burstMaxCandidates = nil
+    tactics.burstPotionItemID = nil
+    tactics.burstRacialSpellID = nil
+    tactics.burstCooldownDisplay = nil
+    tactics.burstUnboundDisplay = nil
     tactics.interruptDisplayMode = isEnum(tactics.interruptDisplayMode, { always = true, cast = true, highlight = true }, defaults.interruptDisplayMode)
     tactics.controlDisplayMode = isEnum(tactics.controlDisplayMode, { always = true, cast = true, highlight = true }, defaults.controlDisplayMode)
     tactics.defensiveDisplayMode = isEnum(tactics.defensiveDisplayMode, { always = true, condition = true, highlight = true }, defaults.defensiveDisplayMode)
@@ -375,6 +383,15 @@ local function normalizeTactics(tactics, priorHudSchema)
     survival.emergencyHealthPercent = number(survival.emergencyHealthPercent, survivalDefaults.emergencyHealthPercent, 5, 100, true)
     survival.inCombatOnly = boolean(survival.inCombatOnly, survivalDefaults.inCombatOnly)
     tactics.burstProfiles = type(tactics.burstProfiles) == "table" and tactics.burstProfiles or {}
+    for _, profile in pairs(tactics.burstProfiles) do
+        if type(profile) == "table" then
+            profile.enabled = nil
+            profile.allowTrinketHint = nil
+            profile.allowPotionHint = nil
+            profile.allowRacialHint = nil
+            profile.allowBurstOverlay = nil
+        end
+    end
     tactics.settingsSchema = Defaults.schema or 5
     return tactics
 end

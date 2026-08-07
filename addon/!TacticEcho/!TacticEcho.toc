@@ -28,7 +28,6 @@ Tactics/IconState.lua
 Tactics/GCDGate.lua
 Tactics/AbilityProfiles.lua
 Tactics/BurstProfiles.lua
-Tactics/BurstStateMachine.lua
 Tactics/BurstPlanner.lua
 Tactics/AutoBurst.lua
 Tactics/TacticalAdvisors.lua

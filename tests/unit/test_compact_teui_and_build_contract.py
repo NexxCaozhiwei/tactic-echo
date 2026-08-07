@@ -14,7 +14,7 @@ ONE_CLICK = ROOT / "TEKEXEBUILD.CMD"
 
 
 class CompactTeuiAndBuildContractTests(unittest.TestCase):
-    def test_extra_action_observation_reaches_same_source_ui_snapshot(self) -> None:
+    def test_retired_action_diagnostics_are_not_exposed_in_settings(self) -> None:
         resolver = RESOLVER.read_text(encoding="utf-8")
         tactical = TACTICAL_STATE.read_text(encoding="utf-8")
         control = CONTROL.read_text(encoding="utf-8")
@@ -22,7 +22,8 @@ class CompactTeuiAndBuildContractTests(unittest.TestCase):
         self.assertIn("cached.specialActionBar = specialActionBar", resolver)
         self.assertIn("specialActionBar=specialActionBar", resolver)
         self.assertIn("specialActionBar = binding.specialActionBar", tactical)
-        self.assertIn("额外动作条：已显示（仅观察，不阻断）", control)
+        self.assertNotIn("额外动作条：已显示（仅观察，不阻断）", control)
+        self.assertNotIn('page == "monitor"', control)
         self.assertNotIn("compactSnapshotText", control)
 
     def test_settings_center_has_persistent_minimized_presentation(self) -> None:
@@ -104,7 +105,6 @@ class CompactStatusBar091ContractTests(unittest.TestCase):
             'out_of_combat_auto_standby") and "standby"',
             'compactToggleButton = createActionButton(compactView, "▶", 220, -5, 24, function() ControlPanel:ToggleRun() end)',
             'createActionButton(compactView, "□", 248, -5, 24, function() ControlPanel:Restore() end)',
-            'createActionButton(pane, "重置紧凑条位置"',
         ):
             self.assertIn(token, control)
         for forbidden in (

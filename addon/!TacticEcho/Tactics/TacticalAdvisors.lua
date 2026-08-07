@@ -990,13 +990,6 @@ function TacticalAdvisors:Refresh(force)
         }
     end
 
-    if primaryDisplay and advisory.burst and advisory.burst.overlayPrimary == true and settings.burstHighlightPrimary ~= false then
-        primaryDisplay.procHighlight = true
-        primaryDisplay.burstOverlay = true
-        primaryDisplay.burstState = advisory.burst.state
-        primaryDisplay.burstReason = advisory.burst.notice
-    end
-
     decorateItem(primaryDisplay, "primary", runtimeSnapshot)
     -- AutoBurst already materializes Burst cards from this exact cycle. This is
     -- intentionally a schema check only; no second binding/cooldown pass occurs.

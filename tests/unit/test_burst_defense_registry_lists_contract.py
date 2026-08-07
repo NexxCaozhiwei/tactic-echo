@@ -11,7 +11,8 @@ class BurstDefenseRegistryListsContractTests(unittest.TestCase):
     def setUp(self) -> None:
         self.burst_profiles = (ADDON / "Tactics" / "BurstProfiles.lua").read_text(encoding="utf-8")
         self.burst_planner = (ADDON / "Tactics" / "BurstPlanner.lua").read_text(encoding="utf-8")
-        self.burst_state = (ADDON / "Tactics" / "BurstStateMachine.lua").read_text(encoding="utf-8")
+        state_path = ADDON / "Tactics" / "BurstStateMachine.lua"
+        self.burst_state = state_path.read_text(encoding="utf-8") if state_path.exists() else ""
         self.ability_profiles = (ADDON / "Tactics" / "AbilityProfiles.lua").read_text(encoding="utf-8")
         self.defense_planner = (ADDON / "Tactics" / "AdvisoryPlanner.lua").read_text(encoding="utf-8")
         self.ui = (ADDON / "UI" / "ControlPanel.lua").read_text(encoding="utf-8")
@@ -85,8 +86,8 @@ class BurstDefenseRegistryListsContractTests(unittest.TestCase):
             self.assertIn(marker, self.burst_planner)
 
     def test_empty_justac_seed_is_explicitly_suppressed_not_replaced_with_guesswork(self) -> None:
-        self.assertIn("if profile.noSeedNotice then", self.burst_state)
-        self.assertIn("intentionally sparse", self.burst_state)
+        self.assertIn("if profile.noSeedNotice then", self.burst_profiles)
+        self.assertIn("#triggerEntries == 0 and #injectionEntries == 0", self.burst_profiles)
         self.assertIn("列表保持为空", self.burst_profiles)
 
     def test_defense_uses_single_current_spec_priority_list_without_special_case(self) -> None:

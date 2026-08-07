@@ -3351,21 +3351,6 @@ local function hudPerfCount(name, amount)
     if perf and type(perf.Count) == "function" then perf:Count(name, amount) end
 end
 
-local function hudUniqueAppend(out, seen, key, item)
-    if key == nil or seen[key] then return end
-    seen[key] = true
-    out[#out + 1] = item
-end
-
-local function hudHostileTargetState()
-    if type(UnitExists) == "function" and not UnitExists("target") then return false, "没有敌对目标" end
-    if type(UnitIsDeadOrGhost) == "function" and UnitIsDeadOrGhost("target") then return false, "目标已死亡" end
-    if type(UnitCanAttack) == "function" and type(UnitExists) == "function" and UnitExists("target") then
-        if not UnitCanAttack("player", "target") then return false, "目标不可攻击" end
-    end
-    return true, nil
-end
-
 local function hudNormalizeBinding(result, fallbackReason)
     if type(result) ~= "table" then return nil, fallbackReason or "未找到动作条映射" end
     if result.status == "Ready" and result.binding then return result end
@@ -3579,45 +3564,6 @@ local function hudItemCandidate(snapshot, itemID, category, source, options)
     return item
 end
 
-local function hudCollectSpells(snapshot, spellIDs, profile, category, source, options)
-    local all, ready, cooling, blocked, diagnostics, seen = {}, {}, {}, {}, {}, {}
-    for _, spellID in ipairs(spellIDs or {}) do
-        spellID = hudNumber(spellID)
-        if spellID and not seen[spellID] and not (TE.BurstProfiles and TE.BurstProfiles:IsBlacklisted(profile, spellID)) then
-            seen[spellID] = true
-            local item, reason = hudSpellCandidate(snapshot, spellID, category, source, options)
-            if item then
-                all[#all + 1] = item
-                if item.usableState == "ready" then ready[#ready + 1] = item
-                elseif item.usableState == "cooldown" then cooling[#cooling + 1] = item
-                else blocked[#blocked + 1] = item end
-            elseif reason then
-                diagnostics[#diagnostics + 1] = tostring(reason)
-            end
-        end
-    end
-    return all, ready, cooling, blocked, diagnostics
-end
-
-local function hudAppend(out, source, limit, seen)
-    for _, item in ipairs(source or {}) do
-        if limit and #out >= limit then break end
-        local key = item.itemID and ("item:" .. tostring(item.itemID)) or ("spell:" .. tostring(item.spellID))
-        hudUniqueAppend(out, seen, key, item)
-    end
-end
-
-local function hudCooldownAllowed(settings)
-    return settings and settings.burstCooldownDisplay ~= "hide"
-end
-
-local function hudFollowerLimit(settings)
-    local maximum = tonumber(settings and settings.burstMaxCandidates) or 3
-    maximum = math.max(0, math.min(4, math.floor(maximum)))
-    if settings and settings.burstDisplayMode == "compact" then maximum = 0 end
-    return maximum
-end
-
 local function hudMakeOutput(profile, profileKey, state, profileReason, autoBurstState, runtimeSnapshot)
     return {
         schema = 2,
@@ -3656,120 +3602,6 @@ local function hudMarkRole(item, role, state, sourceOrder)
     return item
 end
 
-local function hudWindowCandidates(snapshot, profile, state, options)
-    local ordered, seen = {}, {}
-    local observed = hudNumber(state and state.openerSpellID)
-    if observed then ordered[#ordered + 1], seen[observed] = observed, true end
-    for _, spellID in ipairs(profile.openerSpellIDs or {}) do
-        spellID = hudNumber(spellID)
-        if spellID and not seen[spellID] then ordered[#ordered + 1], seen[spellID] = spellID, true end
-    end
-    return hudCollectSpells(snapshot, ordered, profile, "offensiveCooldowns", "爆发窗口技能", options)
-end
-
-local function hudSelectWindow(snapshot, profile, state, settings, options, allowReady)
-    local all, ready, cooling, blocked, diagnostics = hudWindowCandidates(snapshot, profile, state, options)
-    local selected
-    if allowReady and #ready > 0 then selected = ready[1]
-    elseif #cooling > 0 and hudCooldownAllowed(settings) then selected = cooling[1]
-    elseif settings.burstDisplayMode == "always" and #blocked > 0 then selected = blocked[1]
-    elseif settings.burstDisplayMode == "always" and #all > 0 then selected = all[1] end
-    return selected, diagnostics
-end
-
-local function hudCollectTrinkets(snapshot, profile)
-    local all, diagnostics = {}, {}
-    local runtime = TE.RuntimeSnapshot
-    for _, entry in ipairs((profile.displayCandidates or {}).trinkets or {}) do
-        if entry.enabled ~= false then
-            local slot = hudNumber(entry.slot)
-            local itemID, reason = runtime:GetInventoryItemID(snapshot, slot)
-            if itemID and itemID > 0 then
-                local item, candidateReason = hudItemCandidate(snapshot, itemID, "trinket", entry.label or ("饰品" .. tostring(slot)), { inventorySlot = slot })
-                if item then all[#all + 1] = item elseif candidateReason then diagnostics[#diagnostics + 1] = tostring(candidateReason) end
-            elseif reason then
-                diagnostics[#diagnostics + 1] = tostring(reason)
-            end
-        end
-    end
-    return all, diagnostics
-end
-
-local function hudCollectPotion(snapshot, settings)
-    local itemID = hudNumber(settings and settings.burstPotionItemID)
-    if not itemID or itemID <= 0 then return {}, {} end
-    local item, reason = hudItemCandidate(snapshot, itemID, "potion", "爆发药水", { potion = true })
-    return item and { item } or {}, reason and { tostring(reason) } or {}
-end
-
-local function hudCollectRacial(snapshot, profile, settings, options)
-    local ids, seen = {}, {}
-    for _, spellID in ipairs((profile.displayCandidates or {}).racial or {}) do
-        spellID = hudNumber(spellID)
-        if spellID and not seen[spellID] then ids[#ids + 1], seen[spellID] = spellID, true end
-    end
-    local custom = hudNumber(settings and settings.burstRacialSpellID)
-    if custom and custom > 0 and not seen[custom] then ids[#ids + 1] = custom end
-    return hudCollectSpells(snapshot, ids, profile, "racial", "种族技能", options)
-end
-
-local function hudFollowups(snapshot, profile, state, settings, options, showSequence)
-    local out, seen, diagnostics = {}, {}, {}
-    local maximum = hudFollowerLimit(settings)
-    if maximum <= 0 then return out, diagnostics end
-    local always = settings.burstDisplayMode == "always"
-    local active = state.state == "ACTIVE"
-    if not always and not active and showSequence ~= true then return out, diagnostics end
-
-    local orderedGroups = {}
-    local injectionAll, _, _, _, injectionDiag = hudCollectSpells(snapshot, profile.injectionSpellIDs, profile, "rotationSpells", "爆发注入", options)
-    orderedGroups[#orderedGroups + 1] = { role = "injection", items = injectionAll }
-    for _, reason in ipairs(injectionDiag or {}) do diagnostics[#diagnostics + 1] = reason end
-
-    if settings.burstShowTrinkets == true and profile.allowTrinketHint ~= false then
-        local values, diag = hudCollectTrinkets(snapshot, profile)
-        orderedGroups[#orderedGroups + 1] = { role = "trinket", items = values }
-        for _, reason in ipairs(diag or {}) do diagnostics[#diagnostics + 1] = reason end
-    end
-    if settings.burstShowPotions == true and profile.allowPotionHint ~= false then
-        local values, diag = hudCollectPotion(snapshot, settings)
-        orderedGroups[#orderedGroups + 1] = { role = "potion", items = values }
-        for _, reason in ipairs(diag or {}) do diagnostics[#diagnostics + 1] = reason end
-    end
-    if settings.burstShowRacial == true and profile.allowRacialHint ~= false then
-        local values, _, _, _, diag = hudCollectRacial(snapshot, profile, settings, options)
-        orderedGroups[#orderedGroups + 1] = { role = "racial", items = values }
-        for _, reason in ipairs(diag or {}) do diagnostics[#diagnostics + 1] = reason end
-    end
-
-    local function addGroup(items, role, wanted)
-        for _, item in ipairs(items or {}) do
-            if #out >= maximum then return end
-            if wanted == nil or item.usableState == wanted then
-                hudMarkRole(item, role, state, #out + 2)
-                hudAppend(out, { item }, maximum, seen)
-            end
-        end
-    end
-
-    if always then
-        for _, group in ipairs(orderedGroups) do addGroup(group.items, group.role) end
-    else
-        for _, group in ipairs(orderedGroups) do addGroup(group.items, group.role, "ready") end
-        if hudCooldownAllowed(settings) and #out < maximum then
-            for _, group in ipairs(orderedGroups) do addGroup(group.items, group.role, "cooldown") end
-        end
-    end
-    return out, diagnostics
-end
-
-local function hudCompose(out)
-    out.items = {}
-    if out.window then out.items[#out.items + 1] = out.window end
-    for _, item in ipairs(out.followups or {}) do out.items[#out.items + 1] = item end
-    out.active = #out.items > 0
-end
-
 local function hudMarkVerification(out, stateSnapshot)
     if type(out) ~= "table" or type(stateSnapshot) ~= "table" or stateSnapshot.active ~= true then return end
     local pending = stateSnapshot.waitingForConfirmation == true
@@ -3782,6 +3614,76 @@ local function hudMarkVerification(out, stateSnapshot)
             item.burstVerificationRole = stateSnapshot.currentRole
         end
     end
+end
+
+local HUD_SEQUENCE_MAX_CARDS = 5
+
+local function hudUnboundSequenceSpell(snapshot, spellID, role, reason)
+    local runtime = TE.RuntimeSnapshot
+    local name, icon = runtime:GetSpellInfo(snapshot, spellID)
+    return {
+        spellID = spellID,
+        spellName = name or tostring(spellID),
+        spellIcon = icon,
+        category = role == "window" and "offensiveCooldowns" or "rotationSpells",
+        source = role == "window" and "自动爆发窗口" or "自动爆发注入",
+        burstSource = "auto_burst_sequence",
+        advisoryOnly = true,
+        displayOnly = true,
+        bindingToken = 0,
+        bindingMissing = true,
+        usableState = "unbound",
+        unusableReason = reason or "当前动作条没有可用绑定",
+        burstReady = false,
+    }
+end
+
+local function hudConfiguredSequence(snapshot, context, state)
+    local sequence, profileKey, reason
+    if TE.BurstProfiles and type(TE.BurstProfiles.GetAutoBurstSequence) == "function" then
+        sequence, profileKey, reason = TE.BurstProfiles:GetAutoBurstSequence(context)
+    end
+    if type(sequence) ~= "table" then return {}, profileKey, { tostring(reason or "爆发顺序不可用") } end
+
+    local items, diagnostics = {}, {}
+    local runtime = TE.RuntimeSnapshot
+    for _, entry in ipairs(sequence.entries or {}) do
+        if entry.enabled == true and #items < HUD_SEQUENCE_MAX_CARDS then
+            local item, itemReason
+            if entry.category == "trinket" then
+                local slot = hudNumber(entry.inventorySlot)
+                local itemID
+                if slot then itemID, itemReason = runtime:GetInventoryItemID(snapshot, slot) end
+                if itemID then
+                    item, itemReason = hudItemCandidate(snapshot, itemID, "trinket", "饰品 " .. tostring(slot), {
+                        inventorySlot = slot,
+                    })
+                end
+            else
+                local spellID = entry.category == "window" and hudNumber(sequence.windowSpellID) or hudNumber(entry.spellID)
+                if spellID then
+                    item, itemReason = hudSpellCandidate(snapshot, spellID,
+                        entry.category == "window" and "offensiveCooldowns" or "rotationSpells",
+                        entry.category == "window" and "自动爆发窗口" or "自动爆发注入", {
+                            requiresHostileTarget = false,
+                            gcdSnapshot = snapshot.gcdSnapshot,
+                            castSnapshot = snapshot.castSnapshot,
+                        })
+                    if not item then item = hudUnboundSequenceSpell(snapshot, spellID, entry.category, itemReason) end
+                end
+            end
+            if item then
+                item.burstStepKey = entry.key
+                item.burstSequenceConfigured = true
+                item.burstSequenceEnabled = true
+                hudMarkRole(item, entry.category == "window" and "window" or entry.category, state, #items + 1)
+                items[#items + 1] = item
+            elseif itemReason then
+                diagnostics[#diagnostics + 1] = tostring(itemReason)
+            end
+        end
+    end
+    return items, profileKey, diagnostics
 end
 
 function AutoBurst:BuildHudSnapshot(primary, context, settings, runtimeSnapshot)
@@ -3816,91 +3718,35 @@ function AutoBurst:BuildHudSnapshot(primary, context, settings, runtimeSnapshot)
     else
         profileReason = "BurstProfiles 不可用"
     end
-    local state = TE.BurstStateMachine and TE.BurstStateMachine:Update(profile, profileKey, primary, context, settings)
-        or { state = "UNKNOWN", label = "状态未知", lastTransitionReason = "BurstStateMachine 不可用" }
     local stateSnapshot = runtimeSnapshot.autoBurst
     if type(stateSnapshot) ~= "table" then stateSnapshot = self:GetSnapshot() end
+    local state = {
+        state = stateSnapshot and stateSnapshot.active == true and "ACTIVE" or "READY",
+        label = stateSnapshot and stateSnapshot.active == true and "爆发执行中" or "爆发待命",
+    }
     local out = hudMakeOutput(profile, profileKey, state, profileReason, stateSnapshot, runtimeSnapshot)
 
     if not profile then
         out.state, out.stateLabel, out.notice = "SUPPRESSED", "已抑制", profileReason or "当前专精暂无爆发辅助配置"
         return out
     end
-    if settings.burstEnabled == false or profile.enabled == false then
-        out.state, out.stateLabel, out.notice = "SUPPRESSED", "已抑制", "爆发模块已关闭"
+    -- The current HUD is a direct, read-only projection of the configured
+    -- AutoBurst sequence. Legacy window-assistant policies, candidate sources,
+    -- compact mode and debug settings no longer decide which cards are shown.
+    if settings.autoBurstEnabled ~= true then
+        out.state, out.stateLabel, out.notice = "SUPPRESSED", "自动爆发关闭", "开启自动爆发后显示当前专精顺序"
         return out
     end
-    if state.state == "UNKNOWN" then
-        out.notice = state.lastTransitionReason or "爆发状态未知"
-        return out
+    local sequenceState = { state = stateSnapshot and stateSnapshot.active == true and "ACTIVE" or "READY" }
+    out.items, out.profileKey, out.diagnostics = hudConfiguredSequence(runtimeSnapshot, context, sequenceState)
+    out.active = #out.items > 0
+    out.window, out.followups = nil, {}
+    for _, item in ipairs(out.items) do
+        if item.burstRole == "window" then out.window = item else out.followups[#out.followups + 1] = item end
     end
-
-    local always = settings.burstDisplayMode == "always"
-    local inCombat = context.inCombat == true
-    local targetOK, targetReason = hudHostileTargetState()
-    local activeWindow = state.state == "ACTIVE" or state.state == "ARMED"
-    local primaryExists = primary and primary.spellID
-    local policyAllowsReady = state.state == "ACTIVE"
-        or (settings.burstPolicy ~= "hold" and inCombat and targetOK and (settings.burstPolicy ~= "align" or primaryExists))
-    if always then policyAllowsReady = true end
-
-    local options = {
-        requiresHostileTarget = inCombat and targetOK and not always,
-        gcdSnapshot = runtimeSnapshot.gcdSnapshot,
-        castSnapshot = runtimeSnapshot.castSnapshot,
-    }
-
-    if settings.burstShowClassCooldowns ~= false then
-        local window, diagnostics = hudSelectWindow(runtimeSnapshot, profile, state, settings, options, policyAllowsReady)
-        out.diagnostics = diagnostics or {}
-        if window then out.window = hudMarkRole(window, "window", state, 1) end
-    end
-
-    local shouldFollow = always or activeWindow or (out.window and out.window.usableState == "ready" and policyAllowsReady)
-    if shouldFollow and settings.burstShowCandidates ~= false then
-        local values, diagnostics = hudFollowups(runtimeSnapshot, profile, state, settings, options, shouldFollow)
-        out.followups = values
-        for _, reason in ipairs(diagnostics or {}) do out.diagnostics[#out.diagnostics + 1] = reason end
-    end
-    hudCompose(out)
+    out.recommendationState = out.active and "auto_burst_sequence" or "sequence_unavailable"
+    out.notice = out.active and "当前专精自动爆发顺序" or "当前专精没有可显示的爆发步骤"
     hudMarkVerification(out, stateSnapshot)
-
-    if out.active then
-        if state.state == "ACTIVE" then
-            out.recommendationState = "active_window_queue"
-            out.notice = "爆发窗口：首图标为窗口技能，后续按注入技能、饰品、药水、种族技能顺序显示；仅 HUD 提示"
-        elseif always and not inCombat then
-            out.recommendationState = "always_out_of_combat_queue"
-            out.notice = "常驻爆发队列：仅展示当前专精已知且有真实动作条绑定的窗口与后续技能"
-        elseif always then
-            out.recommendationState = "always_queue"
-            out.notice = "常驻爆发队列：窗口技能固定首位；后续按已配置顺序保留，并显示真实冷却状态"
-        elseif out.window and out.window.usableState == "cooldown" then
-            out.recommendationState = "window_cooldown"
-            out.notice = "爆发窗口技能冷却中：保留首图标并由游戏原生转盘显示倒计时"
-        else
-            out.recommendationState = "window_ready"
-            out.notice = "当前专精爆发窗口技能已就绪：首图标显示真实动作条按键；仅 HUD 提示"
-        end
-        return out
-    end
-
-    if settings.burstPolicy == "hold" then
-        out.state, out.stateLabel, out.recommendationState = "HOLD", "保留爆发", "held"
-        out.notice = "爆发保留模式：不主动显示就绪窗口技能；开启常驻后仍会保留已绑定的队列卡片"
-    elseif not inCombat then
-        out.state, out.stateLabel, out.recommendationState = "OUT_OF_COMBAT", "脱战待命", "out_of_combat"
-        out.notice = "进入战斗并选择敌对目标后，独立检测当前专精爆发窗口技能"
-    elseif not targetOK then
-        out.state, out.stateLabel, out.recommendationState = "WAITING_TARGET", "等待敌对目标", "waiting_target"
-        out.notice = targetReason or "没有可攻击目标"
-    elseif settings.burstPolicy == "align" and not primaryExists then
-        out.state, out.stateLabel, out.recommendationState = "WAITING_PRIMARY", "等待主推荐", "waiting_primary"
-        out.notice = "对齐爆发模式：等待官方主推荐可用后再显示独立爆发窗口技能"
-    else
-        out.state, out.stateLabel, out.recommendationState = "WAITING_READY", "等待爆发就绪", "no_bound_candidate"
-        out.notice = "当前专精未找到已知、已绑定的爆发窗口技能或后续候选"
-    end
     return out
 end
 

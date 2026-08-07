@@ -101,7 +101,7 @@ class P5UnifiedCooldownContractTests(unittest.TestCase):
             self.assertIn(marker, self.icon)
         self.assertIn('stateText = { enabled = true', self.defaults)
         self.assertIn('style.stateText = normalizeTextStyle', self.normalize)
-        self.assertIn('状态标签（施法 / 暂停等）', self.control)
+        self.assertIn('createCheckbox(pane, "显示状态文字"', self.control)
         self.assertIn('stateLabel = ""', self.styles)
         self.assertIn('sourceLabel = sourceLabel', self.styles)
         self.assertIn('stateLabel = stateLabel', self.styles)

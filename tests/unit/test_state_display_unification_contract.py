@@ -29,8 +29,7 @@ class StateDisplayUnificationContractTests(unittest.TestCase):
             'display_only = "仅显示"',
             'local function userVisibleReason(rawReason, reasonText)',
             'setLabel("generalRuntime", "当前状态：" .. compactStatus.label',
-            'runtimeReasonLine = compactStatus.reasonText',
-            '“运行中”仅代表用户已启动动态链路',
+            '自动爆发：" .. (tactics.autoBurstEnabled == true and "已开启（HAD）" or "已关闭（LCC）")',
         ):
             self.assertIn(token, control)
         self.assertNotIn('"运行状态：" .. tostring(runtimeState)', control)
@@ -41,8 +40,7 @@ class StateDisplayUnificationContractTests(unittest.TestCase):
         board = BOARD.read_text(encoding="utf-8")
         for token in (
             'out_of_combat_auto_standby") and "standby"',
-            '自动启停：未进战斗或脱战时显示待命，进战自动恢复运行。',
-            '{ value = "pause_out_of_combat", label = "自动启停（进战运行，脱战待命，默认）" }',
+            '{ value = "pause_out_of_combat", label = "自动启停（推荐）" }',
         ):
             self.assertIn(token, control)
         self.assertIn('return "standby", runtimeReason or "未进战斗，自动启停待命"', styles)
@@ -80,20 +78,11 @@ class StateDisplayUnificationContractTests(unittest.TestCase):
         self.assertIn('error = "异常"', board)
         self.assertIn('visual.visualState == "error"', icon)
 
-    def test_monitor_page_keeps_raw_protocol_and_lock_diagnostics(self) -> None:
+    def test_monitor_page_and_raw_protocol_diagnostics_are_removed(self) -> None:
         control = CONTROL.read_text(encoding="utf-8")
-        for token in (
-            '第4格：',
-            '协议状态：',
-            '原因码：',
-            '锁类型：',
-            '施法 SpellID：',
-            'castGUID：',
-            'local function castGuidMatchDiagnostic()',
-        ):
-            self.assertIn(token, control)
-        self.assertIn('channel_terminal_guid_mismatch', control)
-        self.assertIn('empower_terminal_guid_mismatch', control)
+        self.assertNotIn('page == "monitor"', control)
+        self.assertNotIn('setLabel("monitorProtocol"', control)
+        self.assertNotIn('monitor = buildMonitor', control)
 
     def test_protocol_and_tek_safety_scope_are_unchanged(self) -> None:
         encoder = ENCODER.read_text(encoding="utf-8")

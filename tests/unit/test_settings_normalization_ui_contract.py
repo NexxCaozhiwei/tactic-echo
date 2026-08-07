@@ -38,25 +38,34 @@ def test_normalizer_owns_legacy_repair_and_visual_reset() -> None:
         assert token in normalizer
 
 
-def test_hud_page_exposes_previously_unreachable_presentation_controls() -> None:
+def test_hud_page_keeps_practical_controls_and_removes_retired_controls() -> None:
     panel = read("UI/ControlPanel.lua")
     for label in [
-        "HUD 全局缩放",
-        "HUD 全局透明度",
-        "HUD 底纹透明度",
-        "脱战透明度",
-        "脱战缩放",
+        "启用 HUD",
+        "无推荐时隐藏",
+        "脱战显示",
+        "显示拖动把手",
+        "主键 + 自动爆发",
+        "仅主键",
+        "主键大小",
+        "爆发大小",
+        "爆发方向",
+        "HUD 缩放",
+        "HUD 透明度",
+        "底纹透明度",
+        "冷却字号",
+    ]:
+        assert label in panel
+    for retired in [
         "简洁 HUD 模式",
         "独立防御缩放",
-        "独立防御透明度",
-        "锁定独立防御队列",
         "启用候选预测",
         "候选来源",
         "战术队列优先级",
         "目标框打断提示",
         "启用位移脱险提示",
     ]:
-        assert label in panel
+        assert retired not in panel
 
 
 def test_board_uses_config_normalizer_and_adjustable_ooc_multipliers() -> None:

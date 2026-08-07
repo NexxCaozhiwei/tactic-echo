@@ -366,6 +366,6 @@ def test_ordered_sequence_supports_window_three_injections_and_two_trinkets_per_
     assert "sequence_preflight_selected" in auto
     assert "sequence_preflight_no_eligible" in auto
     assert "爆发顺序（当前专精）" in ui
-    assert "注入技能 1–3" in ui
+    assert "当前专精已启用的前 3 项可加入上方爆发顺序" in ui
     assert "Phase 1.5 测试规则" not in ui
     assert "官方窗口 SpellID" not in ui

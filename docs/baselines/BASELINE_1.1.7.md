@@ -1,5 +1,13 @@
 # Tactic Echo 1.1.7 基线：HUD 容器可见性战斗保护收口
 
+## TEUI 精简与 HUD 爆发序列
+
+- 设置中心导航只允许“常规、HUD、自动爆发、配置文件”四页。独立主键页必须合并到 HUD；退役模块、调试监控、旧窗口辅助、候选栏、候选来源、当前专精显示覆盖和完整运行诊断不得重新出现在设置页。
+- HUD 内容只允许“主键 + 自动爆发”与“仅主键”两种选择。规范化必须固定 `compact=false`、`showHistory=false`、`showSourceTags=false`，并由 `queueMode` 唯一派生主键/爆发模块显隐，避免旧 SavedVariables 产生矛盾状态。
+- HUD AutoBurst 队列必须读取当前专精已保存的 `autoBurstSequence`，按启用后的真实步骤顺序投影窗口、注入与锁定槽位饰品，最多五张卡；未绑定技能只可作为 `bindingToken=0` 的只读显示，绝不得由 HUD 建立派发资格。
+- `BurstStateMachine` 及旧职业冷却、药水、种族技能等窗口候选拼装必须移除。该展示重构不得修改 AutoBurst 计划、官方推荐、BindingToken、TEAP、TEK、步骤确认或资源判定。
+- 配置文件管理保持直接可用；全局、角色、职业、专精范围映射必须完整保留，并默认折叠在高级设置中。
+
 ## 自动爆发快捷键与状态码
 
 - 设置中心的整体启停快捷键下方必须提供独立的自动爆发开关快捷键，并保存为 `settings.autoBurstToggleHotkey`。该快捷键只能切换 `tactics.autoBurstEnabled`，不得修改整体运行状态、官方推荐、BindingToken、TEAP、TEK 或输入派发门禁。
@@ -59,6 +67,7 @@
 
 ## 验收
 
+- `tests/unit/test_teui_simplification_contract.py`
 - `tests/unit/test_auto_burst_hotkey_status_contract.py`
 - `tests/unit/test_state_display_unification_contract.py`
 - `tests/unit/test_auto_burst_phase1_behavior.py::test_sparse_registered_specs_accept_custom_trigger_and_injection_sequences`

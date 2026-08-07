@@ -35,7 +35,6 @@ class IndependentTacticalContractTests(unittest.TestCase):
             "Tactics/TacticalState.lua",
             "Tactics/AbilityProfiles.lua",
             "Tactics/BurstProfiles.lua",
-            "Tactics/BurstStateMachine.lua",
             "Tactics/BurstPlanner.lua",
             "Tactics/AutoBurst.lua",
             "Tactics/TacticalAdvisors.lua",
@@ -52,6 +51,8 @@ class IndependentTacticalContractTests(unittest.TestCase):
         ]
         for item in expected:
             self.assertIn(item, toc)
+        self.assertNotIn("Tactics/BurstStateMachine.lua", toc)
+        self.assertFalse((ADDON / "Tactics" / "BurstStateMachine.lua").exists())
         for item in retired:
             self.assertNotIn(item, toc)
         self.assertLess(toc.index("Signal/SignalFrame.lua"), toc.index("Tactics/TacticalState.lua"))

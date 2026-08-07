@@ -8,7 +8,7 @@ TE.Config = TE.Config or {}
 
 local Defaults = {
     schema = 8,
-    hudSchema = 10,
+    hudSchema = 11,
     settings = {
         sessionPolicy = "pause_out_of_combat",
         protocolMode = "v3_dynamic",
@@ -34,10 +34,10 @@ local Defaults = {
         outOfCombatAlpha = 0.62,
         outOfCombatScale = 1.00,
         hideWhenIdle = false,
-        showHistory = true,
+        showHistory = false,
         showKeyLabels = true,
         showStatusText = true,
-        showSourceTags = true,
+        showSourceTags = false,
         -- Disabled by default: this nameplate cue is opt-in and only appears
         -- for an actionable, interruptible target cast.
         showTargetPrompt = false,
@@ -108,9 +108,6 @@ local Defaults = {
         mobilityEnabled = true,
         defensiveEnabled = true,
         defensiveOutOfCombatStandby = true,
-        burstEnabled = true,
-        burstPolicy = "align",
-        burstDisplayMode = "window",
         -- Phase-1 AutoBurst is opt-in.  SignalFrame "armed" remains the
         -- independent automatic-run gate; this setting only enables burst
         -- takeover when a configured window recommendation is observed.
@@ -120,20 +117,6 @@ local Defaults = {
         -- The old legacy manual-rule hand-entered SpellID test rule is intentionally
         -- retired: runtime plans always resolve through the real profile lists.
         autoBurstMode = "simple", -- simple | focused
-        autoBurstDebug = true,
-        burstShowCandidates = true,
-        burstHighlightPrimary = true,
-        burstShowClassCooldowns = true,
-        burstShowTrinkets = false,
-        burstShowPotions = false,
-        burstShowRacial = false,
-        -- First burst card is always the window trigger. This value controls
-        -- the number of following injection / trinket / potion / racial cards.
-        burstMaxCandidates = 3,
-        burstPotionItemID = 0,
-        burstRacialSpellID = 0,
-        burstCooldownDisplay = "gray",
-        burstUnboundDisplay = "gray",
         interruptDisplayMode = "cast",
         controlDisplayMode = "cast",
         defensiveDisplayMode = "condition",
