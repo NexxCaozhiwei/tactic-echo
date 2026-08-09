@@ -412,6 +412,15 @@ local function createChoice(parent, label, x, y, width, choices, getter, setter)
     return button, caption
 end
 
+local function createColorChoice(parent, label, x, y, getter, setter)
+    local choices = {}
+    for key, preset in pairs(COLOR_PRESETS) do
+        choices[#choices + 1] = { value = key, label = preset.label }
+    end
+    table.sort(choices, function(left, right) return left.label < right.label end)
+    return createChoice(parent, label, x, y, 150, choices, getter, setter)
+end
+
 local function cycleNumber(value, step, minimum, maximum)
     value = (tonumber(value) or minimum) + step
     if value > maximum then value = minimum end

@@ -44,6 +44,11 @@ class HudUiOptionsContractTests(unittest.TestCase):
         control = CONTROL.read_text(encoding="utf-8")
         self.assertIn('local function buildTextStyleSection', control)
         self.assertIn('local function buildHudLabelStyles', control)
+        self.assertIn('local function createColorChoice', control)
+        self.assertLess(
+            control.index('local function createColorChoice'),
+            control.index('local function buildTextStyleSection'),
+        )
         self.assertIn('mainStyle.keyLabel', control)
         self.assertIn('mainStyle.chargeLabel', control)
         self.assertIn('mainStyle.cooldownText', control)
