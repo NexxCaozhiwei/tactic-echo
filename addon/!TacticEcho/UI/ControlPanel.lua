@@ -45,7 +45,7 @@ local REFRESH_INTERVAL = 0.25
 -- widened, so wide left-column selectors physically overlapped the right
 -- column.  Keep every page inside this explicit scroll-child width.
 local CONTENT_PANE_WIDTH = 720
-local CONTENT_PANE_HEIGHT = 2500
+local CONTENT_PANE_HEIGHT = 3200
 local CONTENT_MARGIN = 14
 local LEFT_X = 14
 local RIGHT_X = 376
@@ -1459,6 +1459,49 @@ local function buildGeneral(pane)
     createActionButton(pane, "清除", 508, y - 58, 90, function() ControlPanel:SetAutoBurstHotkey("") end)
 end
 
+-- Text styles are presentation-only.  Keep the editor on the HUD page so the
+-- current product scope does not need separate module or style pages.
+local function buildTextStyleSection(pane, style, label, y)
+    y = createSection(pane, label, y)
+    createCheckbox(pane, "显示", LEFT_X, y, function() return style.enabled end, function(value) style.enabled = value end)
+    createChoice(pane, "字体", RIGHT_X, y, 160, {
+        { value = "normal", label = "标准" }, { value = "highlight", label = "高亮" }, { value = "disable", label = "弱化" },
+    }, function() return style.fontPreset end, function(value) style.fontPreset = value end)
+    y = y - 38
+    createNumberStepper(pane, "字号", LEFT_X, y, 64, function() return style.fontSize end, function(value) style.fontSize = value end, 1, 8, 30, "")
+    createNumberStepper(pane, "缩放", RIGHT_X, y, 64, function() return math.floor(style.scale * 100 + 0.5) end, function(value) style.scale = value / 100 end, 10, 60, 200, "%")
+    y = y - 38
+    createChoice(pane, "位置", LEFT_X, y, 160, {
+        { value = "TOPLEFT", label = "左上" }, { value = "TOPRIGHT", label = "右上" }, { value = "CENTER", label = "中间" },
+        { value = "BOTTOMLEFT", label = "左下" }, { value = "BOTTOMRIGHT", label = "右下" },
+    }, function() return style.point end, function(value) style.point = value end)
+    createColorChoice(pane, "颜色", RIGHT_X, y, function() return style.colorKey end, function(value)
+        style.colorKey = value
+        style.color = copyColor(COLOR_PRESETS[value].color)
+    end)
+    y = y - 38
+    createNumberStepper(pane, "横向偏移", LEFT_X, y, 64, function() return style.offsetX end, function(value) style.offsetX = value end, 1, -30, 30, "")
+    createNumberStepper(pane, "纵向偏移", RIGHT_X, y, 64, function() return style.offsetY end, function(value) style.offsetY = value end, 1, -30, 30, "")
+    return y - 62
+end
+
+local function buildHudLabelStyles(pane, mainStyle, burstStyle, y)
+    y = createSection(pane, "标签样式", y)
+    createText(pane, "GameFontDisableSmall", LEFT_X, y, 720,
+        "以下设置只改变 HUD 文字显示，不改变推荐、AutoBurst、动作条绑定或派发资格。")
+    y = y - 48
+    y = createSection(pane, "主键", y)
+    y = buildTextStyleSection(pane, mainStyle.keyLabel, "快捷键", y)
+    y = buildTextStyleSection(pane, mainStyle.chargeLabel, "充能 / 可用次数", y)
+    y = buildTextStyleSection(pane, mainStyle.cooldownText, "CD 时间（HUD 统一秒数）", y)
+    y = buildTextStyleSection(pane, mainStyle.stateText, "状态文字", y)
+    y = createSection(pane, "自动爆发", y)
+    y = buildTextStyleSection(pane, burstStyle.keyLabel, "快捷键", y)
+    y = buildTextStyleSection(pane, burstStyle.chargeLabel, "充能 / 可用次数", y)
+    y = buildTextStyleSection(pane, burstStyle.cooldownText, "CD 时间（HUD 统一秒数）", y)
+    return buildTextStyleSection(pane, burstStyle.stateText, "状态文字", y)
+end
+
 local function buildHUD(pane)
     local _, hud = ensureTactics()
     do
@@ -1521,6 +1564,9 @@ local function buildHUD(pane)
             mainStyle.cooldownText.fontSize = value
             burstStyle.cooldownText.fontSize = value
         end, 1, 8, 30, "")
+
+        y = y - 76
+        y = buildHudLabelStyles(pane, mainStyle, burstStyle, y)
 
         y = y - 76
         createActionButton(pane, "锁定 / 解锁", LEFT_X, y, 118, function() hud.locked = not hud.locked; ControlPanel:ApplyVisuals(true) end)

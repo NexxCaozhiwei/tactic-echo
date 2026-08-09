@@ -40,6 +40,21 @@ class HudUiOptionsContractTests(unittest.TestCase):
             self.assertIn(token, board)
         self.assertNotIn('board.title:SetText("战术回响")', board)
 
+    def test_hud_restores_per_module_label_style_editors(self) -> None:
+        control = CONTROL.read_text(encoding="utf-8")
+        self.assertIn('local function buildTextStyleSection', control)
+        self.assertIn('local function buildHudLabelStyles', control)
+        self.assertIn('mainStyle.keyLabel', control)
+        self.assertIn('mainStyle.chargeLabel', control)
+        self.assertIn('mainStyle.cooldownText', control)
+        self.assertIn('mainStyle.stateText', control)
+        self.assertIn('burstStyle.keyLabel', control)
+        self.assertIn('burstStyle.chargeLabel', control)
+        self.assertIn('burstStyle.cooldownText', control)
+        self.assertIn('burstStyle.stateText', control)
+        for token in ('颜色', '横向偏移', '纵向偏移'):
+            self.assertIn(token, control)
+
     def test_interrupt_control_and_defensive_display_modes_are_configured(self) -> None:
         control = CONTROL.read_text(encoding="utf-8")
         advisor = ADVISOR.read_text(encoding="utf-8")
