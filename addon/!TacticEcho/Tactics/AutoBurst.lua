@@ -158,6 +158,7 @@ local PRIORITY_LOG_EVENTS = {
     injection_skipped = true,
     sequence_optional_step_skipped = true,
     step_dispatched = true,
+    stale_step_confirmation_rejected = true,
     step_confirmed = true,
     inventory_recovery_started = true,
     inventory_recovery_completed = true,
@@ -444,6 +445,19 @@ function AutoBurst:RecordSpellcastSucceeded(spellID)
     local plan = self.plan
     if not (plan and plan.state == "WAIT_CONFIRM" and type(plan.wait) == "table") then return false end
     local step = plan.steps and plan.steps[plan.stepIndex] or nil
+    local expectedSpellID = stepKind(step) == "spell" and positiveSpellID(step and step.spellID) or nil
+    local waitingSpellID = positiveSpellID(plan.wait.expectedSpellID)
+    if not expectedSpellID or waitingSpellID ~= expectedSpellID then
+        log(self, "stale_step_confirmation_rejected", {
+            role = step and step.role or nil,
+            spellID = spellID,
+            expectedSpellID = expectedSpellID,
+            waitingSpellID = waitingSpellID,
+            currentStep = plan.stepIndex,
+            dispatchAttempt = plan.wait.dispatchAttempt,
+        })
+        return false
+    end
     local bindingInfo = plan.wait.offerSample and plan.wait.offerSample.bindingInfo or nil
     local matches, matchKind = spellcastMatchesCurrentStep(step, spellID, bindingInfo)
     if matches ~= true then return false end
@@ -1942,6 +1956,12 @@ local function skipOptionalStep(self, plan, step, reason)
         cooldownConfirmations = type(plan.preInjectionCooldownConfirmation) == "table"
             and number(plan.preInjectionCooldownConfirmation.count) or nil,
     })
+    -- Advancing the sequence must invalidate the skipped step's complete
+    -- confirmation context atomically.  A delayed UNIT_SPELLCAST_SUCCEEDED for
+    -- that step must never be compared with the next step using the old
+    -- bindingInfo/requestedSpellID.
+    plan.wait = nil
+    plan.state = "PENDING"
     plan.revalidate = nil
     plan.candidateOfferCount = 0
     plan.candidateFirstOfferedAt = nil

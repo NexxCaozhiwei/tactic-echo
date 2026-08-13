@@ -806,6 +806,52 @@ assert(observation.role == "window", "the plan must advance beyond the skipped i
 """)
 
 
+def test_arcane_late_injection_success_cannot_confirm_touch_after_runtime_skip() -> None:
+    run_lua(AUTO_BURST_HARNESS + r"""
+testContext = { class = "MAGE", specIndex = 1, specID = 62 }
+officialSpellID = 321507
+settings.burstProfiles.MAGE_1 = {
+    autoBurstSequence = {
+        order = { "injection:365350", "window", "trinket:13", "trinket:14" },
+        enabled = { ["injection:365350"] = true, ["trinket:13"] = false, ["trinket:14"] = false },
+    },
+}
+bindings[321507] = "ready"
+bindings[365350] = "ready"
+bindingTokens[321507] = 7
+bindingTokens[365350] = 8
+cooldowns[321507] = "ready"
+cooldowns[365350] = "ready"
+spellUsability[365350] = "ready"
+actionUsability[8] = "ready"
+
+local injection = eval()
+assert(injection.kind == "candidate" and injection.dispatchSpellID == 365350)
+spellUsability[365350] = "resource"
+actionUsability[8] = "resource"
+local skipped = eval()
+assert(skipped.kind == "hold" and skipped.reason == "burst_next_step_pending")
+local snapshot = AutoBurst:GetSnapshot()
+assert(snapshot.state == "PENDING" and snapshot.waitingForConfirmation == false,
+    "skipping Arcane Surge must clear its WAIT_CONFIRM context atomically")
+assert(AutoBurst:RecordSpellcastSucceeded(365350) == false,
+    "a late Arcane Surge success must be rejected before Touch is dispatched")
+
+local window = eval()
+assert(window.kind == "candidate" and window.dispatchSpellID == 321507)
+assert(AutoBurst:RecordSpellcastSucceeded(365350) == false,
+    "Arcane Surge must not confirm Touch through stale requestedSpellID metadata")
+snapshot = AutoBurst:GetSnapshot()
+assert(snapshot.active == true and snapshot.waitingForConfirmation == true
+    and snapshot.pendingConfirmationSpellID == 321507)
+assert(AutoBurst:RecordSpellcastSucceeded(321507) == true)
+eval()
+snapshot = AutoBurst:GetSnapshot()
+assert(snapshot.active == false and snapshot.requireWindowDeparture == true,
+    "only an exact Touch success may complete the Arcane plan")
+""")
+
+
 def test_devourer_window_first_plan_finishes_when_post_injection_loses_special_resource() -> None:
     run_lua(AUTO_BURST_HARNESS + r"""
 testContext = { class = "DEMONHUNTER", specIndex = 3, specID = 1480 }
