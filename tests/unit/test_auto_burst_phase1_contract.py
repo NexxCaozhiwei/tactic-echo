@@ -108,6 +108,10 @@ def test_spellcast_success_is_confirmation_only_for_current_waiting_step() -> No
     auto = read(ADDON / "Tactics" / "AutoBurst.lua")
     assert '"UNIT_SPELLCAST_SUCCEEDED"' in auto
     assert "function AutoBurst:RecordSpellcastSucceeded" in auto
+    assert "function AutoBurst:RecordSpellcastFailed" in auto
+    assert '"UNIT_SPELLCAST_FAILED"' in auto
+    assert '"UNIT_SPELLCAST_FAILED_QUIET"' in auto
+    assert "FALLBACK_CONFIRM_STABILITY_SECONDS" in auto
     assert "plan.state == \"WAIT_CONFIRM\"" in auto
     assert "spellcastSucceededSpellID" in auto
     assert "spellcastMatchesCurrentStep" in auto

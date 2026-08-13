@@ -1,3 +1,9 @@
+# 1.2.4 — AutoBurst 预测性充能回滚隔离
+
+- **修复圣洁鸣钟伪成功卡住**：spell 步骤的充能下降或自身 CD 开始不再以单帧采样立即完成；必须跨越短稳定窗口并至少再次观察到相同证据，避免 Retail 在 GCD 队列失败前预测性扣除充能、随后回滚时误进入 `await_window_departure`。
+- **失败事件参与确认隔离**：当前 `WAIT_CONFIRM` 步骤的精确 `UNIT_SPELLCAST_FAILED` / `UNIT_SPELLCAST_FAILED_QUIET` 会清除暂定充能/CD 证据并立即请求重评，同一步骤继续经原有 TEAP/TEK 节奏重试，不把失败当成功或计划中止。
+- **既有边界保持**：精确 `UNIT_SPELLCAST_SUCCEEDED` 仍立即确认；饰品锁定槽位/ItemID 的自身 CD 确认、GCD 队列派发、BindingToken、TEAP v3、TEK 门禁与宏资格均未改变。
+
 # 1.2.3 — AutoBurst 迟到确认隔离
 
 - **修复奥法大法师之触卡住**：可选前置注入在等待确认阶段因资源不足被跳过时，原子清除该步骤的 `WAIT_CONFIRM`、冻结绑定和候选上下文；迟到的奥术涌动成功事件不再误确认下一步大法师之触。

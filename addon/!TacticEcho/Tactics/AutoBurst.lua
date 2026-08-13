@@ -93,6 +93,11 @@ local MAX_PRIORITY_LOGS = 64
 -- re-offer through the normal TEK global rate limiter until exact success, a
 -- rule-approved own-CD skip, or a hard safety invalidation.
 local STEP_CONFIRM_SECONDS = 2.20
+-- Retail may optimistically decrement a charge or start a local cooldown just
+-- before the server rejects a queued cast.  Exact success events remain
+-- immediate, but cooldown-only fallback evidence must survive this short
+-- rollback window before it can advance the ordered plan.
+local FALLBACK_CONFIRM_STABILITY_SECONDS = 0.15
 -- First recovery milestone for a pre-window trinket. After this point the plan
 -- stays in persistent recovery and continues to watch the exact slot+ItemID
 -- cooldown for delayed or manual use; this is not a terminal recovery deadline.
@@ -476,6 +481,42 @@ function AutoBurst:RecordSpellcastSucceeded(spellID)
         matchKind = matchKind,
         currentStep = plan.stepIndex,
         dispatchAttempt = plan.wait.dispatchAttempt,
+    })
+    return true
+end
+
+-- A failed receipt never aborts a healthy latched step: the shared dispatcher
+-- may simply have offered it before the client queue window opened.  It does,
+-- however, invalidate any optimistic charge/CD transition observed for this
+-- exact current step so that a client-side rollback cannot complete the plan.
+function AutoBurst:RecordSpellcastFailed(spellID, event)
+    spellID = positiveSpellID(spellID)
+    if not spellID then return false end
+    local t = now()
+
+    local plan = self.plan
+    if not (plan and plan.state == "WAIT_CONFIRM" and type(plan.wait) == "table") then return false end
+    local step = plan.steps and plan.steps[plan.stepIndex] or nil
+    local expectedSpellID = stepKind(step) == "spell" and positiveSpellID(step and step.spellID) or nil
+    local waitingSpellID = positiveSpellID(plan.wait.expectedSpellID)
+    if not expectedSpellID or waitingSpellID ~= expectedSpellID then return false end
+    local bindingInfo = plan.wait.offerSample and plan.wait.offerSample.bindingInfo or nil
+    local matches, matchKind = spellcastMatchesCurrentStep(step, spellID, bindingInfo)
+    if matches ~= true or t < (number(plan.wait.dispatchedAt) or 0) then return false end
+
+    plan.wait.failedAt = t
+    plan.wait.failedEvent = tostring(event or "UNIT_SPELLCAST_FAILED")
+    plan.wait.failedSpellID = spellID
+    plan.wait.provisionalConfirmation = nil
+    log(self, "step_spellcast_failed", {
+        role = step.role,
+        spellID = spellID,
+        expectedSpellID = expectedSpellID,
+        matchKind = matchKind,
+        failedEvent = plan.wait.failedEvent,
+        currentStep = plan.stepIndex,
+        dispatchAttempt = plan.wait.dispatchAttempt,
+        confirmationRetained = false,
     })
     return true
 end
@@ -989,6 +1030,57 @@ local function confirmed(sample, baseline)
     -- phase requires a skill-specific CD or charge change; rules without one
     -- fail closed rather than confusing GCD shading with successful casting.
     return false, nil
+end
+
+local function confirmStableFallback(self, plan, step, source)
+    local wait = plan and plan.wait
+    if type(wait) ~= "table" then return false end
+    local t = now()
+    local provisional = wait.provisionalConfirmation
+    if type(provisional) ~= "table" or provisional.source ~= source then
+        provisional = {
+            source = source,
+            firstObservedAt = t,
+            lastObservedAt = t,
+            observationCount = 1,
+        }
+        wait.provisionalConfirmation = provisional
+        log(self, "step_confirmation_provisional", {
+            role = step and step.role or nil,
+            actionKind = stepKind(step),
+            spellID = stepKind(step) == "spell" and step.spellID or nil,
+            inventorySlot = stepKind(step) == "inventory" and inventorySlot(step.inventorySlot) or nil,
+            currentStep = plan.stepIndex,
+            confirmation = source,
+        })
+        return false
+    end
+
+    provisional.lastObservedAt = t
+    provisional.observationCount = (number(provisional.observationCount) or 1) + 1
+    local stableSince = number(provisional.firstObservedAt) or t
+    if number(wait.failedAt) and wait.failedAt > stableSince then stableSince = wait.failedAt end
+    if provisional.observationCount < 2 or (t - stableSince) < FALLBACK_CONFIRM_STABILITY_SECONDS then
+        return false
+    end
+    wait.provisionalConfirmation = nil
+    return true
+end
+
+local function clearProvisionalFallback(self, plan, step, reason)
+    local wait = plan and plan.wait
+    local provisional = wait and wait.provisionalConfirmation
+    if type(provisional) ~= "table" then return end
+    log(self, "step_confirmation_provisional_cleared", {
+        role = step and step.role or nil,
+        actionKind = stepKind(step),
+        spellID = stepKind(step) == "spell" and step.spellID or nil,
+        inventorySlot = stepKind(step) == "inventory" and inventorySlot(step.inventorySlot) or nil,
+        currentStep = plan.stepIndex,
+        confirmation = provisional.source,
+        reason = reason or "evidence_not_persistent",
+    })
+    wait.provisionalConfirmation = nil
 end
 
 local function spellcastEventConfirmed(plan, step)
@@ -2923,6 +3015,11 @@ function AutoBurst:Evaluate(official, runtime)
         local sample = stepSample(step, cycle, { allowSpecialResourceUnusableCompat = true })
         rememberStepObservation(self, plan, step, sample, "wait_confirm")
         local success, source = confirmed(sample, plan.wait.baseline)
+        if success and stepKind(step) == "spell" then
+            success = confirmStableFallback(self, plan, step, source)
+        else
+            clearProvisionalFallback(self, plan, step, "evidence_not_persistent")
+        end
         if success then
             if plan.wait and plan.wait.inventoryRecoveryActive == true then
                 source = "inventory_recovery_" .. tostring(source or "confirmed")
@@ -3132,6 +3229,10 @@ function AutoBurst:Evaluate(official, runtime)
         inventoryRecoveryDeadlineAt = nil,
         inventoryRecoveryReason = nil,
         confirmationGraceElapsed = false,
+        failedAt = nil,
+        failedEvent = nil,
+        failedSpellID = nil,
+        provisionalConfirmation = nil,
         queueDeliveryContinuesLogged = false,
     }
     log(self, "step_dispatched", {
@@ -3875,6 +3976,8 @@ TE:RegisterEventsSafe(watcher, {
     "UNIT_EXITED_VEHICLE",
     "PLAYER_SPECIALIZATION_CHANGED",
     "UNIT_SPELLCAST_SUCCEEDED",
+    "UNIT_SPELLCAST_FAILED",
+    "UNIT_SPELLCAST_FAILED_QUIET",
 })
 watcher:SetScript("OnEvent", function(_, event, unit, castGUID, spellID)
     if event == "PLAYER_REGEN_DISABLED" then
@@ -3906,6 +4009,11 @@ watcher:SetScript("OnEvent", function(_, event, unit, castGUID, spellID)
         local accepted = AutoBurst:RecordSpellcastSucceeded(spellID)
         if accepted == true and TE.SignalFrame and type(TE.SignalFrame.Refresh) == "function" then
             TE.SignalFrame:Refresh("autoburst_step_spellcast_succeeded")
+        end
+    elseif (event == "UNIT_SPELLCAST_FAILED" or event == "UNIT_SPELLCAST_FAILED_QUIET") and unit == "player" then
+        local accepted = AutoBurst:RecordSpellcastFailed(spellID, event)
+        if accepted == true and TE.SignalFrame and type(TE.SignalFrame.Refresh) == "function" then
+            TE.SignalFrame:Refresh("autoburst_step_spellcast_failed")
         end
     end
 end)

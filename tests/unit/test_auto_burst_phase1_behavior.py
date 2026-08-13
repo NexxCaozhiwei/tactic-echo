@@ -136,6 +136,19 @@ end
 function TE.IconState:CollectCooldownOnly(spellID, options)
     local state = cooldowns[spellID] or "ready"
     local identity = "spell:" .. tostring(spellID)
+    if type(state) == "table" then
+        return {
+            cooldownKnown = true,
+            cooldownActive = state.cooldownActive == true,
+            cooldownOnGCD = false,
+            charges = state.charges,
+            maxCharges = state.maxCharges,
+            cooldownLiveRead = true,
+            cooldownSource = "spell_api",
+            cooldownIdentityKey = identity,
+            cooldownConfirmationPending = false,
+        }
+    end
     if state == "ready" then
         return { cooldownKnown = true, cooldownActive = false, cooldownOnGCD = false, charges = 1, maxCharges = 1, cooldownLiveRead = true, cooldownSource = "spell_api", cooldownIdentityKey = identity, cooldownConfirmationPending = false }
     elseif state == "cooldown" then
@@ -1312,6 +1325,54 @@ assert(AutoBurst:RecordSpellcastSucceeded(999343) == true, "current resolver ove
 local completed = eval()
 assert(completed.kind ~= "candidate" and AutoBurst:GetSnapshot().active == false, "override confirmation must complete the sequence")
 assert(AutoBurst:GetDiagnostics().lastConfirmationSource == "unit_spellcast_succeeded_resolver_equivalent")
+""")
+
+
+def test_transient_charge_decrease_followed_by_failure_does_not_complete_window() -> None:
+    run_lua(AUTO_BURST_HARNESS + r"""
+cooldowns[343527] = { charges = 2, maxCharges = 2, cooldownActive = false }
+local injection = eval()
+assert(injection.kind == "candidate" and injection.dispatchSpellID == 31884)
+AutoBurst:RecordSpellcastSucceeded(31884)
+local window = eval()
+assert(window.kind == "candidate" and window.dispatchSpellID == 343527)
+
+-- Retail can optimistically consume a charge before reporting that the queued
+-- cast failed.  The first charge transition must remain provisional.
+cooldowns[343527] = { charges = 1, maxCharges = 2, cooldownActive = false }
+nowValue = 0.10
+local provisional = eval()
+assert(provisional.kind == "candidate" and AutoBurst:GetSnapshot().active == true,
+    "one transient charge sample must not complete the window")
+assert(AutoBurst:RecordSpellcastFailed(343527, "UNIT_SPELLCAST_FAILED") == true)
+cooldowns[343527] = { charges = 2, maxCharges = 2, cooldownActive = false }
+nowValue = 0.20
+local retry = eval()
+assert(retry.kind == "candidate" and retry.dispatchSpellID == 343527,
+    "a failed optimistic charge transition must keep reoffering the same window")
+AutoBurst:RecordSpellcastSucceeded(343527)
+local completed = eval()
+assert(completed.kind ~= "candidate" and AutoBurst:GetSnapshot().active == false,
+    "an exact later success must still complete the window immediately")
+""")
+
+
+def test_persistent_charge_decrease_confirms_after_stability_window() -> None:
+    run_lua(AUTO_BURST_HARNESS + r"""
+cooldowns[343527] = { charges = 2, maxCharges = 2, cooldownActive = false }
+local injection = eval()
+AutoBurst:RecordSpellcastSucceeded(31884)
+local window = eval()
+assert(window.kind == "candidate" and window.dispatchSpellID == 343527)
+cooldowns[343527] = { charges = 1, maxCharges = 2, cooldownActive = false }
+nowValue = 0.05
+local provisional = eval()
+assert(provisional.kind == "candidate" and AutoBurst:GetSnapshot().active == true)
+nowValue = 0.25
+local completed = eval()
+assert(completed.kind ~= "candidate" and AutoBurst:GetSnapshot().active == false,
+    "persistent charge evidence must remain a valid fallback when success events are unavailable")
+assert(AutoBurst:GetDiagnostics().lastConfirmationSource == "charge_decreased")
 """)
 
 
