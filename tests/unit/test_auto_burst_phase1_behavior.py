@@ -319,6 +319,43 @@ assert(window.kind == "candidate" and window.dispatchSpellID == 343527, "revalid
 """)
 
 
+def test_confirmed_window_cooldown_reentry_does_not_create_a_second_plan() -> None:
+    run_lua(AUTO_BURST_HARNESS + r"""
+local injection = eval()
+assert(injection.kind == "candidate" and injection.dispatchSpellID == 31884)
+AutoBurst:RecordSpellcastSucceeded(31884)
+local window = eval()
+assert(window.kind == "candidate" and window.dispatchSpellID == 343527)
+AutoBurst:RecordSpellcastSucceeded(343527)
+local completed = eval()
+assert(completed.kind == "hold", "confirmed window should enter the ordinary departure lock")
+
+officialSpellID = 999001
+assert(eval().kind == "none", "official departure should clear the ordinary visibility lock")
+
+cooldowns[343527] = "cooldown"
+officialSpellID = 343527
+local duplicate = eval()
+assert(duplicate.kind == "hold", "same confirmed window on own cooldown must be suppressed")
+local suppressed = AutoBurst:GetSnapshot()
+assert(suppressed.active == false, "cooldown reentry must not create a second plan")
+assert(suppressed.requireWindowDeparture == true,
+    "suppressed generation must remain observation-only until departure")
+assert(suppressed.lastConfirmedWindowSpellID == 343527,
+    "snapshot must retain the exact confirmed window receipt")
+assert(suppressed.lastWindowRejectReason == "confirmed_window_reentry_on_cooldown",
+    "diagnostics must identify the duplicate confirmed-window cooldown")
+
+officialSpellID = 999001
+assert(eval().kind == "none", "second departure should clear the suppressed generation")
+cooldowns[343527] = "ready"
+officialSpellID = 343527
+local nextWindow = eval()
+assert(nextWindow.kind == "candidate" and nextWindow.dispatchSpellID == 31884,
+    "a later ready window must start the next normal sequence")
+""")
+
+
 def test_pre_inventory_recovery_freezes_pause_clock_and_accepts_later_real_slot_cooldown() -> None:
     run_lua(AUTO_BURST_HARNESS + r"""
 use_trinket_pre_sequence()

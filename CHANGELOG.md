@@ -1,3 +1,10 @@
+# 1.2.5 — AutoBurst 已确认窗口冷却重入隔离
+
+- **修复冰 DK 重复窗口卡爆发**：窗口步骤完成可信确认后，在同一战斗内保留精确 SpellID、计划与窗口代次收据；官方推荐短暂离开又返回同一窗口、且实时采样仍为自身冷却时，不再创建第二轮爆发计划。
+- **阻止前置注入重放与无效连按**：重复冷却窗口会锁定当前代次并输出 observation-only hold，避免重新执行前置注入，也避免对仍在冷却的窗口技能持续发布 Burst BindingToken。
+- **正常下一轮不受影响**：抑制仅要求同一战斗、同一已确认窗口 SpellID 与实时自身冷却同时成立；窗口真正离开且后续采样恢复可派发后，仍可正常建立下一轮计划。
+- **诊断补强**：新增 `confirmed_window_reentry_suppressed`、`confirmed_window_reentry_on_cooldown` 及最近已确认窗口的 SpellID、planId、generation、confirmation 摘要；不保存原始冷却值或其他受保护数据。
+
 # 1.2.4 — AutoBurst 预测性充能回滚隔离
 
 - **修复圣洁鸣钟伪成功卡住**：spell 步骤的充能下降或自身 CD 开始不再以单帧采样立即完成；必须跨越短稳定窗口并至少再次观察到相同证据，避免 Retail 在 GCD 队列失败前预测性扣除充能、随后回滚时误进入 `await_window_departure`。

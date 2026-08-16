@@ -57,6 +57,11 @@ local AutoBurst = {
     -- active. This scalar audit record never decides whether a plan starts.
     lastSpellcastSuccess = nil,
     lastConfirmationSource = nil,
+    -- Encounter-scoped receipt for the last window step that reached an
+    -- existing trusted confirmation path. It prevents a briefly departed
+    -- assisted recommendation from opening a second plan while that same
+    -- window is still observably on its own cooldown.
+    lastConfirmedWindowReceipt = nil,
     lastAbortReason = nil,
     lastWindowRejectReason = nil,
     -- Last logical candidate offered to SignalFrame. It contains no macro body,
@@ -148,6 +153,7 @@ local PRIORITY_LOG_EVENTS = {
     plan_released_injection_unavailable = true,
     plan_rejected = true,
     plan_gate_window_official_cooldown_conflict = true,
+    confirmed_window_reentry_suppressed = true,
     window_official_cooldown_revalidate = true,
     window_official_cooldown_resolved = true,
     plan_aborted = true,
@@ -1841,6 +1847,7 @@ function AutoBurst:ActivateWorldTransitionFence(reason)
     self.activePlanGeneration = nil
     self.currentWindowSpellID = nil
     self.lastOfficialSpellID = nil
+    self.lastConfirmedWindowReceipt = nil
     self.firstHealthyFramePending = true
     self.eventPauseUntil = 0
     self.eventPauseReason = nil
@@ -1896,6 +1903,7 @@ function AutoBurst:BeginCombatEpoch(reason)
     self.activePlanGeneration = nil
     self.currentWindowSpellID = nil
     self.lastOfficialSpellID = nil
+    self.lastConfirmedWindowReceipt = nil
     self.firstHealthyFramePending = true
     self.eventPauseUntil = 0
     self.eventPauseReason = nil
@@ -2115,6 +2123,17 @@ local function finishStep(self, plan, source, cycle)
     local step = plan.steps[plan.stepIndex]
     self.lastConfirmationSource = source
     plan.completed[#plan.completed + 1] = step.role
+    if isWindowStep(step) then
+        self.lastConfirmedWindowReceipt = {
+            schema = 1,
+            spellID = positiveSpellID(step.spellID),
+            elapsed = now(),
+            confirmation = source,
+            planId = plan.id,
+            windowGeneration = number(plan.windowGeneration) or number(self.windowGeneration),
+            combatEpoch = self.combatEpoch or 0,
+        }
+    end
     plan.wait = nil
     plan.revalidate = nil
     plan.candidateOfferCount = 0
@@ -2902,6 +2921,54 @@ function AutoBurst:Evaluate(official, runtime)
         creation.windowAvailabilityConflictReason = creation.windowAvailabilityConflict
             and ("official_window_" .. tostring(windowSample.phase):lower() .. "_conflict") or nil
 
+        local confirmedWindow = type(self.lastConfirmedWindowReceipt) == "table"
+            and self.lastConfirmedWindowReceipt or nil
+        local duplicateConfirmedWindowCooldown = creation.windowAvailabilityConflict == true
+            and windowSample.phase == "COOLDOWN"
+            and confirmedWindow ~= nil
+            and positiveSpellID(confirmedWindow.spellID) == positiveSpellID(rule.windowSpellID)
+            and number(confirmedWindow.combatEpoch) == number(self.combatEpoch)
+
+        if duplicateConfirmedWindowCooldown then
+            -- A recommendation may briefly rotate away immediately after the
+            -- window succeeds and then expose the same spell again while its
+            -- own cooldown is still active. The visibility departure lock has
+            -- correctly ended, but this is not a new usable window and must not
+            -- replay front injections or publish a failing window candidate.
+            self.lockedWindowSpellID = rule.windowSpellID
+            self.requireWindowDeparture = true
+            self.preCombatBridgeDepartureLock = false
+            self.departureLockGeneration = number(self.windowGeneration)
+            self.consumedWindowGeneration = number(self.windowGeneration)
+                or self.consumedWindowGeneration
+            self.activePlanGeneration = nil
+            self.lastWindowRejectReason = "confirmed_window_reentry_on_cooldown"
+            log(self, "confirmed_window_reentry_suppressed", {
+                officialSpellID = officialSpellID,
+                windowSpellID = rule.windowSpellID,
+                phase = windowSample.phase,
+                reason = windowSample.reason,
+                windowGeneration = self.windowGeneration,
+                priorPlanId = confirmedWindow.planId,
+                priorWindowGeneration = confirmedWindow.windowGeneration,
+                priorConfirmation = confirmedWindow.confirmation,
+            })
+            if capture then
+                releasePreWindowCapture(self, "confirmed_window_reentry_on_cooldown")
+                capture = nil
+            end
+            recordDecision(self, "hold", "confirmed_window_reentry_on_cooldown", {
+                officialSpellID = officialSpellID,
+                windowSpellID = rule.windowSpellID,
+                injectionSpellID = rule.injectionSpellID,
+                ruleSource = rule.source,
+                ruleId = rule.id,
+            })
+            return holdResult(nil, "burst_await_window_departure", {
+                preCombatBridge = false,
+            })
+        end
+
         if creation.windowAvailabilityConflict then
             log(self, "plan_gate_window_official_cooldown_conflict", {
                 phase = windowSample.phase, reason = windowSample.reason, mode = rule.mode,
@@ -3345,6 +3412,15 @@ function AutoBurst:GetSnapshot()
             lastStepObservation = shallowCopy(self.lastStepObservation),
             lastInjectionPreflight = shallowCopy(self.lastInjectionPreflight),
             lastSequencePreflight = shallowCopy(self.lastSequencePreflight),
+            lastConfirmedWindowSpellID = self.lastConfirmedWindowReceipt
+                and positiveSpellID(self.lastConfirmedWindowReceipt.spellID) or nil,
+            lastConfirmedWindowPlanId = self.lastConfirmedWindowReceipt
+                and number(self.lastConfirmedWindowReceipt.planId) or nil,
+            lastConfirmedWindowGeneration = self.lastConfirmedWindowReceipt
+                and number(self.lastConfirmedWindowReceipt.windowGeneration) or nil,
+            lastConfirmedWindowConfirmation = self.lastConfirmedWindowReceipt
+                and self.lastConfirmedWindowReceipt.confirmation or nil,
+            lastWindowRejectReason = self.lastWindowRejectReason,
         }
     end
     local step = plan.steps[plan.stepIndex]
@@ -3453,6 +3529,15 @@ function AutoBurst:GetSnapshot()
         lastStepObservation = shallowCopy(self.lastStepObservation),
         lastInjectionPreflight = shallowCopy(self.lastInjectionPreflight),
         lastSequencePreflight = shallowCopy(self.lastSequencePreflight),
+        lastConfirmedWindowSpellID = self.lastConfirmedWindowReceipt
+            and positiveSpellID(self.lastConfirmedWindowReceipt.spellID) or nil,
+        lastConfirmedWindowPlanId = self.lastConfirmedWindowReceipt
+            and number(self.lastConfirmedWindowReceipt.planId) or nil,
+        lastConfirmedWindowGeneration = self.lastConfirmedWindowReceipt
+            and number(self.lastConfirmedWindowReceipt.windowGeneration) or nil,
+        lastConfirmedWindowConfirmation = self.lastConfirmedWindowReceipt
+            and self.lastConfirmedWindowReceipt.confirmation or nil,
+        lastWindowRejectReason = self.lastWindowRejectReason,
     }
 end
 
@@ -3954,6 +4039,7 @@ function AutoBurst:GetDiagnostics()
         lastCandidate = shallowCopy(self.lastCandidate),
         lastSpellcastSuccess = shallowCopy(self.lastSpellcastSuccess),
         lastConfirmationSource = self.lastConfirmationSource,
+        lastConfirmedWindowReceipt = shallowCopy(self.lastConfirmedWindowReceipt),
         lastAbortReason = self.lastAbortReason,
         lastWindowRejectReason = self.lastWindowRejectReason,
         lastArmedRebase = shallowCopy(self.lastArmedRebase),
