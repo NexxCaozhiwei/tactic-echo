@@ -1760,7 +1760,7 @@ local function buildBurstSettings(pane)
         showRestore = false,
     })
 
-    y = createSpellPriorityEditor(pane, "注入技能", "当前专精已启用的前 3 项可加入上方爆发顺序。此处维护 SpellID 和优先级；上方只调参与和位置。", y, {
+    y = createSpellPriorityEditor(pane, "注入技能", "当前专精已启用的前 6 项可加入上方爆发顺序。此处维护 SpellID 和优先级；上方只调参与和位置。", y, {
         maxRows = 6,
         enabledLabel = "注入优先级",
         removeLabel = "停用",

@@ -11,7 +11,7 @@
 --
 -- AutoBurst builds one explicit, specialization-scoped ordered sequence. The
 -- official recommendation remains the sole window anchor; optional steps may
--- be up to three profile injection skills plus explicit 13/14 trinket slots.
+-- be up to six profile injection skills plus explicit 13/14 trinket slots.
 -- Each step still resolves through the existing visible default action bar and
 -- the ordinary TEAP/TEK gate. Potions and arbitrary inventory remain excluded.
 local TE = _G.TacticEcho
@@ -103,6 +103,14 @@ local STEP_CONFIRM_SECONDS = 2.20
 -- immediate, but cooldown-only fallback evidence must survive this short
 -- rollback window before it can advance the ordered plan.
 local FALLBACK_CONFIRM_STABILITY_SECONDS = 0.15
+-- Optional runtime unavailability must persist across two distinct shared
+-- business snapshots before it may remove a step. A single predictive
+-- cooldown/usability frame is never enough to advance the ordered sequence.
+local OPTIONAL_UNAVAILABLE_CONFIRM_SAMPLES = 2
+-- Exact, matching failure receipts are stronger than a timeout or candidate
+-- offer count. Two failures for the same waiting step prove that the client has
+-- rejected repeated physical attempts and provide a bounded liveness release.
+local MATCHED_FAILURE_RELEASE_COUNT = 2
 -- First recovery milestone for a pre-window trinket. After this point the plan
 -- stays in persistent recovery and continues to watch the exact slot+ItemID
 -- cooldown for delayed or manual use; this is not a terminal recovery deadline.
@@ -154,6 +162,7 @@ local PRIORITY_LOG_EVENTS = {
     plan_rejected = true,
     plan_gate_window_official_cooldown_conflict = true,
     confirmed_window_reentry_suppressed = true,
+    window_repeated_failure_released = true,
     window_official_cooldown_revalidate = true,
     window_official_cooldown_resolved = true,
     plan_aborted = true,
@@ -513,6 +522,7 @@ function AutoBurst:RecordSpellcastFailed(spellID, event)
     plan.wait.failedAt = t
     plan.wait.failedEvent = tostring(event or "UNIT_SPELLCAST_FAILED")
     plan.wait.failedSpellID = spellID
+    plan.wait.failureCount = (number(plan.wait.failureCount) or 0) + 1
     plan.wait.provisionalConfirmation = nil
     log(self, "step_spellcast_failed", {
         role = step.role,
@@ -523,6 +533,7 @@ function AutoBurst:RecordSpellcastFailed(spellID, event)
         currentStep = plan.stepIndex,
         dispatchAttempt = plan.wait.dispatchAttempt,
         confirmationRetained = false,
+        failureCount = plan.wait.failureCount,
     })
     return true
 end
@@ -901,6 +912,16 @@ local function optionalInjectionResourceBlock(step, cycle, bindingInfo, iconStat
         and spellID ~= nil
     if not (trusted and type(runtimeSnapshot) == "table" and runtime) then return nil, nil end
     local ownState = ownReadyState(iconState)
+    local castDisplay = type(runtimeSnapshot.castDisplay) == "table" and runtimeSnapshot.castDisplay or nil
+    local castActive = castDisplay and castDisplay.active == true or false
+    local gcdPhase
+    if TE.GCDGate and type(TE.GCDGate.Classify) == "function" then
+        local ok, phase = pcall(TE.GCDGate.Classify, TE.GCDGate, cycle)
+        if ok then gcdPhase = phase end
+    end
+    local resourceDecisionDeferred = castActive
+        or gcdPhase == "GCD_LOCKED"
+        or gcdPhase == "QUEUE_WINDOW"
 
     -- Prefer the exact spell API: Retail exposes special class resources such
     -- as Devourer Soul Fragments through the public insufficientPower boolean,
@@ -928,7 +949,8 @@ local function optionalInjectionResourceBlock(step, cycle, bindingInfo, iconStat
                 and step.specialResourceUnusableCompat == true
                 and ownState ~= "COOLDOWN"
                 and usable == false
-            if usable == false and (notEnoughResource == true or specialResourceUnusable) then
+            if usable == false and (notEnoughResource == true or specialResourceUnusable)
+                and resourceDecisionDeferred ~= true then
                 return {
                     phase = "RESOURCE_BLOCKED",
                     reason = "optional_injection_resource_insufficient",
@@ -951,6 +973,9 @@ local function optionalInjectionResourceBlock(step, cycle, bindingInfo, iconStat
                     notEnoughResource = notEnoughResource == true,
                     resourceUsabilitySource = probe.source,
                     resourceUsabilityReason = usabilityReason,
+                    resourceDecisionDeferred = resourceDecisionDeferred == true,
+                    resourceDeferredByCast = castActive,
+                    resourceDeferredByGCD = gcdPhase == "GCD_LOCKED" or gcdPhase == "QUEUE_WINDOW",
                 }
             end
         end
@@ -980,6 +1005,9 @@ local function stepSample(step, cycle, options)
             sample.notEnoughResource = resourceObservation.notEnoughResource == true
             sample.resourceUsabilitySource = resourceObservation.resourceUsabilitySource
             sample.resourceUsabilityReason = resourceObservation.resourceUsabilityReason
+            sample.resourceDecisionDeferred = resourceObservation.resourceDecisionDeferred == true
+            sample.resourceDeferredByCast = resourceObservation.resourceDeferredByCast == true
+            sample.resourceDeferredByGCD = resourceObservation.resourceDeferredByGCD == true
         end
         return sample
     end
@@ -1042,6 +1070,13 @@ local function confirmStableFallback(self, plan, step, source)
     local wait = plan and plan.wait
     if type(wait) ~= "table" then return false end
     local t = now()
+    -- An exact failure receipt always outranks optimistic cooldown/charge
+    -- movement for the same logical attempt. Keep re-offering until an exact
+    -- success arrives or the bounded matching-failure policy releases it.
+    if number(wait.failedAt) then
+        wait.provisionalConfirmation = nil
+        return false
+    end
     local provisional = wait.provisionalConfirmation
     if type(provisional) ~= "table" or provisional.source ~= source then
         provisional = {
@@ -1133,6 +1168,9 @@ rememberStepObservation = function(self, plan, step, sample, stage)
         specialResourceUnusableCompat = sample.specialResourceUnusableCompat == true,
         resourceUsabilitySource = sample.resourceUsabilitySource,
         resourceUsabilityReason = sample.resourceUsabilityReason,
+        resourceDecisionDeferred = sample.resourceDecisionDeferred == true,
+        resourceDeferredByCast = sample.resourceDeferredByCast == true,
+        resourceDeferredByGCD = sample.resourceDeferredByGCD == true,
         postWindowResourceSettling = sample.postWindowResourceSettling == true,
         postWindowResourceCycleId = sample.postWindowResourceCycleId,
         postWindowResourceGCDPhase = sample.postWindowResourceGCDPhase,
@@ -2063,6 +2101,8 @@ local function skipOptionalStep(self, plan, step, reason)
     plan.wait = nil
     plan.state = "PENDING"
     plan.revalidate = nil
+    plan.optionalUnavailableConfirmation = nil
+    plan.preInjectionCooldownConfirmation = nil
     plan.candidateOfferCount = 0
     plan.candidateFirstOfferedAt = nil
     plan.candidateLastOfferedAt = nil
@@ -2113,6 +2153,38 @@ local function runtimeCycleIdentity(cycle)
     return nil, nil
 end
 
+local function confirmOptionalUnavailable(plan, step, sample, cycle, reason)
+    if not (plan and isOptionalStep(step)) then return false, "optional_step_invalid" end
+    local cycleKey, cycleId = runtimeCycleIdentity(cycle)
+    local identity = step.key or step.role or tostring(step.spellID or step.inventorySlot or "optional")
+    local category = sample and sample.resourceBlocked == true and "resource"
+        or (sample and sample.phase == "COOLDOWN" and "cooldown" or "uncertain")
+    local key = tostring(identity) .. ":" .. tostring(category)
+    local current = type(plan.optionalUnavailableConfirmation) == "table"
+        and plan.optionalUnavailableConfirmation or nil
+    if not current or current.key ~= key then
+        current = {
+            key = key,
+            category = category,
+            count = 0,
+            lastCycleKey = nil,
+            firstReason = reason,
+        }
+        plan.optionalUnavailableConfirmation = current
+    end
+    if cycleKey ~= nil and current.lastCycleKey == cycleKey then
+        return false, "optional_unavailable_same_cycle"
+    end
+    current.lastCycleKey = cycleKey
+    current.lastCycleId = cycleId
+    current.count = (number(current.count) or 0) + 1
+    current.lastReason = reason
+    if current.count >= OPTIONAL_UNAVAILABLE_CONFIRM_SAMPLES then
+        return true, "optional_unavailable_confirmed"
+    end
+    return false, "optional_unavailable_confirming"
+end
+
 local function isPostWindowResourceSettlementStep(step)
     return isOptionalStep(step)
         and stepKind(step) == "spell"
@@ -2136,6 +2208,8 @@ local function finishStep(self, plan, source, cycle)
     end
     plan.wait = nil
     plan.revalidate = nil
+    plan.optionalUnavailableConfirmation = nil
+    plan.preInjectionCooldownConfirmation = nil
     plan.candidateOfferCount = 0
     plan.candidateFirstOfferedAt = nil
     plan.candidateLastOfferedAt = nil
@@ -2363,10 +2437,10 @@ end
 
 -- Optional-step selection happens before a Burst plan claims the official
 -- window. A selected step must have a current binding and a positive own-ready
--- cooldown result. Shared GCD (READY/QUEUE/GCD_LOCKED) remains eligible; own
--- CD, opaque/UNKNOWN cooldown and invalid equipment/binding are excluded.
--- Simple mode removes each excluded optional step. Focused mode refuses the
--- whole sequence when any enabled optional step is not eligible.
+-- cooldown result. Shared GCD (READY/QUEUE/GCD_LOCKED) remains eligible; exact
+-- own CD and invalid equipment/binding are excluded. Bound cooldown-uncertain
+-- or resource-blocked steps remain selected for runtime stability sampling so
+-- one transient frame cannot silently remove them from either mode.
 local function selectedRuleForSequence(rule, selectedSteps)
     local selected = {}
     for key, value in pairs(rule or {}) do selected[key] = value end
@@ -2402,16 +2476,14 @@ local function preflightSequence(self, rule, cycle)
             })
             rememberStepObservation(self, nil, step, sample, "plan_gate_sequence_preflight")
             local phase = sample and sample.phase or "UNKNOWN"
-            -- Eradicate can change Void Metamorphosis' resource eligibility.
-            -- Keep the configured post-window step when resource is the only
-            -- blocker, then make the first post-confirmation fresh samples
-            -- authoritative. Pre-window injections and every other profile keep
-            -- the ordinary preflight contract.
-            local resourceCheckDeferred = postWindowSpecialResource
-                and sample and sample.resourceBlocked == true
-                and sample.cooldownUncertain ~= true
+            -- A preceding action can change the next injection's resource
+            -- eligibility. Keep any verified resource-blocked optional step in
+            -- the sequence and make distinct runtime snapshots authoritative.
+            -- Devourer's post-window compatibility still receives its dedicated
+            -- GCD settlement state below.
+            local resourceCheckDeferred = sample and sample.resourceBlocked == true
             local eligible = resourceCheckDeferred
-                or (isDispatchablePhase(phase) and sample.cooldownUncertain ~= true)
+                or isDispatchablePhase(phase)
             if eligible then
                 selected[#selected + 1] = step
                 selectedOptional = selectedOptional + 1
@@ -2567,7 +2639,7 @@ local function settlePostWindowResource(self, plan, step, cycle)
         return holdResult(plan, "post_window_resource_settling"), nil, true
     end
 
-    if sample.resourceUsabilityKnown == true and sample.actionUsable == true then
+    if sample.resourceBlocked ~= true and isDispatchablePhase(sample.phase) then
         settlement.lastResult = "ready"
         plan.postWindowResourceSettlement = nil
         plan.state = "PENDING"
@@ -2577,6 +2649,7 @@ local function settlePostWindowResource(self, plan, step, cycle)
             spellID = positiveSpellID(step.spellID),
             cycleId = cycleId,
             phase = sample.phase,
+            resourceUsabilityKnown = sample.resourceUsabilityKnown == true,
         })
         return nil, sample, false
     end
@@ -2634,7 +2707,8 @@ local function canCreateFocused(rule, cycle, windowSample)
         local sample = isWindowStep(step) and windowSample or stepSample(step, cycle)
         if isWindowStep(step) and isOfficialWindowAvailabilityConflict(sample) then
             -- The actual candidate is withheld until later readiness is proven.
-        elseif not isDispatchablePhase(sample and sample.phase) then
+        elseif not isDispatchablePhase(sample and sample.phase)
+            and not (sample and sample.resourceBlocked == true) then
             return false, sample and sample.phase or "UNKNOWN", sample and sample.reason or "focused_step_sample_missing"
         end
     end
@@ -3102,6 +3176,24 @@ function AutoBurst:Evaluate(official, runtime)
             if result then return result end
             return self:Evaluate(official, runtime)
         end
+        if (number(plan.wait.failureCount) or 0) >= MATCHED_FAILURE_RELEASE_COUNT then
+            if isOptionalStep(step) then
+                return releasePlanForInjectionUnavailable(self, plan, step, sample,
+                    "repeated_matching_spellcast_failures")
+            end
+            log(self, "window_repeated_failure_released", {
+                planId = plan.id,
+                currentStep = plan.stepIndex,
+                spellID = positiveSpellID(step.spellID),
+                failureCount = number(plan.wait.failureCount),
+            })
+            self.plan = nil
+            self.activePlanGeneration = nil
+            self.requireWindowDeparture = false
+            self.lockedWindowSpellID = nil
+            self.departureLockGeneration = nil
+            return noneResult()
+        end
         if observeWindowQueueDelivery(plan, step, sample)
             and shouldLogProgress(self, "window_queue_delivery_continues") then
             log(self, "window_queue_delivery_continues", {
@@ -3118,16 +3210,31 @@ function AutoBurst:Evaluate(official, runtime)
             return holdResult(plan, sample.reason or "step_paused")
         end
         if isOptionalStep(step) and sample.resourceBlocked == true then
-            return releasePlanForInjectionUnavailable(self, plan, step, sample,
+            local unavailable = confirmOptionalUnavailable(plan, step, sample, cycle,
                 "optional_injection_resource_insufficient")
+            if unavailable then
+                return releasePlanForInjectionUnavailable(self, plan, step, sample,
+                    "optional_injection_resource_insufficient_confirmed")
+            end
+            return holdResult(plan, "optional_injection_resource_confirming")
         end
         if sample.phase == "BLOCKED" or sample.phase == "UNUSABLE" then
             self:Abort(sample.reason or sample.phase, false)
             return terminalResult(self, "burst_wait_confirmation_invalidated", { officialSpellID = officialSpellID, abortReason = sample.reason or sample.phase })
         end
-        if isOptionalStep(step) and (sample.phase == "COOLDOWN" or sample.cooldownUncertain == true or sample.phase == "UNKNOWN") then
-            return releasePlanForInjectionUnavailable(self, plan, step, sample,
-                "injection_unavailable_while_waiting:" .. tostring(sample.reason or sample.phase))
+        if isOptionalStep(step) and sample.phase == "COOLDOWN" then
+            return reofferUnconfirmedCooldown(self, plan, step, cycle, sample,
+                "injection_cooldown_while_waiting:" .. tostring(sample.reason or sample.phase))
+        end
+        if isOptionalStep(step) and sample.cooldownUncertain == true and isDispatchablePhase(sample.phase) then
+            plan.optionalUnavailableConfirmation = nil
+            plan.wait.offerSample = sample
+            plan.wait.phase = sample.phase
+            return candidateResult(self, plan, step, sample)
+        end
+        if isOptionalStep(step) and sample.phase == "UNKNOWN" then
+            return revalidateUnknownStep(self, plan, step, sample,
+                "injection_uncertain_while_waiting:" .. tostring(sample.reason or sample.phase))
         end
         -- Confirmation grace is diagnostic only. Once it elapses, a pre-window
         -- trinket enters persistent recovery; all other valid steps continue to
@@ -3156,6 +3263,14 @@ function AutoBurst:Evaluate(official, runtime)
         if isDispatchablePhase(sample.phase) then
             -- Always use the latest sample. A stale offer sample can retain an
             -- old GCD/slot state and is the source of false retry stalls.
+            plan.optionalUnavailableConfirmation = nil
+            if plan.wait.failedAt and sample.cooldownUncertain ~= true then
+                plan.wait.priorFailedAt = plan.wait.failedAt
+                plan.wait.failedAt = nil
+                plan.wait.failedEvent = nil
+                plan.wait.failedSpellID = nil
+                plan.wait.provisionalConfirmation = nil
+            end
             plan.wait.offerSample = sample
             plan.wait.phase = sample.phase
             return candidateResult(self, plan, step, sample)
@@ -3178,12 +3293,27 @@ function AutoBurst:Evaluate(official, runtime)
         return holdResult(plan, sample.reason or "step_paused")
     end
     if isOptionalStep(step) and sample.resourceBlocked == true then
-        return releasePlanForInjectionUnavailable(self, plan, step, sample,
+        local unavailable = confirmOptionalUnavailable(plan, step, sample, cycle,
             "optional_injection_resource_insufficient")
+        if unavailable then
+            return releasePlanForInjectionUnavailable(self, plan, step, sample,
+                "optional_injection_resource_insufficient_confirmed")
+        end
+        return holdResult(plan, "optional_injection_resource_confirming")
     end
-    if isOptionalStep(step) and (sample.phase == "COOLDOWN" or sample.cooldownUncertain == true or sample.phase == "UNKNOWN") then
-        return releasePlanForInjectionUnavailable(self, plan, step, sample,
-            "injection_unavailable_before_dispatch:" .. tostring(sample.reason or sample.phase))
+    if isOptionalStep(step) and sample.phase == "COOLDOWN" then
+        local disposition, cooldownReason = confirmPreInjectionOwnCooldown(self, plan, step, sample)
+        if disposition == "skip" then
+            return releasePlanForInjectionUnavailable(self, plan, step, sample,
+                "optional_step_own_cooldown:" .. tostring(cooldownReason or sample.reason or sample.phase))
+        end
+        if disposition == "hold" then return holdResult(plan, cooldownReason) end
+        return revalidateUnknownStep(self, plan, step, sample,
+            "optional_cooldown_unconfirmed:" .. tostring(cooldownReason or sample.reason or sample.phase))
+    end
+    if isOptionalStep(step) and sample.phase == "UNKNOWN" then
+        return revalidateUnknownStep(self, plan, step, sample,
+            "injection_uncertain_before_dispatch:" .. tostring(sample.reason or sample.phase))
     end
     if sample.phase == "GCD_LOCKED" then
         -- Match the ordinary official-recommendation scheduler: an action that
@@ -3269,6 +3399,8 @@ function AutoBurst:Evaluate(official, runtime)
 
     local dispatchedAt = now()
     plan.revalidate = nil
+    plan.optionalUnavailableConfirmation = nil
+    plan.preInjectionCooldownConfirmation = nil
     plan.candidateOfferCount = 0
     plan.candidateFirstOfferedAt = nil
     plan.candidateLastOfferedAt = nil
@@ -3299,6 +3431,7 @@ function AutoBurst:Evaluate(official, runtime)
         failedAt = nil,
         failedEvent = nil,
         failedSpellID = nil,
+        failureCount = 0,
         provisionalConfirmation = nil,
         queueDeliveryContinuesLogged = false,
     }
@@ -3495,6 +3628,11 @@ function AutoBurst:GetSnapshot()
         inventoryRecoveryReason = plan.wait and plan.wait.inventoryRecoveryReason or nil,
         inventoryRecoveryDeadlineAt = plan.wait and number(plan.wait.inventoryRecoveryDeadlineAt) or nil,
         confirmationGraceElapsed = plan.wait and plan.wait.confirmationGraceElapsed == true,
+        matchingFailureCount = plan.wait and number(plan.wait.failureCount) or 0,
+        optionalUnavailableConfirmations = plan.optionalUnavailableConfirmation
+            and number(plan.optionalUnavailableConfirmation.count) or 0,
+        optionalUnavailableCategory = plan.optionalUnavailableConfirmation
+            and plan.optionalUnavailableConfirmation.category or nil,
         dispatchAttempt = plan.dispatchAttempt or 0,
         pauseReason = plan.pauseReason,
         requireWindowDeparture = self.requireWindowDeparture == true,
@@ -4064,6 +4202,7 @@ TE:RegisterEventsSafe(watcher, {
     "UNIT_SPELLCAST_SUCCEEDED",
     "UNIT_SPELLCAST_FAILED",
     "UNIT_SPELLCAST_FAILED_QUIET",
+    "UNIT_SPELLCAST_INTERRUPTED",
 })
 watcher:SetScript("OnEvent", function(_, event, unit, castGUID, spellID)
     if event == "PLAYER_REGEN_DISABLED" then
@@ -4096,7 +4235,8 @@ watcher:SetScript("OnEvent", function(_, event, unit, castGUID, spellID)
         if accepted == true and TE.SignalFrame and type(TE.SignalFrame.Refresh) == "function" then
             TE.SignalFrame:Refresh("autoburst_step_spellcast_succeeded")
         end
-    elseif (event == "UNIT_SPELLCAST_FAILED" or event == "UNIT_SPELLCAST_FAILED_QUIET") and unit == "player" then
+    elseif (event == "UNIT_SPELLCAST_FAILED" or event == "UNIT_SPELLCAST_FAILED_QUIET"
+        or event == "UNIT_SPELLCAST_INTERRUPTED") and unit == "player" then
         local accepted = AutoBurst:RecordSpellcastFailed(spellID, event)
         if accepted == true and TE.SignalFrame and type(TE.SignalFrame.Refresh) == "function" then
             TE.SignalFrame:Refresh("autoburst_step_spellcast_failed")

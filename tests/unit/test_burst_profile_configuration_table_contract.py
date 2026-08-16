@@ -62,4 +62,4 @@ def test_configuration_table_mapping_remains_specialization_sequence_only() -> N
     assert 'source = "profile_sequence"' in auto_burst
     assert "autoBurstUseProfileFallback" not in auto_burst
     assert "autoBurstWindowSpellID" not in auto_burst
-    assert "AUTO_BURST_MAX_INJECTIONS = 3" in profiles
+    assert "AUTO_BURST_MAX_INJECTIONS = 6" in profiles

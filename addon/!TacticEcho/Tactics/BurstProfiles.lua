@@ -291,7 +291,7 @@ end
 -- injection-list reorder or a specialization switch from silently retargeting
 -- an existing sequence row to a different skill.
 local AUTO_BURST_SEQUENCE_SCHEMA = 1
-local AUTO_BURST_MAX_INJECTIONS = 3
+local AUTO_BURST_MAX_INJECTIONS = 6
 
 local function autoBurstSpellKey(spellID)
     spellID = tonumber(spellID)
@@ -342,9 +342,9 @@ local function autoBurstDefaultOrder(injections, profileKey)
     -- official window before the optional Void Metamorphosis injection.
     if profileKey == "DEMONHUNTER_3" then
         appendUnique(order, seen, "window")
-        if injections[1] then appendUnique(order, seen, injections[1].key) end
-        if injections[2] then appendUnique(order, seen, injections[2].key) end
-        if injections[3] then appendUnique(order, seen, injections[3].key) end
+        for index = 1, AUTO_BURST_MAX_INJECTIONS do
+            if injections[index] then appendUnique(order, seen, injections[index].key) end
+        end
         appendUnique(order, seen, "trinket:13")
         appendUnique(order, seen, "trinket:14")
         return order
@@ -352,8 +352,9 @@ local function autoBurstDefaultOrder(injections, profileKey)
     -- Preserve 1.0.25's verified default: first injection precedes the window.
     if injections[1] then appendUnique(order, seen, injections[1].key) end
     appendUnique(order, seen, "window")
-    if injections[2] then appendUnique(order, seen, injections[2].key) end
-    if injections[3] then appendUnique(order, seen, injections[3].key) end
+    for index = 2, AUTO_BURST_MAX_INJECTIONS do
+        if injections[index] then appendUnique(order, seen, injections[index].key) end
+    end
     appendUnique(order, seen, "trinket:13")
     appendUnique(order, seen, "trinket:14")
     return order

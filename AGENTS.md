@@ -57,19 +57,19 @@ OfficialRecommendation（不可变）
 
 ```text
 window                    -- 固定、不可停用
-injection:<SpellID>       -- 最多 3 个，来自该专精“注入技能”列表的已启用前 3 项
+injection:<SpellID>       -- 最多 6 个，来自该专精“注入技能”列表的已启用前 6 项
 trinket:13 / trinket:14   -- 固定装备栏身份，计划创建时锁定实际 ItemID
 ```
 
-顺序、启用状态和 `offGCDExplicit` 必须写入 `tactics.burstProfiles[profileKey].autoBurstSequence`。禁止按“注入第 1/2/3 槽位”、动作条键位、瞬时 ItemID 或跨专精全局变量保存顺序。窗口步骤永远存在；注入/饰品可独立启用、停用、上移、下移。旧 Phase 1.5 的手填窗口/注入 SpellID、方向、单饰品入口和 fallback 字段不得恢复或参与运行时规则。
+顺序、启用状态和 `offGCDExplicit` 必须写入 `tactics.burstProfiles[profileKey].autoBurstSequence`。禁止按“注入第 N 槽位”、动作条键位、瞬时 ItemID 或跨专精全局变量保存顺序。窗口步骤永远存在；注入/饰品可独立启用、停用、上移、下移。旧 Phase 1.5 的手填窗口/注入 SpellID、方向、单饰品入口和 fallback 字段不得恢复或参与运行时规则。
 
 ### 3.2 计划创建与预检
 
 命中官方窗口后，先对每个已启用可选步骤执行真实绑定、装备身份、实时自身 CD/充能与 GCD 采样，再决定是否创建计划。用户已明确授权一个窄资源例外：仅对已验证动作栏来源且已有真实 BindingToken 的可选 spell 注入，可经共享 `RuntimeSnapshot:GetSpellUsability()` 按精确 SpellID 读取 `usable` / `insufficientPower` 两个公开布尔值，并以 `GetActionUsability()` 作为动作槽兼容回退。普通注入仅明确 `usable=false` 且 `notEnoughResource=true` 才视为资源不足；由于 Retail 对噬灭光环型特殊资源可能只返回 `usable=false` 而不设置通用 `insufficientPower`，仅 `DEMONHUNTER_3` 的 `1217605`（虚空变形）可在相同已验证动作栏/真实 BindingToken 前提下，于计划运行期、首次派发前或等待确认时把精确探针的 `usable=false` 解释为资源不足，并必须记录 `specialResourceUnusableCompat=true`；初始预检不得用该兼容形态提前丢弃位于根除之后的虚空变形步骤：
 
-- `simple`：移除明确自身 CD、冷却 UNKNOWN、无绑定、未装备、装备身份变化或其他硬失效步骤；保留剩余步骤相对顺序。
-- `focused`：任何已启用可选步骤不可用，即不创建计划，官方窗口保持普通路径。
-- 资源不足的可选注入在 `simple` 中按不可用步骤移除或运行期跳过；在 `focused` 中不得创建计划，运行期则沿用窗口派发前释放、窗口派发后保留离开锁的既有规则。
+- `simple`：移除明确自身 CD、无法经公开 GCD 阶段安全降级派发的 UNKNOWN、无绑定、未装备、装备身份变化或其他硬失效步骤；保留剩余步骤相对顺序。
+- `focused`：任何已启用可选步骤存在明确自身 CD、无绑定、未装备、装备变化或其他硬失效时不创建计划；资源/通用不可用的单帧瞬态可进入运行期稳定确认。
+- 单帧资源不足、通用不可用或已验证动作栏上可经公开 GCD 阶段继续派发的冷却来源不确定不得删除可选注入。此类步骤进入运行期稳定确认；只有两个不同共享业务快照持续给出同类不可用证据，才可在 `simple` 中跳过，或在 `focused` 中按窗口是否已派发执行释放/离开锁。普通读条、引导、蓄力以及 `GCD_LOCKED` / `QUEUE_WINDOW` 期间不得把 `usable=false` 解释为资源不足；噬灭虚空变形的 `usable=false/false` 兼容也受此约束。
 - 所有可选步骤均被移除时，不创建计划。
 - `READY_NOW`、`QUEUE_WINDOW` 与 `GCD_LOCKED` 是可用时序，不是自身 CD；共享 GCD 永远不得排除或确认一个步骤。
 - 对 resolver 已验证的直接可信默认动作条，当前按钮的显式 ready（`isActive=false` 或可解释 `0/0`）可仅用于纠正覆盖/天赋变体造成的旧 SpellID 自身 CD；该证据不构成 CD 跳过、成功确认或任何额外派发资格。
@@ -82,7 +82,7 @@ trinket:13 / trinket:14   -- 固定装备栏身份，计划创建时锁定实际
 - 每个计划严格按用户 sequence 的实际筛选结果逐步执行；每帧最多一个 BindingToken。
 - 每步派发前再次实时采样。`simple` 运行期失效时只跳过该可选步骤并继续；`focused` 在窗口尚未派发时释放官方窗口，窗口已派发后才保留离开锁。
 - 步骤仅由当前 `WAIT_CONFIRM` 的精确 `UNIT_SPELLCAST_SUCCEEDED`、自身非 GCD CD 开始或充能减少确认；饰品还必须匹配锁定 slot + ItemID。
-- UNKNOWN、图标灰度、泛 GCD、失败事件、Buff、资源/目标状态不得作为跳过或成功证据。
+- UNKNOWN、图标灰度、泛 GCD、单个失败事件、Buff、资源/目标状态不得作为跳过或成功证据。仅当前 `WAIT_CONFIRM` 精确 SpellID/等效 SpellID 的两个匹配 `UNIT_SPELLCAST_FAILED`、`UNIT_SPELLCAST_FAILED_QUIET` 或 `UNIT_SPELLCAST_INTERRUPTED` 收据可作为有界活性释放：`simple` 只跳过当前可选步骤，`focused` 按既有窗口派发边界终止，窗口步骤则释放给普通官方路径；不得用候选帧数、固定睡眠或泛超时替代该精确失败证据。
 - 已确认窗口后需观察官方窗口离开，避免重复派发；已创建计划内官方推荐旋转仅记录诊断，不取消完成中的步骤。
 
 ### 3.4 Handoff、脱战硬门控与切图

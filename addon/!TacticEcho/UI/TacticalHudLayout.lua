@@ -284,6 +284,10 @@ local function layoutFingerprint(nodes, hud)
         shownMarker(nodes.tactical and nodes.tactical.burst and nodes.tactical.burst[3]),
         shownMarker(nodes.tactical and nodes.tactical.burst and nodes.tactical.burst[4]),
         shownMarker(nodes.tactical and nodes.tactical.burst and nodes.tactical.burst[5]),
+        shownMarker(nodes.tactical and nodes.tactical.burst and nodes.tactical.burst[6]),
+        shownMarker(nodes.tactical and nodes.tactical.burst and nodes.tactical.burst[7]),
+        shownMarker(nodes.tactical and nodes.tactical.burst and nodes.tactical.burst[8]),
+        shownMarker(nodes.tactical and nodes.tactical.burst and nodes.tactical.burst[9]),
     }, "|")
 end
 

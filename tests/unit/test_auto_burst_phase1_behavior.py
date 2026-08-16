@@ -498,7 +498,7 @@ assert(AutoBurst:GetSnapshot().active == false, "no plan may exist for duration-
 """)
 
 
-def test_preflight_requires_positive_readiness_and_never_queues_pending_or_unknown_injection() -> None:
+def test_preflight_excludes_pending_own_cooldown_but_delivers_unknown_through_public_gcd() -> None:
     run_lua(AUTO_BURST_HARNESS + r"""
 cooldowns[31884] = "cooldown_pending"
 local pending = eval()
@@ -508,9 +508,11 @@ assert(pending.kind == "none" and AutoBurst:GetSnapshot().active == false, "pend
 cooldowns[31884] = "unknown"
 gcdPhase = "GCD_LOCKED"
 local unknown = eval()
-assert(unknown.kind == "none" and AutoBurst:GetSnapshot().active == false, "unknown cooldown provenance must be excluded at plan construction")
+assert(unknown.kind == "candidate" and unknown.dispatchSpellID == 31884,
+    "unknown cooldown provenance must remain deliverable through the public GCD gate")
 local preflight = AutoBurst:GetDiagnostics().lastInjectionPreflight
-assert(preflight.status == "none_ready" and preflight.firstExcludedCooldownUncertain == true, "unknown exclusion must retain an auditable reason")
+assert(preflight.status == "selected" and preflight.selectedOrder:find("injection:31884", 1, true),
+    "uncertain delivery must remain auditable in the selected sequence")
 """)
 
 
@@ -668,18 +670,38 @@ assert(preflight.status == "none_ready" and preflight.reason == "focused_optiona
 """)
 
 
-def test_focused_runtime_drift_releases_untouched_window_to_official_path() -> None:
+def test_focused_runtime_cooldown_uncertainty_keeps_reoffering_same_step() -> None:
     run_lua(AUTO_BURST_HARNESS + r"""
 settings.autoBurstMode = "focused"
 local first = eval()
 assert(first.kind == "candidate" and first.dispatchSpellID == 31884,
     "focused plan must initially offer its ready front step")
 cooldowns[31884] = "unknown"
-local released = eval()
-assert(released.kind == "none", "focused runtime drift before the window must release to official flow")
+gcdPhase = "GCD_LOCKED"
+local retry = eval()
+assert(retry.kind == "candidate" and retry.dispatchSpellID == 31884,
+    "focused runtime uncertainty must not remove the waiting injection")
 local snap = AutoBurst:GetSnapshot()
-assert(snap.active == false and snap.requireWindowDeparture ~= true,
-    "an untouched official window may not be departure-locked by a failed focused optional step")
+assert(snap.active == true and snap.waitingForConfirmation == true,
+    "the exact waiting step must retain ownership until success or matching failures")
+""")
+
+
+def test_profile_sequence_accepts_six_injections_and_two_trinket_slots() -> None:
+    run_lua(AUTO_BURST_HARNESS + r"""
+settings.burstProfiles.PALADIN_3 = {
+    customInjectionSpellIDs = { 55342, 100001, 100002, 100003, 100004 },
+    injectionOrder = { 31884, 55342, 100001, 100002, 100003, 100004 },
+}
+local sequence = TE.BurstProfiles:GetAutoBurstSequence(testContext)
+local injectionCount = 0
+for _, entry in ipairs(sequence.entries or {}) do
+    if entry.category == "injection" then injectionCount = injectionCount + 1 end
+end
+assert(injectionCount == 6, "all six enabled injection identities must enter the sequence")
+assert(#sequence.entries == 9, "window + six injections + two trinket slots must be retained")
+assert(sequence.entries[1].key == "injection:31884" and sequence.entries[2].key == "window")
+assert(sequence.entries[7].key == "injection:100004")
 """)
 
 
@@ -795,7 +817,7 @@ assert(containsCustom(updated.injectionEntries, 1217611))
 """)
 
 
-def test_devourer_simple_preflight_skips_resource_blocked_void_metamorphosis() -> None:
+def test_devourer_simple_preflight_defers_resource_blocked_void_metamorphosis() -> None:
     run_lua(AUTO_BURST_HARNESS + r"""
 testContext = { class = "DEMONHUNTER", specIndex = 3, specID = 1480 }
 officialSpellID = 1225826
@@ -815,12 +837,14 @@ spellUsability[1217605] = "resource"
 actionUsability[8] = "ready"
 
 local result = eval()
-assert(result.kind == "none", "resource-blocked optional injection must leave Eradicate on the official path")
-assert(AutoBurst:GetSnapshot().active == false, "no plan may be created when the only optional injection lacks resource")
+assert(result.kind == "hold" and AutoBurst:GetSnapshot().active == true,
+    "one resource sample must remain provisional inside the ordered plan")
+result = eval()
+assert(result.kind == "hold", "two distinct resource samples may skip only the optional injection")
+local window = eval()
+assert(window.kind == "candidate" and window.dispatchSpellID == 1225826)
 local preflight = AutoBurst:GetDiagnostics().lastSequencePreflight
-assert(preflight.status == "none_ready" and preflight.firstExcludedPhase == "RESOURCE_BLOCKED")
-assert(preflight.firstExcludedReason == "optional_injection_resource_insufficient")
-assert(preflight.firstExcludedResourceBlocked == true)
+assert(preflight.status == "runtime_optional_unavailable" and preflight.resourceBlocked == true)
 """)
 
 
@@ -846,6 +870,8 @@ actionUsability[8] = "ready"
 local injection = eval()
 assert(injection.kind == "candidate" and injection.dispatchSpellID == 1217605)
 spellUsability[1217605] = "resource"
+local confirming = eval()
+assert(confirming.kind == "hold" and confirming.reason == "optional_injection_resource_confirming")
 local skipped = eval()
 assert(skipped.kind == "hold" and skipped.reason == "burst_next_step_pending")
 local window = eval()
@@ -880,6 +906,8 @@ assert(injection.kind == "candidate" and injection.dispatchSpellID == 365350)
 spellUsability[365350] = "resource"
 actionUsability[8] = "resource"
 local skipped = eval()
+assert(skipped.kind == "hold" and skipped.reason == "optional_injection_resource_confirming")
+skipped = eval()
 assert(skipped.kind == "hold" and skipped.reason == "burst_next_step_pending")
 local snapshot = AutoBurst:GetSnapshot()
 assert(snapshot.state == "PENDING" and snapshot.waitingForConfirmation == false,
@@ -1025,7 +1053,7 @@ assert(preflight.reason == "post_window_resource_unavailable_confirmed")
 """)
 
 
-def test_devourer_post_window_resource_unknown_is_bounded_and_released() -> None:
+def test_devourer_post_window_resource_unknown_remains_dispatchable() -> None:
     run_lua(AUTO_BURST_HARNESS + r"""
 testContext = { class = "DEMONHUNTER", specIndex = 3, specID = 1480 }
 officialSpellID = 1225826
@@ -1048,13 +1076,10 @@ assert(window.kind == "candidate" and window.dispatchSpellID == 1225826)
 AutoBurst:RecordSpellcastSucceeded(1225826)
 spellUsability[1217605] = nil
 actionUsability[8] = nil
-assert(eval().kind == "hold")
-assert(eval().kind == "hold" and AutoBurst:GetSnapshot().postWindowResourceFreshSamples == 1)
-local released = eval()
-assert(released.kind == "hold" and AutoBurst:GetSnapshot().active == false,
-    "opaque post-window resource booleans must release the optional step after bounded fresh samples")
-local preflight = AutoBurst:GetDiagnostics().lastSequencePreflight
-assert(preflight.reason == "post_window_resource_unknown_released")
+local injection = eval()
+assert(injection.kind == "candidate" and injection.dispatchSpellID == 1217605,
+    "opaque resource booleans must not discard an otherwise dispatchable injection")
+assert(AutoBurst:GetSnapshot().active == true and AutoBurst:GetSnapshot().waitingForConfirmation == true)
 """)
 
 
@@ -1112,18 +1137,17 @@ assert(injection.kind == "candidate" and injection.dispatchSpellID == 31884,
 """)
 
 
-def test_post_window_resource_deferral_does_not_apply_to_other_specializations() -> None:
+def test_post_window_resource_deferral_applies_to_all_optional_injections() -> None:
     run_lua(AUTO_BURST_HARNESS + r"""
 use_post_sequence()
 spellUsability[31884] = "resource"
 actionUsability[4] = "resource"
 
 local result = eval()
-assert(result.kind == "none" and AutoBurst:GetSnapshot().active == false,
-    "ordinary post-window injections must retain the existing resource preflight rule")
+assert(result.kind == "candidate" and result.dispatchSpellID == 343527,
+    "a single resource sample must not discard an ordinary post-window injection")
 local preflight = AutoBurst:GetDiagnostics().lastSequencePreflight
-assert(preflight.status == "none_ready" and preflight.resourceCheckDeferred == false)
-assert(preflight.firstExcludedPhase == "RESOURCE_BLOCKED")
+assert(preflight.status == "selected" and preflight.resourceCheckDeferred == true)
 """)
 
 
@@ -1155,7 +1179,10 @@ assert(injection.kind == "candidate" and injection.dispatchSpellID == 1217605,
 spellUsability[1217605] = "unusable"
 actionUsability[8] = "unusable"
 local released = eval()
-assert(released.kind == "hold", "resource loss during validation must release the optional injection")
+assert(released.kind == "hold" and released.reason == "optional_injection_resource_confirming",
+    "one generic unusable sample must remain provisional")
+released = eval()
+assert(released.kind == "hold", "two fresh unavailable samples may release the optional injection")
 local snapshot = AutoBurst:GetSnapshot()
 assert(snapshot.active == false and snapshot.requireWindowDeparture == true)
 local observation = AutoBurst:GetDiagnostics().lastStepObservation
@@ -1184,10 +1211,12 @@ cooldowns[1217605] = "ready"
 spellUsability[1217605] = "resource"
 
 local result = eval()
+assert(result.kind == "hold" and AutoBurst:GetSnapshot().active == true,
+    "focused mode must retain a single resource sample for confirmation")
+result = eval()
 assert(result.kind == "none" and AutoBurst:GetSnapshot().active == false)
 local preflight = AutoBurst:GetDiagnostics().lastSequencePreflight
-assert(preflight.firstExcludedPhase == "RESOURCE_BLOCKED")
-assert(preflight.firstExcludedResourceBlocked == true)
+assert(preflight.status == "runtime_optional_unavailable")
 """)
 
 
@@ -1197,9 +1226,13 @@ cooldowns[31884] = "unknown"
 actionUsability[4] = "resource"
 
 local result = eval()
-assert(result.kind == "none", "verified action-slot resource evidence must remain a compatibility fallback")
+assert(result.kind == "hold" and AutoBurst:GetSnapshot().active == true,
+    "one action-slot resource sample must remain provisional")
+result = eval()
+assert(result.kind == "hold" and AutoBurst:GetSnapshot().active == true,
+    "two action-slot resource samples may skip only the optional step while retaining the window")
 local preflight = AutoBurst:GetDiagnostics().lastSequencePreflight
-assert(preflight.firstExcludedPhase == "RESOURCE_BLOCKED")
+assert(preflight.status == "runtime_optional_unavailable")
 """)
 
 
@@ -1347,6 +1380,80 @@ assert(AutoBurst:GetDiagnostics().lastConfirmationSource == "unit_spellcast_succ
 """)
 
 
+def test_optional_predictive_cooldown_stays_latched_until_exact_result() -> None:
+    run_lua(AUTO_BURST_HARNESS + r"""
+local injection = eval()
+assert(injection.kind == "candidate" and injection.dispatchSpellID == 31884)
+cooldowns[31884] = "cooldown"
+nowValue = 0.05
+local provisional = eval()
+assert(provisional.kind == "candidate" and provisional.dispatchSpellID == 31884,
+    "the first predicted own-cooldown frame must not skip an optional instant spell")
+assert(AutoBurst:RecordSpellcastFailed(31884, "UNIT_SPELLCAST_FAILED") == true)
+cooldowns[31884] = "ready"
+nowValue = 0.10
+local retry = eval()
+assert(retry.kind == "candidate" and retry.dispatchSpellID == 31884,
+    "a matching failure must return to the same logical injection")
+cooldowns[31884] = "cooldown"
+nowValue = 0.15
+assert(eval().kind == "candidate", "a later cooldown transition must remain provisional")
+nowValue = 0.35
+local window = eval()
+assert(window.kind == "candidate" and window.dispatchSpellID == 343527,
+    "the prior failed attempt must not poison a later stable retry confirmation")
+""")
+
+
+def test_two_matching_failures_release_optional_step_without_unbounded_stall() -> None:
+    run_lua(AUTO_BURST_HARNESS + r"""
+local injection = eval()
+assert(injection.kind == "candidate" and injection.dispatchSpellID == 31884)
+assert(AutoBurst:RecordSpellcastFailed(31884, "UNIT_SPELLCAST_FAILED") == true)
+local retry = eval()
+assert(retry.kind == "candidate" and retry.dispatchSpellID == 31884)
+assert(AutoBurst:GetSnapshot().matchingFailureCount == 1)
+assert(AutoBurst:RecordSpellcastFailed(31884, "UNIT_SPELLCAST_FAILED_QUIET") == true)
+local released = eval()
+assert(released.kind == "hold" and released.reason == "burst_next_step_pending")
+local window = eval()
+assert(window.kind == "candidate" and window.dispatchSpellID == 343527,
+    "simple mode must continue after two exact rejection receipts")
+""")
+
+
+def test_normal_cast_defers_devourer_generic_unusable_resource_compat() -> None:
+    run_lua(AUTO_BURST_HARNESS + r"""
+testContext = { class = "DEMONHUNTER", specIndex = 3, specID = 1480 }
+officialSpellID = 1225826
+settings.burstProfiles.DEMONHUNTER_3 = {
+    autoBurstSequence = {
+        order = { "injection:1217605", "window", "trinket:13", "trinket:14" },
+        enabled = { ["injection:1217605"] = true, ["trinket:13"] = false, ["trinket:14"] = false },
+    },
+}
+bindings[1225826] = "ready"; bindings[1217605] = "ready"
+bindingTokens[1225826] = 7; bindingTokens[1217605] = 8
+cooldowns[1225826] = "ready"; cooldowns[1217605] = "ready"
+spellUsability[1217605] = "ready"; actionUsability[8] = "ready"
+local injection = eval()
+assert(injection.kind == "candidate" and injection.dispatchSpellID == 1217605)
+spellUsability[1217605] = "unusable"; actionUsability[8] = "unusable"
+local retry = AutoBurst:Evaluate({ spellID = officialSpellID }, {
+    inCombat = true, intentState = "armed", effectiveState = "armed",
+    primary = { spellID = officialSpellID }, context = testContext,
+    runtimeSnapshot = {
+        cycleId = 9001,
+        castDisplay = { active = true, kind = "cast", spellID = 999999 },
+    },
+})
+assert(retry.kind == "candidate" and retry.dispatchSpellID == 1217605,
+    "generic unusable during a normal cast must not be classified as special-resource loss")
+local observation = AutoBurst:GetDiagnostics().lastStepObservation
+assert(observation.resourceDecisionDeferred == true and observation.resourceDeferredByCast == true)
+""")
+
+
 def test_waiting_window_accepts_current_resolver_override_equivalent() -> None:
     run_lua(AUTO_BURST_HARNESS + r"""
 function TE.ActionBarBindingResolver:GetEquivalentSpellIDs(spellID)
@@ -1438,13 +1545,17 @@ assert(event and event.event == "window_confirmation_unobserved_released", "safe
 """)
 
 
-def test_post_mode_requires_eligible_injection_before_claiming_window() -> None:
+def test_post_mode_delivers_cooldown_uncertain_injection_through_public_gcd() -> None:
     run_lua(AUTO_BURST_HARNESS + r"""
 use_post_sequence()
 cooldowns[31884] = "unknown"
 gcdPhase = "GCD_LOCKED"
 local result = eval()
-assert(result.kind == "none" and AutoBurst:GetSnapshot().active == false, "post mode must not claim the window when its injection is not positively eligible")
+assert(result.kind == "candidate" and result.dispatchSpellID == 343527,
+    "post mode must retain an uncertain bound injection behind its window")
+AutoBurst:RecordSpellcastSucceeded(343527)
+local injection = eval()
+assert(injection.kind == "candidate" and injection.dispatchSpellID == 31884)
 """)
 
 
@@ -1596,19 +1707,17 @@ assert(state.cooldownActive ~= true or state.cooldownOnGCD == true, "shared GCD 
 """)
 
 
-def test_preflight_race_guard_releases_unconfirmed_injection_when_cooldown_becomes_unknown() -> None:
+def test_preflight_race_guard_reoffers_unconfirmed_injection_when_cooldown_becomes_unknown() -> None:
     run_lua(AUTO_BURST_HARNESS + r"""
 local first = eval()
 assert(first.kind == "candidate" and first.dispatchSpellID == 31884, "ready preflight must initially construct the injection step")
 cooldowns[31884] = "unknown"
-local released = eval()
-assert(released.kind == "hold", "simple mode must consume the unavailable optional step without reoffering it")
-local window = eval()
-assert(window.kind == "candidate" and window.dispatchSpellID == 343527, "after the skip, the next ordered window step must be offered")
+gcdPhase = "GCD_LOCKED"
+local retry = eval()
+assert(retry.kind == "candidate" and retry.dispatchSpellID == 31884,
+    "simple mode must retain and reoffer an uncertain waiting injection")
 local snap = AutoBurst:GetSnapshot()
-assert(snap.active == true and snap.currentSpellID == 343527, "runtime drift must advance to the next ordered step without a retry loop")
-local preflight = AutoBurst:GetDiagnostics().lastInjectionPreflight
-assert(preflight.status == "runtime_optional_unavailable" and preflight.cooldownUncertain == true, "runtime skip must be auditable")
+assert(snap.active == true and snap.currentSpellID == 31884 and snap.waitingForConfirmation == true)
 """)
 
 

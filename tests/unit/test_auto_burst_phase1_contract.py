@@ -23,7 +23,7 @@ def test_autoburst_ordered_sequence_is_loaded_and_opt_in() -> None:
     assert "autoBurstMode = \"simple\"" in defaults
     assert "autoBurstWindowSpellID" not in defaults
     assert "autoBurstInjectionSpellID" not in defaults
-    assert "AUTO_BURST_MAX_INJECTIONS = 3" in profiles
+    assert "AUTO_BURST_MAX_INJECTIONS = 6" in profiles
     assert "function BurstProfiles:GetAutoBurstSequence" in profiles
     assert "function BurstProfiles:MoveAutoBurstStep" in profiles
     assert "function BurstProfiles:SetAutoBurstStepEnabled" in profiles
@@ -111,7 +111,10 @@ def test_spellcast_success_is_confirmation_only_for_current_waiting_step() -> No
     assert "function AutoBurst:RecordSpellcastFailed" in auto
     assert '"UNIT_SPELLCAST_FAILED"' in auto
     assert '"UNIT_SPELLCAST_FAILED_QUIET"' in auto
+    assert '"UNIT_SPELLCAST_INTERRUPTED"' in auto
     assert "FALLBACK_CONFIRM_STABILITY_SECONDS" in auto
+    assert "MATCHED_FAILURE_RELEASE_COUNT = 2" in auto
+    assert "OPTIONAL_UNAVAILABLE_CONFIRM_SAMPLES = 2" in auto
     assert "plan.state == \"WAIT_CONFIRM\"" in auto
     assert "spellcastSucceededSpellID" in auto
     assert "spellcastMatchesCurrentStep" in auto
@@ -356,20 +359,26 @@ def test_pre_window_capture_owns_front_window_before_teap_binding_and_faults_fai
     assert 'reason = "burst_evaluator_fault_hold"' in signal
 
 
-def test_ordered_sequence_supports_window_three_injections_and_two_trinkets_per_spec() -> None:
+def test_ordered_sequence_supports_window_six_injections_and_two_trinkets_per_spec() -> None:
     profiles = read(ADDON / "Tactics" / "BurstProfiles.lua")
     auto = read(ADDON / "Tactics" / "AutoBurst.lua")
     ui = read(ADDON / "UI" / "ControlPanel.lua")
+    model = read(ADDON / "UI" / "TacticalHudModel.lua")
+    board = read(ADDON / "UI" / "TacticalBoard.lua")
+    layout = read(ADDON / "UI" / "TacticalHudLayout.lua")
     assert '"window"' in profiles
     assert '"trinket:13"' in profiles
     assert '"trinket:14"' in profiles
     assert '"injection:"' in profiles
-    assert "AUTO_BURST_MAX_INJECTIONS = 3" in profiles
+    assert "AUTO_BURST_MAX_INJECTIONS = 6" in profiles
     assert "stable action identities" in profiles
     assert "selectedRuleForSequence" in auto
     assert "sequence_preflight_selected" in auto
     assert "sequence_preflight_no_eligible" in auto
     assert "爆发顺序（当前专精）" in ui
-    assert "当前专精已启用的前 3 项可加入上方爆发顺序" in ui
+    assert "当前专精已启用的前 6 项可加入上方爆发顺序" in ui
+    assert "MAX_BURST_CARDS = 9" in model
+    assert "MAX_BURST_CARDS = 9" in board
+    assert "nodes.tactical.burst[9]" in layout
     assert "Phase 1.5 测试规则" not in ui
     assert "官方窗口 SpellID" not in ui

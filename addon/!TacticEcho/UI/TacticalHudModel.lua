@@ -6,7 +6,7 @@ local TE = _G.TacticEcho
 local TacticalHudModel = {}
 TE.TacticalHudModel = TacticalHudModel
 
-local MAX_BURST_CARDS = 5 -- slot 1 window + up to four followups
+local MAX_BURST_CARDS = 9 -- window + up to six injections + two trinkets
 
 local NUMERIC_FIELDS = {
     "spellID", "matchedSpellID", "itemID", "itemCount", "itemSlot", "charges", "maxCharges",

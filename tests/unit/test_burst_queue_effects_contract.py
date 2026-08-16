@@ -17,7 +17,7 @@ def test_burst_queue_has_fixed_window_slot_and_followup_roles() -> None:
     assert "out.items[#out.items + 1] = out.window" in planner
     assert "markRole(item, role" in planner
     assert '"injection"' in planner and '"trinket"' in planner and '"potion"' in planner and '"racial"' in planner
-    assert "MAX_BURST_CARDS = 5" in model
+    assert "MAX_BURST_CARDS = 9" in model
     assert "burst = buildFixedItems" in model
     assert "for index = 1, MAX_BURST_CARDS" in board
 
