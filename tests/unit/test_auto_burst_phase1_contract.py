@@ -41,7 +41,8 @@ def test_autoburst_reads_only_cooldown_charge_and_normalized_gcd_states() -> Non
     assert "C_UnitAuras" not in source
     assert "GCD_LOCKED" in source
     assert "QUEUE_WINDOW" in source
-    assert "gcd_locked_delivery_continues" in source
+    assert "step_dispatch_phase_wait" in source
+    assert "step_wait_confirm_gcd_locked" in source
     assert "public GCD" in source
     assert "STEP_REVALIDATE_SECONDS" in source
     assert "SendInput(" not in source
@@ -114,6 +115,17 @@ def test_spellcast_success_is_confirmation_only_for_current_waiting_step() -> No
     assert '"UNIT_SPELLCAST_INTERRUPTED"' in auto
     assert "FALLBACK_CONFIRM_STABILITY_SECONDS" in auto
     assert "MATCHED_FAILURE_RELEASE_COUNT = 2" in auto
+    assert "FAILURE_RETRY_MIN_HOLD_FRAMES = 2" in auto
+    assert "step_spellcast_failed_duplicate" in auto
+    assert "step_failure_retry_barrier" in auto
+    assert "step_failure_retry_wait_ready_now" in auto
+    assert "step_retry_dispatched" in auto
+    assert "IsFailureRetryReadyPhase" in auto
+    assert "function AutoBurst:CanStartLogicalDispatch" in auto
+    assert "function AutoBurst:PendingDispatchHoldReason" in auto
+    assert "burst_step_wait_queue_window" in auto
+    assert "burst_step_wait_ready_now" in auto
+    assert "burst_wait_confirm_gcd_locked" in auto
     assert "OPTIONAL_UNAVAILABLE_CONFIRM_SAMPLES = 2" in auto
     assert "plan.state == \"WAIT_CONFIRM\"" in auto
     assert "spellcastSucceededSpellID" in auto
@@ -308,13 +320,28 @@ def test_armed_rebase_and_priority_ring_preserve_field_diagnostics() -> None:
     assert "recentPriorityEvents" in mapping
 
 
-def test_unknown_and_cooldown_verification_icons_are_not_rendered_as_confirmed_gray_cooldown() -> None:
+def test_autoburst_hud_shows_real_dispatch_without_internal_verification_state() -> None:
     styles = read(ADDON / "UI" / "TacticalHudStyles.lua")
     button = read(ADDON / "UI" / "TacticalIconButton.lua")
-    assert 'return "burst_check"' in styles
-    assert 'item.burstVerificationPending == true' in styles
-    assert 'General post-cast cooldown tracking remains internal' in styles
-    assert '"校验", false' in styles
+    auto = read(ADDON / "Tactics" / "AutoBurst.lua")
+    advisors = read(ADDON / "Tactics" / "TacticalAdvisors.lua")
+    model = read(ADDON / "UI" / "TacticalHudModel.lua")
+    state = read(ADDON / "Tactics" / "TacticalState.lua")
+    assert "burstVerificationPending" not in auto + advisors + model + styles
+    assert "burstVerificationRole" not in auto + advisors + model + styles
+    assert "burst_check" not in styles
+    assert 'return "burst_dispatch"' in styles
+    assert '"派发", false' in styles
+    assert "applyAutoBurstDispatch(primary, advisory)" in advisors
+    assert 'primary.dispatchOrigin ~= "burst"' in advisors
+    assert "primary.dispatchAllowed ~= true" in advisors
+    assert "primary.observationOnly == true" in advisors
+    assert "primary.dispatchBindingToken or primary.bindingToken" in advisors
+    assert "item.burstDispatchActive = true" in advisors
+    assert '"burstDispatchActive"' in model
+    assert "dispatchActionKind = message.dispatchActionKind" in state
+    assert "dispatchInventorySlot = tonumber(message.dispatchInventorySlot)" in state
+    assert "dispatchItemID = tonumber(message.dispatchItemID)" in state
     assert 'or item.usableState == "unknown"' not in button
 
 

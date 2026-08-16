@@ -8,6 +8,7 @@ ROOT = Path(__file__).resolve().parents[2]
 ADDON = ROOT / "addon" / "!TacticEcho"
 RESOLVER = ADDON / "Tactics" / "CooldownResolver.lua"
 PLANNER = ADDON / "Tactics" / "BurstPlanner.lua"
+AUTO = ADDON / "Tactics" / "AutoBurst.lua"
 ICON = ADDON / "UI" / "TacticalIconButton.lua"
 
 
@@ -15,6 +16,7 @@ class P51TrinketCooldownContractTests(unittest.TestCase):
     def setUp(self) -> None:
         self.resolver = RESOLVER.read_text(encoding="utf-8")
         self.planner = PLANNER.read_text(encoding="utf-8")
+        self.auto = AUTO.read_text(encoding="utf-8")
         self.icon = ICON.read_text(encoding="utf-8")
 
     def test_inventory_entries_have_bounded_live_reprobe(self) -> None:
@@ -51,11 +53,11 @@ class P51TrinketCooldownContractTests(unittest.TestCase):
             self.assertIn(marker, self.resolver)
 
     def test_hud_exposes_fallback_source_without_reintroducing_binding_dependency(self) -> None:
-        self.assertIn("cooldownSlotSource = snapshot.slotSource", self.planner)
-        self.assertIn("cooldownItemFallbackActive = snapshot.itemFallbackActive", self.planner)
+        self.assertIn("cooldownSlotSource = sample.cooldownSlotSource or sample.slotSource", self.auto)
+        self.assertIn("cooldownItemFallbackActive", self.auto)
         self.assertIn("inventory_item_fallback", self.icon)
         self.assertIn("当前装备 ItemID 冷却 API（饰品槽位回退）", self.icon)
-        self.assertIn("未绑定", self.planner)
+        self.assertIn("bindingMissing = not (binding and binding.binding)", self.auto)
 
 
 if __name__ == "__main__":

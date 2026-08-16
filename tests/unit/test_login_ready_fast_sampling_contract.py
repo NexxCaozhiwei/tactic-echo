@@ -17,7 +17,7 @@ class LoginReadyFastSamplingContractTests(unittest.TestCase):
         self.window = (ROOT / "tek" / "app" / "status_window.py").read_text(encoding="utf-8")
 
     def test_player_login_shows_a_live_paused_teap_signal_without_arming_dispatch_intent(self) -> None:
-        self.assertIn('local UPDATE_INTERVAL = 0.05', self.signal)
+        self.assertIn('local TRANSPORT_INTERVAL = 0.05', self.signal)
         self.assertIn('function SignalFrame:ShowPausedOnLogin()', self.signal)
         self.assertIn('createFrame():Show()', self.signal)
         self.assertIn('return self:Refresh("player_login_paused")', self.signal)

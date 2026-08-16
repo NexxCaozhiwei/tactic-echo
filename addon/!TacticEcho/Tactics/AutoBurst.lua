@@ -108,9 +108,13 @@ local FALLBACK_CONFIRM_STABILITY_SECONDS = 0.15
 -- cooldown/usability frame is never enough to advance the ordered sequence.
 local OPTIONAL_UNAVAILABLE_CONFIRM_SAMPLES = 2
 -- Exact, matching failure receipts are stronger than a timeout or candidate
--- offer count. Two failures for the same waiting step prove that the client has
--- rejected repeated physical attempts and provide a bounded liveness release.
+-- offer count. Only receipts separated by a fresh no-token retry barrier may
+-- form the two-attempt bounded liveness release certificate.
 local MATCHED_FAILURE_RELEASE_COUNT = 2
+-- A client may emit more than one failure receipt for one queued keypress.
+-- Separate retry attempts with authenticated observation-only transport frames
+-- before accepting another receipt as a bounded-release certificate.
+local FAILURE_RETRY_MIN_HOLD_FRAMES = 2
 -- First recovery milestone for a pre-window trinket. After this point the plan
 -- stays in persistent recovery and continues to watch the exact slot+ItemID
 -- cooldown for delayed or manual use; this is not a terminal recovery deadline.
@@ -251,11 +255,6 @@ local function isOptionalStep(step)
     return type(step) == "table" and step.optional == true and not isWindowStep(step)
 end
 
-local function stepAuditID(step)
-    if stepKind(step) == "inventory" then return positiveItemID(step and (step.expectedItemID or step.itemID)) end
-    return positiveSpellID(step and step.spellID)
-end
-
 local function stepIdentity(step, bindingInfo)
     if stepKind(step) == "inventory" then
         local slot = inventorySlot(step and step.inventorySlot)
@@ -353,10 +352,6 @@ end
 -- but no runtime branch may treat them as dispatch authority.  AutoBurst is
 -- encounter-scoped: plan construction, capture ownership and candidates begin
 -- only after the in-combat gate in Evaluate has passed.
-
-local function isDead()
-    return type(UnitIsDeadOrGhost) == "function" and UnitIsDeadOrGhost("player") == true
-end
 
 local function recordDecision(self, phase, reason, fields)
     fields = type(fields) == "table" and fields or {}
@@ -519,10 +514,33 @@ function AutoBurst:RecordSpellcastFailed(spellID, event)
     local matches, matchKind = spellcastMatchesCurrentStep(step, spellID, bindingInfo)
     if matches ~= true or t < (number(plan.wait.dispatchedAt) or 0) then return false end
 
+    if plan.wait.failureAcceptedForAttempt == true then
+        log(self, "step_spellcast_failed_duplicate", {
+            role = step.role,
+            spellID = spellID,
+            expectedSpellID = expectedSpellID,
+            matchKind = matchKind,
+            failedEvent = tostring(event or "UNIT_SPELLCAST_FAILED"),
+            currentStep = plan.stepIndex,
+            dispatchAttempt = plan.wait.dispatchAttempt,
+            failureCount = number(plan.failureAttempts) or 0,
+        })
+        return false
+    end
+
     plan.wait.failedAt = t
     plan.wait.failedEvent = tostring(event or "UNIT_SPELLCAST_FAILED")
     plan.wait.failedSpellID = spellID
-    plan.wait.failureCount = (number(plan.wait.failureCount) or 0) + 1
+    plan.wait.failureObservedPhase = plan.wait.phase
+    plan.wait.failureAcceptedForAttempt = true
+    plan.failureAttempts = (number(plan.failureAttempts) or 0) + 1
+    plan.wait.failureCount = plan.failureAttempts
+    if plan.failureAttempts < MATCHED_FAILURE_RELEASE_COUNT then
+        plan.wait.failureRetryBarrierRequiredFrames = FAILURE_RETRY_MIN_HOLD_FRAMES
+        plan.wait.failureRetryBarrierRemainingFrames = FAILURE_RETRY_MIN_HOLD_FRAMES
+        plan.wait.failureRetryBarrierPublishedFrames = 0
+        plan.wait.failureRetryBarrierPending = true
+    end
     plan.wait.provisionalConfirmation = nil
     log(self, "step_spellcast_failed", {
         role = step.role,
@@ -534,6 +552,8 @@ function AutoBurst:RecordSpellcastFailed(spellID, event)
         dispatchAttempt = plan.wait.dispatchAttempt,
         confirmationRetained = false,
         failureCount = plan.wait.failureCount,
+        retryBarrierRequiredFrames = number(plan.wait.failureRetryBarrierRequiredFrames) or 0,
+        failureObservedPhase = plan.wait.failureObservedPhase,
     })
     return true
 end
@@ -896,6 +916,26 @@ local function classifyDispatchPhase(step, cycle, bindingInfo, iconState, reason
         iconState = iconState,
         cooldownUncertain = cooldownUncertain == true,
     }
+end
+
+-- Starting a new logical dispatch attempt is deliberately stricter than
+-- preflight eligibility. The first physical action in a locked plan waits for
+-- full readiness; after one action has already been dispatched, the next
+-- on-GCD step may enter through the public queue window. GCD_LOCKED never
+-- creates a BindingToken-bearing attempt.
+function AutoBurst:CanStartLogicalDispatch(plan, phase)
+    if phase == "READY_NOW" then return true end
+    if phase == "QUEUE_WINDOW" then
+        return (number(plan and plan.dispatchAttempt) or 0) > 0
+    end
+    return false
+end
+
+function AutoBurst:PendingDispatchHoldReason(plan, phase)
+    if phase == "GCD_LOCKED" and (number(plan and plan.dispatchAttempt) or 0) > 0 then
+        return "burst_step_wait_queue_window"
+    end
+    return "burst_step_wait_ready_now"
 end
 
 local function optionalInjectionResourceBlock(step, cycle, bindingInfo, iconState, allowSpecialResourceCompat)
@@ -1264,6 +1304,70 @@ local function candidateResult(self, plan, step, sample)
         -- protocol/foreground/manual/freshness gate.
         preCombatBridge = plan.preCombatBridge == true,
     }
+end
+
+function AutoBurst:GetFailureRetryBarrierRemaining(wait)
+    if type(wait) ~= "table" then return 0 end
+    return math.max(0, math.floor(number(wait.failureRetryBarrierRemainingFrames) or 0))
+end
+
+function AutoBurst:ConsumeFailureRetryBarrierFrame(wait)
+    local remaining = self:GetFailureRetryBarrierRemaining(wait)
+    if remaining <= 0 then
+        if type(wait) == "table" then wait.failureRetryBarrierPending = false end
+        return false
+    end
+    wait.failureRetryBarrierRemainingFrames = remaining - 1
+    wait.failureRetryBarrierPublishedFrames = math.max(0,
+        math.floor(number(wait.failureRetryBarrierPublishedFrames) or 0)) + 1
+    wait.failureRetryBarrierPending = wait.failureRetryBarrierRemainingFrames > 0
+    return true
+end
+
+function AutoBurst:IsFailureRetryReadyPhase(phase)
+    -- A rejected queue-window keypress is not retried inside that same queue
+    -- opportunity. The fresh logical attempt waits for full public readiness;
+    -- this remains phase-driven and introduces no fixed gameplay sleep.
+    return phase == "READY_NOW"
+end
+
+function AutoBurst:BeginFailureRetryAttempt(plan, step, sample)
+    local previousWait = plan.wait or {}
+    local dispatchedAt = now()
+    plan.dispatchAttempt = (plan.dispatchAttempt or 0) + 1
+    plan.wait = {
+        baseline = confirmationBaseline(sample),
+        dispatchedAt = dispatchedAt,
+        deadlineAt = dispatchedAt + STEP_CONFIRM_SECONDS,
+        offerSample = sample,
+        phase = sample.phase,
+        dispatchAttempt = plan.dispatchAttempt,
+        expectedSpellID = stepKind(step) == "spell" and step.spellID or nil,
+        expectedActionKind = stepKind(step),
+        expectedInventorySlot = stepKind(step) == "inventory" and inventorySlot(step.inventorySlot) or nil,
+        expectedItemID = stepKind(step) == "inventory" and positiveItemID(step.expectedItemID) or nil,
+        failedAt = nil,
+        failedEvent = nil,
+        failedSpellID = nil,
+        failureCount = number(plan.failureAttempts) or 0,
+        failureAcceptedForAttempt = false,
+        retryOfDispatchAttempt = number(previousWait.dispatchAttempt) or nil,
+        priorFailureObservedPhase = previousWait.failureObservedPhase,
+        retryObservedPhase = sample.phase,
+        provisionalConfirmation = nil,
+        queueDeliveryContinuesLogged = false,
+    }
+    log(self, "step_retry_dispatched", {
+        role = step.role,
+        spellID = stepKind(step) == "spell" and step.spellID or nil,
+        currentStep = plan.stepIndex,
+        dispatchAttempt = plan.dispatchAttempt,
+        retryOfDispatchAttempt = previousWait.dispatchAttempt,
+        failureCount = plan.failureAttempts,
+        failureObservedPhase = previousWait.failureObservedPhase,
+        retryObservedPhase = sample.phase,
+    })
+    return candidateResult(self, plan, step, sample)
 end
 
 local function holdResult(plan, reason, options)
@@ -1636,8 +1740,9 @@ end
 -- A cooldown flag that cannot yet pass the exact own-CD certificate is treated
 -- as delivery uncertainty, not as a terminal stall. Reclassify it through the
 -- same public GCD gate used by ordinary recommendations; when that gate exposes
--- READY/QUEUE/GCD_LOCKED, keep publishing fresh armed candidates at the shared
--- TEK cadence. A later exact two-sample certificate may still rule-skip the
+-- READY, or QUEUE after a prior plan action, keep publishing the same armed
+-- candidate at the shared TEK cadence. GCD_LOCKED never starts a new logical
+-- attempt. A later exact two-sample certificate may still rule-skip the
 -- optional simple injection or finish the window without dispatching it.
 local function reofferUnconfirmedCooldown(self, plan, step, cycle, sample, reason)
     sample = type(sample) == "table" and sample or {}
@@ -1650,8 +1755,11 @@ local function reofferUnconfirmedCooldown(self, plan, step, cycle, sample, reaso
         true
     )
     rememberStepObservation(self, plan, step, offer, "cooldown_unconfirmed_delivery")
-    if offer.phase == "READY_NOW" or offer.phase == "QUEUE_WINDOW" or offer.phase == "GCD_LOCKED" then
+    if self:CanStartLogicalDispatch(plan, offer.phase) then
         return candidateResult(self, plan, step, offer)
+    end
+    if offer.phase == "GCD_LOCKED" or offer.phase == "QUEUE_WINDOW" then
+        return holdResult(plan, self:PendingDispatchHoldReason(plan, offer.phase))
     end
     return revalidateUnknownStep(self, plan, step, offer,
         "cooldown_unconfirmed_" .. tostring(offer.reason or reason or "unknown"))
@@ -2103,6 +2211,7 @@ local function skipOptionalStep(self, plan, step, reason)
     plan.revalidate = nil
     plan.optionalUnavailableConfirmation = nil
     plan.preInjectionCooldownConfirmation = nil
+    plan.failureAttempts = 0
     plan.candidateOfferCount = 0
     plan.candidateFirstOfferedAt = nil
     plan.candidateLastOfferedAt = nil
@@ -2210,6 +2319,7 @@ local function finishStep(self, plan, source, cycle)
     plan.revalidate = nil
     plan.optionalUnavailableConfirmation = nil
     plan.preInjectionCooldownConfirmation = nil
+    plan.failureAttempts = 0
     plan.candidateOfferCount = 0
     plan.candidateFirstOfferedAt = nil
     plan.candidateLastOfferedAt = nil
@@ -2377,6 +2487,7 @@ local function createPlan(self, rule, officialSpellID, creation, resolveContext,
         completed = {},
         windowDispatchAttempted = false,
         dispatchAttempt = 0,
+        failureAttempts = 0,
         pauseStartedAt = nil,
         wait = nil,
         revalidate = nil,
@@ -2700,19 +2811,6 @@ end
 -- revalidates the window before it can publish the window BindingToken.
 local function isOfficialWindowAvailabilityConflict(sample)
     return type(sample) == "table" and (sample.phase == "COOLDOWN" or sample.phase == "UNKNOWN")
-end
-
-local function canCreateFocused(rule, cycle, windowSample)
-    for _, step in ipairs(sequenceFor(rule)) do
-        local sample = isWindowStep(step) and windowSample or stepSample(step, cycle)
-        if isWindowStep(step) and isOfficialWindowAvailabilityConflict(sample) then
-            -- The actual candidate is withheld until later readiness is proven.
-        elseif not isDispatchablePhase(sample and sample.phase)
-            and not (sample and sample.resourceBlocked == true) then
-            return false, sample and sample.phase or "UNKNOWN", sample and sample.reason or "focused_step_sample_missing"
-        end
-    end
-    return true, nil, nil
 end
 
 function AutoBurst:Evaluate(official, runtime)
@@ -3176,7 +3274,7 @@ function AutoBurst:Evaluate(official, runtime)
             if result then return result end
             return self:Evaluate(official, runtime)
         end
-        if (number(plan.wait.failureCount) or 0) >= MATCHED_FAILURE_RELEASE_COUNT then
+        if (number(plan.failureAttempts) or 0) >= MATCHED_FAILURE_RELEASE_COUNT then
             if isOptionalStep(step) then
                 return releasePlanForInjectionUnavailable(self, plan, step, sample,
                     "repeated_matching_spellcast_failures")
@@ -3185,7 +3283,7 @@ function AutoBurst:Evaluate(official, runtime)
                 planId = plan.id,
                 currentStep = plan.stepIndex,
                 spellID = positiveSpellID(step.spellID),
-                failureCount = number(plan.wait.failureCount),
+                failureCount = number(plan.failureAttempts),
             })
             self.plan = nil
             self.activePlanGeneration = nil
@@ -3204,6 +3302,47 @@ function AutoBurst:Evaluate(official, runtime)
                 waitPhase = plan.wait and plan.wait.phase,
                 observedPhase = sample.phase,
             })
+        end
+        if plan.wait.failureRetryBarrierPending == true then
+            local consumed = false
+            if isTransportHandoffTick(runtime) then
+                consumed = self:ConsumeFailureRetryBarrierFrame(plan.wait)
+            end
+            if consumed then
+                log(self, "step_failure_retry_barrier", {
+                    role = step.role,
+                    spellID = positiveSpellID(step.spellID),
+                    currentStep = plan.stepIndex,
+                    dispatchAttempt = plan.wait.dispatchAttempt,
+                    failureCount = number(plan.failureAttempts) or 0,
+                    holdFramesRequired = number(plan.wait.failureRetryBarrierRequiredFrames) or 0,
+                    holdFrame = number(plan.wait.failureRetryBarrierPublishedFrames) or 0,
+                    holdFramesRemaining = self:GetFailureRetryBarrierRemaining(plan.wait),
+                })
+                return holdResult(plan, "burst_failure_retry_barrier")
+            end
+        end
+        if plan.wait.failureAcceptedForAttempt == true
+            and self:GetFailureRetryBarrierRemaining(plan.wait) == 0
+            and (number(plan.failureAttempts) or 0) < MATCHED_FAILURE_RELEASE_COUNT then
+            if self:IsFailureRetryReadyPhase(sample.phase) then
+                return self:BeginFailureRetryAttempt(plan, step, sample)
+            end
+            if sample.phase == "GCD_LOCKED" or sample.phase == "QUEUE_WINDOW" then
+                if shouldLogProgress(self, "step_failure_retry_wait_ready_now") then
+                    log(self, "step_failure_retry_wait_ready_now", {
+                        role = step.role,
+                        spellID = positiveSpellID(step.spellID),
+                        currentStep = plan.stepIndex,
+                        dispatchAttempt = plan.wait.dispatchAttempt,
+                        failureCount = number(plan.failureAttempts) or 0,
+                        failureObservedPhase = plan.wait.failureObservedPhase,
+                        observedPhase = sample.phase,
+                        retryReadyPhase = "READY_NOW",
+                    })
+                end
+                return holdResult(plan, "burst_failure_retry_wait_ready_now")
+            end
         end
         if sample.phase == "PAUSED" then
             self:SoftPause(sample.reason or "step_paused")
@@ -3226,7 +3365,8 @@ function AutoBurst:Evaluate(official, runtime)
             return reofferUnconfirmedCooldown(self, plan, step, cycle, sample,
                 "injection_cooldown_while_waiting:" .. tostring(sample.reason or sample.phase))
         end
-        if isOptionalStep(step) and sample.cooldownUncertain == true and isDispatchablePhase(sample.phase) then
+        if isOptionalStep(step) and sample.cooldownUncertain == true
+            and (sample.phase == "READY_NOW" or sample.phase == "QUEUE_WINDOW") then
             plan.optionalUnavailableConfirmation = nil
             plan.wait.offerSample = sample
             plan.wait.phase = sample.phase
@@ -3260,7 +3400,18 @@ function AutoBurst:Evaluate(official, runtime)
             and plan.wait.confirmationGraceElapsed == true then
             return releaseUnconfirmedDepartedWindow(self, plan, step, sample)
         end
-        if isDispatchablePhase(sample.phase) then
+        if sample.phase == "GCD_LOCKED" then
+            if shouldLogProgress(self, "step_wait_confirm_gcd_locked") then
+                log(self, "step_wait_confirm_gcd_locked", {
+                    role = step.role,
+                    spellID = positiveSpellID(step.spellID),
+                    currentStep = plan.stepIndex,
+                    dispatchAttempt = plan.wait.dispatchAttempt,
+                })
+            end
+            return holdResult(plan, "burst_wait_confirm_gcd_locked")
+        end
+        if sample.phase == "READY_NOW" or sample.phase == "QUEUE_WINDOW" then
             -- Always use the latest sample. A stale offer sample can retain an
             -- old GCD/slot state and is the source of false retry stalls.
             plan.optionalUnavailableConfirmation = nil
@@ -3314,23 +3465,6 @@ function AutoBurst:Evaluate(official, runtime)
     if isOptionalStep(step) and sample.phase == "UNKNOWN" then
         return revalidateUnknownStep(self, plan, step, sample,
             "injection_uncertain_before_dispatch:" .. tostring(sample.reason or sample.phase))
-    end
-    if sample.phase == "GCD_LOCKED" then
-        -- Match the ordinary official-recommendation scheduler: an action that
-        -- is otherwise ready remains a dispatchable armed candidate during the
-        -- public GCD. Fresh TEAP frames may therefore reach TEK at the shared
-        -- configured rate, allowing the game to accept/queue the binding when
-        -- its normal queue window opens. This is not a confirmation shortcut:
-        -- the plan still advances only after exact current-step evidence.
-        if shouldLogProgress(self, "gcd_locked_delivery_continues") then
-            log(self, "gcd_locked_delivery_continues", {
-                role = step.role,
-                actionKind = stepKind(step),
-                spellID = stepKind(step) == "spell" and step.spellID or nil,
-                inventorySlot = stepKind(step) == "inventory" and inventorySlot(step.inventorySlot) or nil,
-                currentStep = plan.stepIndex,
-            })
-        end
     end
     if isWindowStep(step) and plan.windowAvailabilityConflict == true
         and isOfficialWindowAvailabilityConflict(sample) then
@@ -3392,7 +3526,23 @@ function AutoBurst:Evaluate(official, runtime)
         self:Abort(sample.reason or sample.phase, false)
         return terminalResult(self, "burst_step_blocked", { officialSpellID = officialSpellID, abortReason = sample.reason or sample.phase })
     end
-    if sample.phase ~= "READY_NOW" and sample.phase ~= "QUEUE_WINDOW" and sample.phase ~= "GCD_LOCKED" then
+    if not self:CanStartLogicalDispatch(plan, sample.phase) then
+        if sample.phase == "GCD_LOCKED" or sample.phase == "QUEUE_WINDOW" then
+            local holdReason = self:PendingDispatchHoldReason(plan, sample.phase)
+            if shouldLogProgress(self, "step_dispatch_phase_wait") then
+                log(self, "step_dispatch_phase_wait", {
+                    role = step.role,
+                    actionKind = stepKind(step),
+                    spellID = stepKind(step) == "spell" and step.spellID or nil,
+                    inventorySlot = stepKind(step) == "inventory" and inventorySlot(step.inventorySlot) or nil,
+                    currentStep = plan.stepIndex,
+                    dispatchAttempt = plan.dispatchAttempt or 0,
+                    observedPhase = sample.phase,
+                    requiredPhase = (plan.dispatchAttempt or 0) > 0 and "QUEUE_WINDOW|READY_NOW" or "READY_NOW",
+                })
+            end
+            return holdResult(plan, holdReason)
+        end
         self:Abort("invalid_step_phase:" .. tostring(sample.phase), false)
         return terminalResult(self, "burst_invalid_step_phase", { officialSpellID = officialSpellID, abortReason = sample.phase })
     end
@@ -3432,6 +3582,12 @@ function AutoBurst:Evaluate(official, runtime)
         failedEvent = nil,
         failedSpellID = nil,
         failureCount = 0,
+        failureAcceptedForAttempt = false,
+        failureObservedPhase = nil,
+        failureRetryBarrierRequiredFrames = 0,
+        failureRetryBarrierRemainingFrames = 0,
+        failureRetryBarrierPublishedFrames = 0,
+        failureRetryBarrierPending = false,
         provisionalConfirmation = nil,
         queueDeliveryContinuesLogged = false,
     }
@@ -3628,7 +3784,15 @@ function AutoBurst:GetSnapshot()
         inventoryRecoveryReason = plan.wait and plan.wait.inventoryRecoveryReason or nil,
         inventoryRecoveryDeadlineAt = plan.wait and number(plan.wait.inventoryRecoveryDeadlineAt) or nil,
         confirmationGraceElapsed = plan.wait and plan.wait.confirmationGraceElapsed == true,
-        matchingFailureCount = plan.wait and number(plan.wait.failureCount) or 0,
+        matchingFailureCount = number(plan.failureAttempts) or 0,
+        failureAcceptedForAttempt = plan.wait and plan.wait.failureAcceptedForAttempt == true,
+        failureObservedPhase = plan.wait and plan.wait.failureObservedPhase or nil,
+        priorFailureObservedPhase = plan.wait and plan.wait.priorFailureObservedPhase or nil,
+        failureRetryObservedPhase = plan.wait and plan.wait.retryObservedPhase or nil,
+        failureRetryBarrierPending = plan.wait and plan.wait.failureRetryBarrierPending == true,
+        failureRetryBarrierRequiredFrames = plan.wait and number(plan.wait.failureRetryBarrierRequiredFrames) or 0,
+        failureRetryBarrierRemainingFrames = plan.wait and self:GetFailureRetryBarrierRemaining(plan.wait) or 0,
+        failureRetryBarrierPublishedFrames = plan.wait and number(plan.wait.failureRetryBarrierPublishedFrames) or 0,
         optionalUnavailableConfirmations = plan.optionalUnavailableConfirmation
             and number(plan.optionalUnavailableConfirmation.count) or 0,
         optionalUnavailableCategory = plan.optionalUnavailableConfirmation
@@ -3915,8 +4079,6 @@ local function hudMakeOutput(profile, profileKey, state, profileReason, autoBurs
         state = state.state,
         windowState = state.state,
         stateLabel = state.label,
-        window = nil,
-        followups = {},
         items = {},
         advisoryOnly = true,
         displayOnly = true,
@@ -3946,21 +4108,9 @@ local function hudMarkRole(item, role, state, sourceOrder)
     return item
 end
 
-local function hudMarkVerification(out, stateSnapshot)
-    if type(out) ~= "table" or type(stateSnapshot) ~= "table" or stateSnapshot.active ~= true then return end
-    local pending = stateSnapshot.waitingForConfirmation == true
-        or stateSnapshot.preInjectionSkipStatus == "confirming_own_cooldown"
-    local spellID = hudNumber(stateSnapshot.currentSpellID)
-    if pending ~= true or not spellID or spellID <= 0 then return end
-    for _, item in ipairs(out.items or {}) do
-        if hudNumber(item.spellID) == spellID then
-            item.burstVerificationPending = true
-            item.burstVerificationRole = stateSnapshot.currentRole
-        end
-    end
-end
-
-local HUD_SEQUENCE_MAX_CARDS = 5
+-- Keep the HUD projection aligned with the persisted sequence contract:
+-- one window, up to six injections, and two equipped trinkets.
+local HUD_SEQUENCE_MAX_CARDS = 9
 
 local function hudUnboundSequenceSpell(snapshot, spellID, role, reason)
     local runtime = TE.RuntimeSnapshot
@@ -4048,7 +4198,6 @@ function AutoBurst:BuildHudSnapshot(primary, context, settings, runtimeSnapshot)
             state = "UNKNOWN",
             stateLabel = "状态未知",
             items = {},
-            followups = {},
             advisoryOnly = true,
             displayOnly = true,
             source = "autoburst_runtime_snapshot_unavailable",
@@ -4084,13 +4233,8 @@ function AutoBurst:BuildHudSnapshot(primary, context, settings, runtimeSnapshot)
     local sequenceState = { state = stateSnapshot and stateSnapshot.active == true and "ACTIVE" or "READY" }
     out.items, out.profileKey, out.diagnostics = hudConfiguredSequence(runtimeSnapshot, context, sequenceState)
     out.active = #out.items > 0
-    out.window, out.followups = nil, {}
-    for _, item in ipairs(out.items) do
-        if item.burstRole == "window" then out.window = item else out.followups[#out.followups + 1] = item end
-    end
     out.recommendationState = out.active and "auto_burst_sequence" or "sequence_unavailable"
     out.notice = out.active and "当前专精自动爆发顺序" or "当前专精没有可显示的爆发步骤"
-    hudMarkVerification(out, stateSnapshot)
     return out
 end
 

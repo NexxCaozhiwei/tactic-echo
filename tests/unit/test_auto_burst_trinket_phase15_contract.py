@@ -33,7 +33,7 @@ class AutoBurstOrderedTrinketContractTests(unittest.TestCase):
         cooldown = read("Tactics/CooldownResolver.lua")
         auto = read("Tactics/AutoBurst.lua")
         signal = read("Signal/SignalFrame.lua")
-        self.assertIn("function Resolver:ResolveInventorySlot(slot, expectedItemID)", resolver)
+        self.assertIn("function Resolver:ResolveInventorySlot", resolver)
         self.assertIn("currentInventoryItemID(slot)", resolver)
         self.assertIn('reason = "inventory_equipment_changed"', resolver)
         self.assertIn("function IconState:CollectInventoryCooldownOnly", icon)

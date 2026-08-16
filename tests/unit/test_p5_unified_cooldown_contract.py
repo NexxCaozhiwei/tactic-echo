@@ -9,6 +9,7 @@ ADDON = ROOT / "addon" / "!TacticEcho"
 TOC = ADDON / "!TacticEcho.toc"
 RESOLVER = ADDON / "Tactics" / "CooldownResolver.lua"
 PLANNER = ADDON / "Tactics" / "BurstPlanner.lua"
+AUTO = ADDON / "Tactics" / "AutoBurst.lua"
 ICON_STATE = ADDON / "Tactics" / "IconState.lua"
 MODEL = ADDON / "UI" / "TacticalHudModel.lua"
 STYLES = ADDON / "UI" / "TacticalHudStyles.lua"
@@ -23,6 +24,7 @@ class P5UnifiedCooldownContractTests(unittest.TestCase):
         self.toc = TOC.read_text(encoding="utf-8")
         self.resolver = RESOLVER.read_text(encoding="utf-8")
         self.planner = PLANNER.read_text(encoding="utf-8")
+        self.auto = AUTO.read_text(encoding="utf-8")
         self.icon_state = ICON_STATE.read_text(encoding="utf-8")
         self.model = MODEL.read_text(encoding="utf-8")
         self.styles = STYLES.read_text(encoding="utf-8")
@@ -67,22 +69,15 @@ class P5UnifiedCooldownContractTests(unittest.TestCase):
         ):
             self.assertIn(marker, self.resolver)
         self.assertIn('TE.CooldownResolver.GetSpell', self.icon_state)
-        for marker in (
-            'resolver:GetInventory(item.inventorySlot, item.itemID)',
-            'resolver:GetPotion(item.itemID)',
-            'resolver:GetItem(item.itemID',
-            'cooldownIdentityKey = snapshot.identity',
-            'cooldownSource = snapshot.source',
-        ):
-            self.assertIn(marker, self.planner)
+        self.assertIn("CollectInventoryCooldownOnly", self.auto)
+        self.assertIn("cooldownIdentityKey = sample.cooldownIdentityKey or sample.identity", self.auto)
+        self.assertIn("cooldownSource = sample.cooldownSource or sample.source", self.auto)
 
-    def test_trinket_and_potion_cards_do_not_require_actionbar_binding_for_cd_visibility(self) -> None:
-        self.assertIn('bindingMissing = not (binding and binding.binding)', self.planner)
-        self.assertIn('Binding is optional for display-only item cards', self.planner)
-        self.assertIn('当前未绑定现实按键', self.planner)
-        self.assertIn('itemCandidate(itemID, "trinket"', self.planner)
-        self.assertIn('inventorySlot = slot', self.planner)
-        self.assertIn('itemCandidate(itemID, "potion"', self.planner)
+    def test_trinket_cards_keep_display_cooldown_but_never_gain_hud_dispatch_authority(self) -> None:
+        self.assertIn('bindingMissing = not (binding and binding.binding)', self.auto)
+        self.assertIn('inventorySlot = slot', self.auto)
+        self.assertIn('bindingToken = 0', self.auto)
+        self.assertIn('displayOnly = true', self.auto)
         self.assertIn('return "unbound", "未在现实动作条白名单中找到绑定"', self.styles)
         self.assertIn("card.badge = card.cooldownText", self.icon)
         self.assertIn("pcall(frame.SetHideCountdownNumbers, frame, true)", self.icon)

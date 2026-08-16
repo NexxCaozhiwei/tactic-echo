@@ -60,21 +60,17 @@ class HudUiOptionsContractTests(unittest.TestCase):
         for token in ('颜色', '横向偏移', '纵向偏移'):
             self.assertIn(token, control)
 
-    def test_interrupt_control_and_defensive_display_modes_are_configured(self) -> None:
+    def test_retired_interrupt_control_and_defense_pages_cannot_be_reenabled(self) -> None:
         control = CONTROL.read_text(encoding="utf-8")
         advisor = ADVISOR.read_text(encoding="utf-8")
-        planner = PLANNER.read_text(encoding="utf-8")
-        self.assertIn('interruptDisplayMode', control)
-        self.assertIn('interruptDisplayMode', advisor)
-        self.assertIn('defensiveDisplayMode', control)
-        self.assertIn('defensiveDisplayMode', advisor)
-        self.assertIn('controlDisplayMode', control)
-        self.assertIn('controlDisplayMode', planner)
-        self.assertIn('defensiveDisplayHealthPercent', planner)
-        self.assertIn('defensiveHighlightHealthPercent', planner)
-        self.assertIn('always_visible', planner)
-        self.assertIn('playerHealthPercent', (ADDON / "Tactics" / "ProtocolMonitor.lua").read_text(encoding="utf-8"))
-        self.assertIn('percent = tonumber', HEALTH.read_text(encoding="utf-8"))
+        toc = (ADDON / "!TacticEcho.toc").read_text(encoding="utf-8")
+        for retired in ("打断设置", "控制设置", "防御设置"):
+            self.assertNotIn(retired, control)
+        refresh = advisor.split("function TacticalAdvisors:Refresh(force)", 1)[1].split("function TacticalAdvisors:GetSnapshot()", 1)[0]
+        self.assertIn('emptyAdvisory("scope_primary_burst")', refresh)
+        self.assertIn('reaction = emptyReaction("retired_scope")', refresh)
+        self.assertNotIn("Tactics/ProtocolMonitor.lua", toc)
+        self.assertNotIn("Tactics/AdvisoryPlanner.lua", toc)
 
 
 if __name__ == "__main__":

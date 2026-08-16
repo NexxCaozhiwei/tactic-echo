@@ -61,24 +61,22 @@ class TacticalHudRedesignContractTests(unittest.TestCase):
             for token in forbidden:
                 self.assertNotIn(token, text, f"{relative} contains {token}")
 
-    def test_fixed_slots_debounce_and_detached_defense_are_present(self) -> None:
+    def test_fixed_primary_burst_slots_and_debounce_are_present(self) -> None:
         model = (ADDON / "UI" / "TacticalHudModel.lua").read_text(encoding="utf-8")
         board = (ADDON / "UI" / "TacticalBoard.lua").read_text(encoding="utf-8")
-        layout = (ADDON / "UI" / "TacticalHudLayout.lua").read_text(encoding="utf-8")
         animator = (ADDON / "UI" / "TacticalHudAnimator.lua").read_text(encoding="utf-8")
-        self.assertIn("MAX_CANDIDATES = 3", model)
-        self.assertIn("MAX_DEFENSIVES = 4", model)
+        self.assertIn("MAX_BURST_CARDS = 9", model)
+        self.assertIn("candidates = {}", model)
+        self.assertIn("defense = {}", model)
         self.assertIn("ShouldCommit", board)
         self.assertIn("POSITION_HOLD_TIME", animator)
-        self.assertIn("defenseDetached", layout)
-        self.assertIn("layoutDefenseDetached", layout)
 
-    def test_advisory_items_can_explain_missing_binding_without_dispatch_mutation(self) -> None:
-        planner = (ADDON / "Tactics" / "AdvisoryPlanner.lua").read_text(encoding="utf-8")
+    def test_burst_cards_explain_missing_binding_without_dispatch_mutation(self) -> None:
+        planner = (ADDON / "Tactics" / "AutoBurst.lua").read_text(encoding="utf-8")
         advisors = (ADDON / "Tactics" / "TacticalAdvisors.lua").read_text(encoding="utf-8")
-        self.assertIn("动作条未找到现实绑定", planner)
-        self.assertIn("unbound = binding == nil", planner)
-        self.assertIn("unbound = binding == nil", advisors)
+        self.assertIn("bindingMissing = not (binding and binding.binding)", planner)
+        self.assertIn("bindingToken = 0", planner)
+        self.assertIn("item.burstDispatchActive = true", advisors)
         self.assertNotIn("SignalEncoder:Encode", planner)
         self.assertNotIn("SignalEncoder:Encode", advisors)
 

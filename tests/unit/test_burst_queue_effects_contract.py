@@ -9,26 +9,25 @@ def read(relative: str) -> str:
 
 
 def test_burst_queue_has_fixed_window_slot_and_followup_roles() -> None:
-    planner = read("Tactics/BurstPlanner.lua")
+    auto = read("Tactics/AutoBurst.lua")
     model = read("UI/TacticalHudModel.lua")
     board = read("UI/TacticalBoard.lua")
-    assert "window = nil" in planner
-    assert "followups = {}" in planner
-    assert "out.items[#out.items + 1] = out.window" in planner
-    assert "markRole(item, role" in planner
-    assert '"injection"' in planner and '"trinket"' in planner and '"potion"' in planner and '"racial"' in planner
+    assert "HUD_SEQUENCE_MAX_CARDS = 9" in auto
+    assert 'entry.category == "window"' in auto
+    assert 'entry.category == "trinket"' in auto
+    assert 'role == "window"' in auto
     assert "MAX_BURST_CARDS = 9" in model
     assert "burst = buildFixedItems" in model
     assert "for index = 1, MAX_BURST_CARDS" in board
 
 
-def test_always_mode_keeps_window_and_bound_followups() -> None:
-    planner = read("Tactics/BurstPlanner.lua")
-    assert 'local always = settings.burstDisplayMode == "always"' in planner
-    assert "if always then policyAllowsReady = true end" in planner
-    assert "if always then" in planner
-    assert "for _, group in ipairs(orderedGroups) do addGroup(group.items, group.role) end" in planner
-    assert "常驻爆发队列：窗口技能固定首位" in planner
+def test_hud_sequence_uses_the_same_persisted_order_as_autoburst() -> None:
+    auto = read("Tactics/AutoBurst.lua")
+    assert "hudConfiguredSequence" in auto
+    assert "TE.BurstProfiles:GetAutoBurstSequence(context)" in auto
+    assert "for _, entry in ipairs(sequence.entries or {})" in auto
+    assert "entry.enabled == true" in auto
+    assert "burstDisplayMode" not in auto
 
 
 def test_burst_direction_is_independent_from_interrupt_control_direction() -> None:
@@ -56,9 +55,10 @@ def test_effect_pipeline_caches_state_and_preserves_icon_art() -> None:
     assert "castingThisSpell" in styles
 
 
-def test_profile_enables_trinket_followers_when_global_source_is_enabled() -> None:
+def test_profile_keeps_trinkets_as_explicit_disabled_sequence_steps() -> None:
     profiles = read("Tactics/BurstProfiles.lua")
-    planner = read("Tactics/BurstPlanner.lua")
-    assert '{ slot = 13, label = "饰品13", enabled = true }' in profiles
-    assert '{ slot = 14, label = "饰品14", enabled = true }' in profiles
-    assert "settings.burstShowTrinkets" in planner
+    auto = read("Tactics/AutoBurst.lua")
+    assert 'key = "trinket:13"' in profiles
+    assert 'key = "trinket:14"' in profiles
+    assert 'enabled = false' in profiles
+    assert "settings.burstShowTrinkets" not in auto

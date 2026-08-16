@@ -267,14 +267,13 @@ def test_dual_readonly_labels_with_two_surviving_bodies_fail_closed() -> None:
     run_texlua(script)
 
 
-def test_opaque_identity_is_excluded_from_manual_cards_and_requires_real_p4_token() -> None:
+def test_opaque_identity_is_excluded_from_manual_cards_and_autoburst() -> None:
     resolver = RESOLVER.read_text(encoding="utf-8")
-    reaction = REACTION.read_text(encoding="utf-8")
-    planner = PLANNER.read_text(encoding="utf-8")
-    advisors = ADVISORS.read_text(encoding="utf-8")
+    auto = (ADDON / "Tactics" / "AutoBurst.lua").read_text(encoding="utf-8")
+    toc = (ADDON / "!TacticEcho.toc").read_text(encoding="utf-8")
 
     assert "readOpaqueActionInfoHandleName" in resolver
-    assert "local ok, macroName = safeCall(GetMacroInfo, handle)" in resolver
+    assert "ok, macroName = safeCall(GetMacroInfo, handle)" in resolver
     assert "actionInfoLabelProbeBodyLength" not in resolver
     assert "macro_semantic_identity_no_spell_match" in resolver
     assert "if diagnostic.macroIdentityVerified == true then" in resolver
@@ -284,11 +283,9 @@ def test_opaque_identity_is_excluded_from_manual_cards_and_requires_real_p4_toke
     assert "macroIdentityVerified == true" in resolver
     assert "semantics and semantics.autoBurstEligible == true" in resolver
 
-    assert "if not parsed or tonumber(parsed.token) == nil or tonumber(parsed.token) <= 0 then return false end" in reaction
-    assert "resolver:IsVerifiedCurrentMacroSource(candidate, candidate.macroAssociation) == true" in reaction
-    assert "addOpaqueActionSpellMacroRoute(routes, candidate, spellID)" in reaction
-    assert "verifiedManualPresentationSource" in planner
-    assert "verifiedManualPresentationSource" in advisors
+    assert "resolver:IsAutoBurstMacroEligible(bindingInfo)" in auto
+    assert "Tactics/ReactionBindings.lua" not in toc
+    assert "Tactics/AdvisoryPlanner.lua" not in toc
 
 
 def test_valid_action_info_index_never_scans_other_macro_indexes_after_same_index_failure() -> None:

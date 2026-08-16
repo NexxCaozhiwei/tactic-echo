@@ -22,7 +22,7 @@ local BOOLEAN_FIELDS = {
     "unknown", "procHighlight", "burstOverlay", "casting", "channeling", "empowering",
     "channelingMatchesRecommendation", "empoweringMatchesRecommendation", "castingThisSpell", "globalCasting", "globalChanneling", "targetInvalid",
     "targetChecked", "rangeBlocked", "resourceBlocked", "advisoryOnly", "displayOnly", "gcdKnown",
-    "cooldownKnown", "cooldownActive", "cooldownOnGCD", "cooldownGcdAlias", "cooldownFallback", "cooldownConfirmationPending", "cooldownActionBarNumericOwnEvidence", "burstVerificationPending", "gcdActive", "chargeCooldownKnown", "directActionSlot", "actionBarStateTrusted", "bindingMissing",
+    "cooldownKnown", "cooldownActive", "cooldownOnGCD", "cooldownGcdAlias", "cooldownFallback", "cooldownConfirmationPending", "cooldownActionBarNumericOwnEvidence", "burstDispatchActive", "gcdActive", "chargeCooldownKnown", "directActionSlot", "actionBarStateTrusted", "bindingMissing",
     "interruptible", "dangerous", "burstWindow", "burstReady", "gapCloser",
     "reactionHighlight", "reactionObservedTarget", "reactionAoe", "reactionRouteSafe",
     "reactionRouteAvailable", "reactionMappingRequired",
@@ -111,7 +111,6 @@ local function sanitize(item)
     item.category = plainText(item.category, nil)
     item.burstRole = plainText(item.burstRole, nil)
     item.burstState = plainText(item.burstState, nil)
-    item.burstVerificationRole = plainText(item.burstVerificationRole, nil)
     item.reactionKind = plainText(item.reactionKind, nil)
     item.reactionSource = plainText(item.reactionSource, nil)
     item.reactionSourceLabel = plainText(item.reactionSourceLabel, nil)

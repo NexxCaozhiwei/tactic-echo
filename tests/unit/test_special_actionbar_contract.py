@@ -36,7 +36,7 @@ class SpecialActionBarContractTests(unittest.TestCase):
         text = RESOLVER.read_text(encoding="utf-8")
         start = text.index("function Resolver:ResolveSpell")
         cached = text.index("local cached = self.cache[spellID]", start)
-        guard = text.index("local specialActionBar = self:GetSpecialActionBarState()", start)
+        guard = text.index("local specialActionBar = self:GetSpecialActionBarState(resolveContext)", start)
         self.assertLess(guard, cached)
         self.assertIn('bindingToken = 0', text[start:cached])
         self.assertIn('status = "NoBinding"', text[start:cached])

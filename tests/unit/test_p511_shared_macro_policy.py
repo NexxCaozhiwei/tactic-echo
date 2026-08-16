@@ -18,7 +18,7 @@ PLANNER = ADDON / "Tactics" / "AdvisoryPlanner.lua"
 
 
 def run_texlua(script: str) -> None:
-    texlua = shutil.which("texlua")
+    texlua = shutil.which("texlua") or shutil.which("lua")
     if not texlua:
         return
     with tempfile.TemporaryDirectory() as tmp:
@@ -31,9 +31,8 @@ def run_texlua(script: str) -> None:
 def test_all_macro_consumers_delegate_to_canonical_current_actionbar_policy() -> None:
     resolver = RESOLVER.read_text(encoding="utf-8")
     autoburst = AUTOBURST.read_text(encoding="utf-8")
-    reaction = REACTION.read_text(encoding="utf-8")
     advisors = ADVISORS.read_text(encoding="utf-8")
-    planner = PLANNER.read_text(encoding="utf-8")
+    toc = (ADDON / "!TacticEcho.toc").read_text(encoding="utf-8")
 
     assert "function Resolver:IsVerifiedCurrentMacroSource(value, association)" in resolver
     assert "function Resolver:IsAutoBurstMacroEligible(value)" in resolver
@@ -41,10 +40,9 @@ def test_all_macro_consumers_delegate_to_canonical_current_actionbar_policy() ->
     assert "unrelated buttons such as a BUTTON3 mount macro" in resolver
     assert "resolver:IsAutoBurstMacroEligible(bindingInfo)" in autoburst
     assert "opaque action-info compatibility" in autoburst
-    assert "resolver:IsVerifiedCurrentMacroSource(candidate, candidate.macroAssociation) == true" in reaction
-    assert "addOpaqueActionSpellMacroRoute(routes, candidate, spellID)" in reaction
-    assert "resolver:IsVerifiedCurrentMacroSource(info, info.macroAssociation)" in advisors
-    assert "resolver:IsVerifiedCurrentMacroSource(resolved, resolved.macroAssociation)" in planner
+    assert "IsVerifiedCurrentMacroSource" not in advisors
+    assert "Tactics/ReactionBindings.lua" not in toc
+    assert "Tactics/AdvisoryPlanner.lua" not in toc
 
 
 def test_verified_cursor_control_and_use_item_macro_share_manual_identity_contract() -> None:

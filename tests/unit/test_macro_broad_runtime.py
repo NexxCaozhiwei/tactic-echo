@@ -14,9 +14,9 @@ MACRO = ROOT / "addon" / "!TacticEcho" / "Actions" / "MacroSemantics.lua"
 
 class MacroBroadRuntimeTests(unittest.TestCase):
     def test_common_targeted_conditional_and_sequence_macros_are_classified(self) -> None:
-        texlua = shutil.which("texlua")
+        texlua = shutil.which("texlua") or shutil.which("lua")
         if not texlua:
-            self.skipTest("texlua not available")
+            self.skipTest("Lua interpreter not available")
         script = textwrap.dedent(
             f'''\
             _G.TacticEcho = {{}}
@@ -43,9 +43,9 @@ class MacroBroadRuntimeTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_target_switch_fallback_interrupt_macro_is_recognized_for_macro_managed_auto(self) -> None:
-        texlua = shutil.which("texlua")
+        texlua = shutil.which("texlua") or shutil.which("lua")
         if not texlua:
-            self.skipTest("texlua not available")
+            self.skipTest("Lua interpreter not available")
         script = textwrap.dedent(
             f'''\
             _G.TacticEcho = {{}}
@@ -84,9 +84,9 @@ class MacroBroadRuntimeTests(unittest.TestCase):
 
 class ReactionBindingTargetSwitchRuntimeTests(unittest.TestCase):
     def test_target_switch_fallback_macro_is_visible_and_macro_managed_auto_safe(self) -> None:
-        texlua = shutil.which("texlua")
+        texlua = shutil.which("texlua") or shutil.which("lua")
         if not texlua:
-            self.skipTest("texlua not available")
+            self.skipTest("Lua interpreter not available")
         reaction = ROOT / "addon" / "!TacticEcho" / "Tactics" / "ReactionBindings.lua"
         script = textwrap.dedent(
             f'''\
@@ -166,9 +166,9 @@ if __name__ == "__main__":
 
 class MacroInventorySlotRuntimeTests(unittest.TestCase):
     def test_single_trinket_macro_is_associated_and_dual_slot_macro_is_rejected(self) -> None:
-        texlua = shutil.which("texlua")
+        texlua = shutil.which("texlua") or shutil.which("lua")
         if not texlua:
-            self.skipTest("texlua not available")
+            self.skipTest("Lua interpreter not available")
         script = textwrap.dedent(
             f'''\
             _G.TacticEcho = {{}}

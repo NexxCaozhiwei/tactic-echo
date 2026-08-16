@@ -20,17 +20,15 @@ class Teui078LayoutOocHudContractTests(unittest.TestCase):
         ):
             self.assertIn(token, text)
 
-    def test_hud_exposes_module_visibility_and_size_controls(self) -> None:
+    def test_hud_exposes_only_primary_and_burst_size_controls(self) -> None:
         text = (ADDON / "UI" / "ControlPanel.lua").read_text(encoding="utf-8")
-        for token in (
-            '"显示主键"', '"显示爆发"', '"显示打断与控制"', '"显示防御与生存"',
-            '"主键图标"', '"爆发图标"', '"打断控制图标"', '"防御生存图标"',
-            "setModuleIconSize",
-        ):
+        for token in ('"主键大小"', '"爆发大小"', "setModuleIconSize"):
             self.assertIn(token, text)
+        for retired in ('"显示打断与控制"', '"显示防御与生存"', '"打断控制图标"', '"防御生存图标"'):
+            self.assertNotIn(retired, text)
         board = (ADDON / "UI" / "TacticalBoard.lua").read_text(encoding="utf-8")
         self.assertIn("moduleShown(hud, \"main\")", board)
-        self.assertIn("moduleShown(hud, \"defense\")", board)
+        self.assertIn("moduleShown(hud, \"burst\")", board)
 
     def test_out_of_combat_primary_is_display_only(self) -> None:
         advisors = (ADDON / "Tactics" / "TacticalAdvisors.lua").read_text(encoding="utf-8")
@@ -38,7 +36,7 @@ class Teui078LayoutOocHudContractTests(unittest.TestCase):
         styles = (ADDON / "UI" / "TacticalHudStyles.lua").read_text(encoding="utf-8")
         for token in (
             "buildOutOfCombatPrimary",
-            "out_of_combat_display_observer",
+            "runtime_snapshot_out_of_combat_primary",
             "bindingToken = 0",
             "displayOnly = true",
         ):

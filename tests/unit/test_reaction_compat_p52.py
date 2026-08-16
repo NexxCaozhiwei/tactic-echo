@@ -75,15 +75,9 @@ def test_auto_interrupt_is_hard_suspended_even_when_legacy_settings_and_evidence
     run_texlua(script)
 
 
-def test_p57_forces_suspension_in_defaults_normalization_and_ui() -> None:
-    defaults = (ROOT / "addon" / "!TacticEcho" / "Config" / "Defaults.lua").read_text(encoding="utf-8")
-    normalize = (ROOT / "addon" / "!TacticEcho" / "Config" / "Normalize.lua").read_text(encoding="utf-8")
+def test_current_scope_does_not_load_or_expose_auto_interrupt() -> None:
+    toc = (ROOT / "addon" / "!TacticEcho" / "!TacticEcho.toc").read_text(encoding="utf-8")
     panel = (ROOT / "addon" / "!TacticEcho" / "UI" / "ControlPanel.lua").read_text(encoding="utf-8")
-    auto = AUTO.read_text(encoding="utf-8")
-    assert "compatibilityActiveCast = false" in defaults
-    assert "interrupt.compatibilityActiveCast = false" in normalize
-    assert "interrupt.enabled = false" in normalize
-    assert "interrupt.suspended = true" in normalize
-    assert "自动打断（当前不可用）" in panel
-    assert "暂停边界：自动打断不扫描目标优先级" in panel
-    assert 'suspensionReason = "auto_interrupt_suspended"' in auto
+    assert "Tactics/AutoReaction.lua" not in toc
+    assert "Tactics/ReactionBindings.lua" not in toc
+    assert "自动打断（当前不可用）" not in panel

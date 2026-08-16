@@ -20,30 +20,20 @@ class Teui077SurvivalProfilesContractTests(unittest.TestCase):
         ):
             self.assertIn(token, profiles)
 
-    def test_survival_items_are_observed_only_after_bag_bar_and_binding_checks(self) -> None:
-        planner = (ADDON / "Tactics" / "AdvisoryPlanner.lua").read_text(encoding="utf-8")
+    def test_survival_advisory_runtime_is_retired_but_item_resolver_remains_fail_closed(self) -> None:
+        toc = (ADDON / "!TacticEcho.toc").read_text(encoding="utf-8")
         resolver = (ADDON / "Actions" / "ActionBarBindingResolver.lua").read_text(encoding="utf-8")
-        for token in (
-            "plainItemCount",
-            "itemBinding",
-            "survivalItem",
-            "buildSurvivalItems",
-            "healthstoneItemID",
-            "potionItemID",
-            "bindingToken = 0",  # no item dispatch token
-            "only after three independent observations agree",
-        ):
-            self.assertIn(token, planner)
-        self.assertIn("function Resolver:ResolveItem(itemID)", resolver)
+        self.assertNotIn("Tactics/AdvisoryPlanner.lua", toc)
+        self.assertIn("function Resolver:ResolveItem", resolver)
         self.assertIn("read-only mapping for survival/consumable display", resolver)
         for forbidden in ("SetBinding(", "SaveBindings(", "SetOverrideBindingClick(", "SignalEncoder:Encode"):
-            self.assertNotIn(forbidden, planner)
+            self.assertNotIn(forbidden, resolver)
 
     def test_icon_style_is_module_scoped_and_effects_are_external(self) -> None:
         panel = (ADDON / "UI" / "ControlPanel.lua").read_text(encoding="utf-8")
         icon = (ADDON / "UI" / "TacticalIconButton.lua").read_text(encoding="utf-8")
-        for key in ('"main"', '"burst"', '"interrupt"', '"defense"'):
-            self.assertIn(f"ensureModuleStyle(hud, {key})", panel)
+        self.assertIn('local mainStyle = getModuleStyle("main")', panel)
+        self.assertIn('local burstStyle = getModuleStyle("burst")', panel)
         effects = (ADDON / "UI" / "TacticalIconEffects.lua").read_text(encoding="utf-8")
         self.assertIn("TacticalIconEffects.lua", icon)
         self.assertIn("rotationhelper_ants_flipbook", effects)

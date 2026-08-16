@@ -11,19 +11,13 @@ def source(rel: str) -> str:
     return (ADDON / rel).read_text(encoding="utf-8")
 
 
-def test_auto_interrupt_is_forced_suspended_in_defaults_normalizer_and_runtime() -> None:
-    defaults = source("Config/Defaults.lua")
-    normalize = source("Config/Normalize.lua")
-    auto = source("Tactics/AutoReaction.lua")
+def test_auto_interrupt_runtime_and_settings_are_not_loaded() -> None:
+    toc = source("!TacticEcho.toc")
     panel = source("UI/ControlPanel.lua")
-    assert "suspended = true" in defaults
-    assert 'suspensionReason = "auto_interrupt_suspended"' in defaults
-    assert "interrupt.enabled = false" in normalize
-    assert "interrupt.suspended = true" in normalize
-    assert 'state = "suspended"' in auto
-    assert "if config.suspended == true then" in auto
-    assert "自动打断（当前不可用）" in panel
-    assert "pausedToggle:Disable()" in panel
+    assert "Tactics/AutoReaction.lua" not in toc
+    assert "Tactics/ReactionBindings.lua" not in toc
+    assert "自动打断（当前不可用）" not in panel
+    assert 'interrupt = "hud"' in panel
 
 
 def test_hud_manual_click_is_a_secure_proxy_not_an_input_or_macro_writer() -> None:

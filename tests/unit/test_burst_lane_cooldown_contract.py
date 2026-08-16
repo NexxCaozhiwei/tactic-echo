@@ -19,16 +19,17 @@ def test_burst_and_interrupt_control_are_separate_layout_lanes() -> None:
 
 def test_burst_window_and_followup_cooldowns_remain_renderable() -> None:
     planner = read("Tactics/BurstPlanner.lua")
-    panel = read("UI/ControlPanel.lua")
-    assert "local function selectWindow" in planner
-    assert 'elseif item.usableState == "cooldown" then' in planner
-    assert "cooldownAllowed(settings)" in planner
-    assert "保留首图标并由游戏原生转盘显示倒计时" in planner
-    assert "out.window" in planner and "out.followups" in planner
-    assert 'createChoice(pane, "冷却中图标"' in panel
+    auto = read("Tactics/AutoBurst.lua")
+    assert "TE.AutoBurst.BuildHudSnapshot" in planner
+    assert "hudApplySpellState" in auto
+    assert "hudApplyItemCooldown" in auto
+    assert "cooldownRemaining" in auto
+    assert "cooldownDuration" in auto
 
 def test_burst_cards_remain_hud_only() -> None:
-    planner = read("Tactics/BurstPlanner.lua")
-    assert "bindingToken = 0" in planner
-    assert "displayOnly = true" in planner
-    assert "independent_burst_queue" in planner
+    auto = read("Tactics/AutoBurst.lua")
+    advisors = read("Tactics/TacticalAdvisors.lua")
+    assert "bindingToken = 0" in auto
+    assert "displayOnly = true" in auto
+    assert "advisoryOnly = true" in auto
+    assert "item.burstDispatchActive = true" in advisors

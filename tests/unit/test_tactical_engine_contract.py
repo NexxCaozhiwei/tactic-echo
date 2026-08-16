@@ -13,11 +13,8 @@ def test_retired_tactical_engine_modules_are_not_loaded():
 
 def test_primary_burst_runtime_boundaries_are_explicit():
     advisors = (ADDON / "Tactics" / "TacticalAdvisors.lua").read_text(encoding="utf-8")
-    for token in ("scope_primary_burst", "TE.BurstPlanner:Build", "retired_scope"):
+    for token in ("scope_primary_burst", "TE.BurstPlanner.Build", "retired_scope"):
         assert token in advisors
-    narrowed = advisors[
-        advisors.index("Product scope is intentionally narrowed"):
-        advisors.index("return snapshot", advisors.index("Product scope is intentionally narrowed"))
-    ]
+    narrowed = advisors.split("function TacticalAdvisors:Refresh(force)", 1)[1].split("function TacticalAdvisors:GetSnapshot()", 1)[0]
     for forbidden in ("TE.AdvisoryPlanner:Build", "TE.RecommendationQueue:Build", "TE.TacticalTelemetry:Record"):
         assert forbidden not in narrowed

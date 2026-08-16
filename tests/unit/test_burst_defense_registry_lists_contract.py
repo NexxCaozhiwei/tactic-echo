@@ -69,21 +69,18 @@ class BurstDefenseRegistryListsContractTests(unittest.TestCase):
         ):
             self.assertIn(marker, self.burst_profiles)
 
-    def test_burst_planner_has_independent_visible_hotkey_advisory_but_no_input_capability(self) -> None:
+    def test_burst_planner_is_a_pure_autoburst_hud_adapter_without_input_capability(self) -> None:
         for marker in (
-            "Independent trigger recommendation",
-            "even when the official primary queue does not itself recommend that spell",
-            "hostileTargetState()",
-            "collectSpellState(item",
-            "TE.IconState:Collect(spellID, { requiresHostileTarget = true })",
-            "bindingToken = 0",
+            "Pure HUD projection adapter",
+            "AutoBurst owns burst sequence, binding, cooldown and confirmation snapshots",
+            "TE.AutoBurst.BuildHudSnapshot",
+            "autoburst_snapshot_adapter",
+            "advisoryOnly = true",
             "displayOnly = true",
-            "knownState(spellID)",
-            "current action-bar key",
-            "window = nil",
-            "followups = {}",
         ):
             self.assertIn(marker, self.burst_planner)
+        for forbidden in ("ResolveSpell", "CollectCooldownOnly", "BindingToken", "SendInput"):
+            self.assertNotIn(forbidden, self.burst_planner)
 
     def test_empty_justac_seed_is_explicitly_suppressed_not_replaced_with_guesswork(self) -> None:
         self.assertIn("if profile.noSeedNotice then", self.burst_profiles)
@@ -107,21 +104,15 @@ class BurstDefenseRegistryListsContractTests(unittest.TestCase):
         self.assertNotIn("ALT+Q", defense_body)
         self.assertNotIn("403876", defense_body)
 
-    def test_teui_has_justac_style_burst_and_defense_editors_with_safe_boundaries(self) -> None:
+    def test_teui_has_current_spec_autoburst_editor_without_retired_defense_editor(self) -> None:
         for marker in (
-            "createSpellPriorityEditor",
-            "官方窗口候选库",
+            "自动爆发",
             "注入技能",
-            "防御优先列表",
-            "添加触发技能",
-            "添加注入技能",
-            "恢复当前专精全部爆发默认",
-            "恢复当前专精防御默认",
-            "不能在 TEUI 手工加入其他专精技能",
-            "BindingToken 固定为 0",
-            '"Interface\\\\Icons\\\\INV_Misc_QuestionMark"',
+            "爆发顺序",
         ):
             self.assertIn(marker, self.ui)
+        for retired in ("防御优先列表", "恢复当前专精防御默认"):
+            self.assertNotIn(retired, self.ui)
 
 
 if __name__ == "__main__":

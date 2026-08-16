@@ -34,7 +34,9 @@ class AuditHardeningContractTests(unittest.TestCase):
         self.assertNotIn("UnitCastingInfo", icon)
         self.assertNotIn("UnitChannelInfo", icon)
         self.assertIn("CreateRefreshContext(primary)", icon)
-        self.assertIn("CreateRefreshContext(primary)", advisors)
+        self.assertIn("TE.RuntimeSnapshot:GetLatest()", advisors)
+        self.assertIn("gcdSnapshot = runtimeSnapshot.gcdSnapshot", advisors)
+        self.assertNotIn("CreateRefreshContext(primary)", advisors)
 
     def test_retired_macro_registry_is_not_loaded(self) -> None:
         toc = (ADDON / "!TacticEcho.toc").read_text(encoding="utf-8")
@@ -67,8 +69,9 @@ class AuditHardeningContractTests(unittest.TestCase):
         advisors = (ADDON / "Tactics" / "TacticalAdvisors.lua").read_text(encoding="utf-8")
         self.assertIn("requiresHostileTarget ~= true", icon)
         self.assertIn("targetChecked = options.requiresHostileTarget == true", icon)
-        self.assertIn('interrupt = { requiresHostileTarget = true }', advisors)
-        self.assertIn('defense = { requiresHostileTarget = false }', advisors)
+        self.assertIn('primary = { requiresHostileTarget = false }', advisors)
+        self.assertIn('burst = { requiresHostileTarget = false }', advisors)
+        self.assertNotIn('interrupt = { requiresHostileTarget', advisors)
 
 
 if __name__ == "__main__":

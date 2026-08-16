@@ -50,7 +50,6 @@ function BurstPlanner:Build(primary, context, settings, runtime)
             state = "safe_mode",
             stateLabel = "安全模式",
             items = {},
-            followups = {},
             advisoryOnly = true,
             displayOnly = true,
             source = "autoburst_snapshot_adapter",

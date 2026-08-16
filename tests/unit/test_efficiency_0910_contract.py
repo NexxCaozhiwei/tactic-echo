@@ -12,9 +12,10 @@ class Efficiency0910ContractTests(unittest.TestCase):
         text = (ADDON / "Signal" / "SignalFrame.lua").read_text(encoding="utf-8")
         self.assertIn("MAX_SIGNAL_FRAMES = 60", text)
         self.assertIn("TacticEchoDB.signal.bySequence = nil", text)
-        self.assertIn("tostring(encoded.sequence or 0)", text)
-        self.assertIn("tostring(encoded.state or \"unknown\")", text)
-        self.assertIn("tostring(reason or \"tick\")", text)
+        self.assertIn('local rememberedState = encoded.state or "unknown"', text)
+        self.assertIn('local rememberedReason = reason or "tick"', text)
+        self.assertIn("sameRememberedState(sequenceState, lastRememberedSequenceState)", text)
+        self.assertIn("SIGNAL_HISTORY_HEARTBEAT_SECONDS", text)
         self.assertNotIn("store.bySequence[", text)
 
     def test_player_cast_data_has_one_signalframe_origin(self) -> None:
@@ -41,26 +42,22 @@ class Efficiency0910ContractTests(unittest.TestCase):
         self.assertFalse((ADDON / "Actions" / "MacroRegistry.lua").exists())
 
     def test_reaction_p3_heavy_paths_are_suspended(self) -> None:
-        observation = (ADDON / "Tactics" / "ReactionObservation.lua").read_text(encoding="utf-8")
+        toc = (ADDON / "!TacticEcho.toc").read_text(encoding="utf-8")
         advisors = (ADDON / "Tactics" / "TacticalAdvisors.lua").read_text(encoding="utf-8")
-        self.assertIn("NAMEPLATE_CONTROL_SCAN_SUSPENDED = true", observation)
-        self.assertIn("nameplate_control_scan_suspended", observation)
-        self.assertIn("REACTION_READONLY_HIGHLIGHT_SUSPENDED = true", advisors)
-        self.assertIn("reaction_p3_suspended", advisors)
+        self.assertNotIn("Tactics/ReactionObservation.lua", toc)
+        self.assertNotIn("Tactics/ProtocolMonitor.lua", toc)
+        self.assertIn('reaction = emptyReaction("retired_scope")', advisors)
+        self.assertIn('interrupt = emptyInterrupt("retired_scope")', advisors)
 
     def test_primary_only_hud_uses_lightweight_advisor_path(self) -> None:
         advisors = (ADDON / "Tactics" / "TacticalAdvisors.lua").read_text(encoding="utf-8")
-        self.assertIn('hud.queueMode == "primary"', advisors)
-        self.assertIn('emptyAdvisory("hud_primary_only")', advisors)
-        self.assertIn("hudPrimaryOnly = true", advisors)
-        self.assertLess(
-            advisors.index("if primaryOnly == true then"),
-            advisors.index("monitor = TE.ProtocolMonitor and TE.ProtocolMonitor:Sample()"),
-        )
-        self.assertLess(
-            advisors.index("if primaryOnly == true then"),
-            advisors.index("TE.AdvisoryPlanner:Build(primary, context, settings, runtime)"),
-        )
+        refresh = advisors.split("function TacticalAdvisors:Refresh(force)", 1)[1].split("function TacticalAdvisors:GetSnapshot()", 1)[0]
+        self.assertIn("TE.RuntimeSnapshot:GetLatest()", refresh)
+        self.assertIn('emptyAdvisory("scope_primary_burst")', refresh)
+        self.assertIn("TE.BurstPlanner.Build", refresh)
+        self.assertNotIn("TE.ProtocolMonitor", refresh)
+        self.assertNotIn("TE.AdvisoryPlanner", refresh)
+        self.assertNotIn("buildReactionReadOnly", refresh)
 
     def test_primary_only_disables_unused_observer_scans(self) -> None:
         monitor = (ADDON / "Tactics" / "ProtocolMonitor.lua").read_text(encoding="utf-8")

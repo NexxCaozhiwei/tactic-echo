@@ -31,15 +31,14 @@ class PerformanceCleanup088ContractTests(unittest.TestCase):
     def test_refresh_context_shares_gcd_and_monitor_samples(self) -> None:
         self.assertIn("function IconState:CreateRefreshContext(primary)", self.icon_state)
         self.assertIn("gcdSnapshot = collectGcdSnapshot()", self.icon_state)
-        self.assertIn("primaryIconContext = TE.IconState", self.advisors)
-        self.assertIn("monitor = TE.ProtocolMonitor and TE.ProtocolMonitor:Sample()", self.advisors)
-        self.assertIn("iconContext = primaryIconContext", self.advisors)
-        self.assertIn("gcdSnapshot = iconContext.gcdSnapshot", self.advisors)
-        self.assertIn("gcdSnapshot = runtime.iconContext", self.burst)
+        self.assertIn("TE.RuntimeSnapshot:GetLatest()", self.advisors)
+        self.assertIn("gcdSnapshot = runtimeSnapshot.gcdSnapshot", self.advisors)
+        self.assertIn("snapshot = TE.RuntimeSnapshot:GetLatest()", self.burst)
 
     def test_burst_state_is_not_decorated_twice(self) -> None:
         self.assertIn("item.iconState.schema >= 5", self.advisors)
-        self.assertIn('item.iconStateCollectedBy = "BurstPlanner"', self.burst)
+        self.assertIn("AutoBurst already materializes Burst cards from this exact cycle", self.advisors)
+        self.assertIn("TE.AutoBurst.BuildHudSnapshot", self.burst)
 
     def test_board_has_no_independent_dynamic_poll(self) -> None:
         self.assertNotIn("DYNAMIC_REFRESH_INTERVAL", self.board)
@@ -50,7 +49,7 @@ class PerformanceCleanup088ContractTests(unittest.TestCase):
     def test_model_skips_empty_card_classification(self) -> None:
         self.assertNotIn("classify({ empty = true", self.model)
         self.assertIn("if raw then items[index] = classify(raw, kind, nil, preparedMeta) end", self.model)
-        self.assertIn("signature(model.candidates[index])", self.model)
+        self.assertIn("signature(model.tactical.burst[index])", self.model)
 
     def test_layout_returns_before_reapplying_identical_visual_geometry(self) -> None:
         early = self.layout.index("if board.tacticEchoLayoutFingerprint == fingerprint then return false end")

@@ -1,3 +1,47 @@
+# 1.3.0 — AutoBurst 稳定基线
+
+- **P1–P3 正式验收**：冻结已实机通过的爆发链锁定、GCD/队列窗口派发、失败回执隔离与安全重试、HUD 真实“派发/阻止”展示，以及当前主键 + AutoBurst 加载链路结构收口。
+- **奥法爆发链稳定性**：后续步骤不会在 `GCD_LOCKED` 建立新逻辑尝试；进入公开 `QUEUE_WINDOW` 后才派发，精确失败后经过 observation-only 隔离并等待 `READY_NOW` 重试，避免奥术涌动在错误相位被跳过或提前释放锁链。
+- **HUD 只展示执行结果**：内部校验、等待、确认与重试过程不再投影到 HUD；只有真实 Burst TEAP 帧携带有效 BindingToken 且允许派发时显示“派发”，硬阻止继续显示“阻止”。
+- **序列与结构统一**：HUD 支持窗口 + 六注入 + 两饰品共九张卡；当前已加载的 Advisor/设置链删除退役规划器、Reaction/打断诊断、重复 `window/followups` 投影与孤儿 helper。
+- **测试基线健康**：完整套件为 `654 passed, 7 skipped, 17 subtests passed`；七项跳过均为明确退役的自动打断候选派发历史契约，当前运行链无失败。
+
+# 1.2.11 — P3 当前链路结构收口
+
+- **删除已退役运行分支**：从已加载的 `TacticalAdvisors.lua` 移除无消费者的旧打断、控制、Reaction P3、候选预测与旧动作条展示 helper；周期刷新现在只保留主推荐与 AutoBurst 投影。
+- **删除无入口设置诊断**：设置中心移除不会被四页导航调用的 ReactionBindings、自动打断和 P3 观察文本组装代码；历史页面参数仍只重定向到当前页面，不恢复退役功能。
+- **爆发 HUD 单一数据形态**：`AutoBurst:BuildHudSnapshot()` 只输出按保存顺序排列的 `items`，不再重复维护无人读取的 `window/followups` 副视图。
+- **移除孤儿 helper**：清除 AutoBurst、设置中心内没有调用者的历史函数；新增结构契约，持续阻止当前加载链重新引入退役规划器、重复爆发视图或仅定义不使用的局部 helper。
+- **运行行为不变**：P1 锁链/GCD/队列窗口派发与 P2 HUD“真实派发/硬阻止”语义不变；未修改 BindingToken、TEAP、TEK、宏资格或脱战门控。
+
+# 1.2.10 — AutoBurst HUD 派发态与测试契约收口
+
+- **HUD 只呈现真实派发**：移除 AutoBurst 内部校验、等待、重试等过程态的 HUD 投影；只有当前 TEAP 帧确实携带 Burst 来源、有效 BindingToken 且允许派发时，对应爆发卡才显示“派发”。硬阻止状态继续沿用既有阻止语义。
+- **展示层不获得派发权限**：`TacticalState` 只透传当前派发动作类型、技能、饰品槽位与 ItemID；爆发 HUD 卡仍固定 `bindingToken=0`、`displayOnly=true`，不会反向改变 AutoBurst、TEAP 或 TEK。
+- **序列容量统一为 9**：HUD 与数据模型统一支持一个窗口、最多六个注入和两个饰品，消除运行投影仍截断为五张卡的旧限制。
+- **当前范围测试债清零**：将 40 个检查退役独立爆发、打断、控制、防御、生存、候选历史等旧结构的失败契约改写为当前“主键 + AutoBurst”边界；宏运行测试可使用本机 `lua`，Windows SimC 启动脚本恢复 ASCII/CRLF。
+- **完整回归结果**：`652 passed, 7 skipped, 17 subtests passed`；七项跳过均为明确退役的自动打断候选派发历史契约，不是当前运行链失败。未修改 `AGENTS.md`。
+
+# 1.2.9 — AutoBurst Retail upvalue 热修
+
+- **修复 P1 实机加载失败**：`1.2.8` 新增的两个派发阶段 helper 不再作为 `Evaluate()` 的局部 upvalue，改由 `AutoBurst` 方法提供，消除 Retail 报告的 `function ... has more than 60 upvalues`。
+- **P1 行为保持不变**：首步骤仍等待 `READY_NOW`，后续步骤仍在 `GCD_LOCKED` 输出无 Token hold、于 `QUEUE_WINDOW` 首次派发，精确失败后仍只在 `READY_NOW` 创建新逻辑重试。
+- **回归契约补强**：测试明确要求新增派发阶段 helper 使用模块方法，避免未来再次把大型 `Evaluate()` 推过 Retail upvalue 上限。
+
+# 1.2.8 — AutoBurst 队列窗口派发稳定性
+
+- **禁止 GCD 锁定期建立新尝试**：锁定爆发链后，首个实际步骤等待 `READY_NOW`；后续受 GCD 影响的步骤在 `GCD_LOCKED` 只保留当前步骤所有权并输出无 Token hold，进入 `QUEUE_WINDOW` 或 `READY_NOW` 后才创建新的逻辑派发。
+- **失败重试收紧到完整就绪**：队列窗口派发收到精确失败后，继续执行两帧 observation-only 回执隔离；隔离结束后不在同一 `QUEUE_WINDOW` 重试，只在 `READY_NOW` 创建第二次逻辑尝试。
+- **尝试身份与确认保持稳定**：GCD 等待、队列等待、确认等待和隔离帧均不增加 `dispatchAttempt`；`WAIT_CONFIRM` 下的 `GCD_LOCKED` 不再重复发布 BindingToken，步骤仍只由精确成功事件、稳定自身非 GCD 冷却或充能减少推进。
+- **奥法专项回归**：新增 `镜像 → 奥术涌动` 行为测试，覆盖 GCD 锁定保持、队列窗口首次派发、精确失败去重与 `READY_NOW` 安全重试。
+
+# 1.2.7 — AutoBurst 失败重试队列窗口同步
+
+- **保留 1.2.0 锁链语义**：计划建立后继续由 `plan.stepIndex` / `WAIT_CONFIRM` 锁定当前步骤；官方推荐旋转、单个失败事件和 GCD 状态均不会越过当前技能或重排爆发链。
+- **失败回执按逻辑尝试去重**：同一次逻辑派发产生的多个 `UNIT_SPELLCAST_FAILED`、`UNIT_SPELLCAST_FAILED_QUIET` 或 `UNIT_SPELLCAST_INTERRUPTED` 只计为一次拒绝；第二次拒绝必须来自经过 observation-only 隔离后的新 `dispatchAttempt`。
+- **重试等待公开队列窗口**：首次候选仍沿用共享 `GCD_LOCKED` 连续投递策略；若客户端已经精确拒绝该逻辑尝试，两帧回执隔离后继续输出 `BindingToken=0`，直到 `GCDGate` 进入 `QUEUE_WINDOW` 或 `READY_NOW` 才创建第二次逻辑尝试，避免奥术涌动等技能在 GCD 锁定期连续失败后被错误跳过。
+- **诊断补强**：新增失败重试屏障、GCD 等待与安全重试阶段日志，并导出失败观察阶段和重试阶段纯标量；不改变 BindingToken、TEAP、TEK、宏资格、脱战硬门控或成功确认边界。
+
 # 1.2.6 — AutoBurst 稳定确认与六注入序列
 
 - **阻止瞬发技能预测性误跳过**：可选步骤进入 `WAIT_CONFIRM` 后，单帧自身冷却、冷却来源不确定或 UNKNOWN 不再清空确认上下文；自身 CD/充能变化继续走稳定确认，公开 GCD 可派发时保持同一步候选。

@@ -59,39 +59,18 @@ def test_existing_use_macros_match_item_id_link_name_branches_and_castsequence()
     run_texlua(script)
 
 
-def test_control_defense_and_survival_keep_visible_macro_sources_manual_only() -> None:
+def test_shared_macro_qualification_is_owned_by_resolver_and_autoburst() -> None:
     macro = MACRO.read_text(encoding="utf-8")
     resolver = RESOLVER.read_text(encoding="utf-8")
+    auto = (ADDON / "Tactics" / "AutoBurst.lua").read_text(encoding="utf-8")
+    toc = (ADDON / "!TacticEcho.toc").read_text(encoding="utf-8")
     advisors = ADVISORS.read_text(encoding="utf-8")
-    planner = PLANNER.read_text(encoding="utf-8")
-
-    # Item resolution now follows the same read-only semantic association model
-    # as spell resolution, but the manual target still points to the existing
-    # button rather than fabricating an item action or hotkey.
     assert "function MacroSemantics:MatchItem" in macro
-    assert "local function macroItemCandidateMatches" in resolver
-    assert 'TE.MacroSemantics:MatchItem(semantics, itemID, itemName, "broad")' in resolver
-    assert "function Resolver:ResolveItem(itemID)" in resolver
-    assert "function Resolver:ResolveManualItem(itemID)" in resolver
-    assert "return manualTargetFromResult(result, reason)" in resolver
-
-    # A reliable visible macro with no usable keyboard BindingToken may still be
-    # rendered and physically clicked from HUD. The presentation wrapper fixes
-    # its token at zero, so it cannot create a new automatic dispatch channel.
-    for layer, helper in ((advisors, "actionbarPresentationSource"), (planner, "presentationBinding")):
-        assert f"local function {helper}" in layer
-        assert "bindingToken = 0" in layer
-        assert "manualActionSource = true" in layer
-        assert "advisoryOnlyBinding = true" in layer
-    assert "return actionbarPresentationSource(info)" in advisors
-    assert "return presentationBinding(resolved)" in planner
-    assert "local source = presentationBinding(resolved)" in planner
-
-    # Macro-backed action slots retain their verified action-bar cooldown identity
-    # for display instead of being silently downgraded merely because they are macros.
-    assert "actionBarStateTrusted = binding and binding.actionBarStateTrusted == true or false" in advisors
-    assert "actionBarStateTrusted = binding and binding.actionBarStateTrusted == true or false" in planner
-    assert "actionBarStateTrusted = binding.actionBarStateTrusted == true" in planner
+    assert "function Resolver:IsVerifiedCurrentMacroSource" in resolver
+    assert "function Resolver:IsAutoBurstMacroEligible" in resolver
+    assert "resolver:IsAutoBurstMacroEligible(bindingInfo)" in auto
+    assert "bindingToken = 0" in advisors
+    assert "Tactics/AdvisoryPlanner.lua" not in toc
 
     for forbidden in (":Click(", "SetOverrideBinding", "EditMacro", "CreateMacro"):
         assert forbidden not in resolver

@@ -19,19 +19,13 @@ class Teui079DefenseGcdHotkeyHeaderContractTests(unittest.TestCase):
         self.signal = (ADDON / "Signal" / "SignalFrame.lua").read_text(encoding="utf-8")
         self.state = (ADDON / "Tactics" / "TacticalState.lua").read_text(encoding="utf-8")
 
-    def test_out_of_combat_defense_is_spec_bound_display_only_standby(self) -> None:
-        for marker in (
-            "defensiveOutOfCombatStandby",
-            "out_of_combat_standby",
-            "GetDefensiveGroups(classFile, context and context.specIndex)",
-            'for _, category in ipairs({ "minor", "major", "emergency", "selfheal" }) do',
-            "item.bindingToken = 0",
-            "requireActualBinding ~= true or (item.binding and item.unbound ~= true)",
-            "脱战显示防御待命",
-        ):
-            self.assertIn(marker, self.planner + self.panel + self.advisors)
-        self.assertIn("脱战：当前专精防御待命（只读显示，BindingToken=0）", self.planner)
-        self.assertNotIn("TEAP", self.planner[self.planner.index("function Planner:BuildDefense"):self.planner.index("function Planner:BuildBurst")])
+    def test_out_of_combat_scope_keeps_primary_readonly_and_defense_retired(self) -> None:
+        toc = (ADDON / "!TacticEcho.toc").read_text(encoding="utf-8")
+        self.assertNotIn("Tactics/AdvisoryPlanner.lua", toc)
+        self.assertIn("buildOutOfCombatPrimary", self.advisors)
+        self.assertIn("runtime_snapshot_out_of_combat_primary", self.advisors)
+        self.assertIn("bindingToken = 0", self.advisors)
+        self.assertNotIn("脱战显示防御待命", self.panel)
 
     def test_gcd_uses_independent_safe_state_and_native_cooldown_frame(self) -> None:
         for marker in (

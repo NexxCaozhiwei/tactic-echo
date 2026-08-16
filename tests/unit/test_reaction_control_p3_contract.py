@@ -19,8 +19,9 @@ def test_tactical_advisors_publish_retired_reaction_snapshot_only() -> None:
     advisors = read("Tactics/TacticalAdvisors.lua")
     assert "reaction = emptyReaction(\"retired_scope\")" in advisors
     assert "interrupt = emptyInterrupt(\"retired_scope\")" in advisors
-    assert "applyReactionReadOnly(reaction, interrupt, advisory)" in advisors
-    assert "Product scope is intentionally narrowed" in advisors
+    refresh = advisors.split("function TacticalAdvisors:Refresh(force)", 1)[1].split("function TacticalAdvisors:GetSnapshot()", 1)[0]
+    assert "applyReactionReadOnly" not in refresh
+    assert "buildReactionReadOnly" not in refresh
 
 
 def test_hud_model_does_not_materialize_reaction_lanes() -> None:

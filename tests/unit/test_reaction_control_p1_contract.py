@@ -39,20 +39,12 @@ def test_reaction_normalizer_owns_stable_source_contract() -> None:
         assert token in normalizer
 
 
-def test_settings_are_split_into_interrupt_and_control_subpages() -> None:
+def test_interrupt_and_control_subpages_are_retired_from_navigation() -> None:
     panel = read("UI/ControlPanel.lua")
-    for token in (
-        "function ControlPanel:SetInterruptSubpage(subpage)",
-        'createActionButton(pane, "打断设置"',
-        'createActionButton(pane, "控制设置"',
-        "interruptSubpages = {",
-        "buildInterruptSettings(interruptPane)",
-        "buildControlSettings(controlPane)",
-        'ControlPanel:Show("interrupt", "interrupt")',
-        'ControlPanel:Show("interrupt", "control")',
-        "createReactionTargetPriorityEditor",
-    ):
-        assert token in panel
+    assert 'interrupt = "hud"' in panel
+    assert 'control = "hud"' in panel
+    for token in ("SetInterruptSubpage", "buildInterruptSettings", "buildControlSettings", "createReactionTargetPriorityEditor"):
+        assert token not in panel
 
 
 def test_p1_does_not_touch_input_or_burst_runtime_paths() -> None:

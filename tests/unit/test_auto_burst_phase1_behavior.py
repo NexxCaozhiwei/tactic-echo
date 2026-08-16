@@ -300,6 +300,15 @@ assert(snap.active == false and snap.requireWindowDeparture == true, "completed 
 """)
 
 
+def test_autoburst_evaluate_stays_within_retail_upvalue_limit() -> None:
+    run_lua(AUTO_BURST_HARNESS + r"""
+local info = debug.getinfo(AutoBurst.Evaluate, "u")
+assert(type(info) == "table" and tonumber(info.nups) ~= nil)
+assert(info.nups <= 60,
+    "Retail rejects AutoBurst.Evaluate when captured upvalues exceed 60; observed " .. tostring(info.nups))
+""")
+
+
 
 def test_official_window_cooldown_conflict_creates_plan_then_revalidates_before_window_dispatch() -> None:
     run_lua(AUTO_BURST_HARNESS + r"""
@@ -508,11 +517,16 @@ assert(pending.kind == "none" and AutoBurst:GetSnapshot().active == false, "pend
 cooldowns[31884] = "unknown"
 gcdPhase = "GCD_LOCKED"
 local unknown = eval()
-assert(unknown.kind == "candidate" and unknown.dispatchSpellID == 31884,
-    "unknown cooldown provenance must remain deliverable through the public GCD gate")
+assert(unknown.kind == "hold" and unknown.reason == "burst_step_wait_ready_now",
+    "unknown cooldown provenance must remain selected without dispatching the first step under GCD lock")
+assert(AutoBurst:GetSnapshot().active == true and AutoBurst:GetSnapshot().dispatchAttempt == 0)
 local preflight = AutoBurst:GetDiagnostics().lastInjectionPreflight
 assert(preflight.status == "selected" and preflight.selectedOrder:find("injection:31884", 1, true),
     "uncertain delivery must remain auditable in the selected sequence")
+gcdPhase = "READY_NOW"
+local ready = eval()
+assert(ready.kind == "candidate" and ready.dispatchSpellID == 31884,
+    "the retained first step must dispatch when the public gate becomes fully ready")
 """)
 
 
@@ -521,8 +535,17 @@ def test_public_gcd_is_not_own_cooldown_and_remains_preflight_eligible() -> None
 cooldowns[31884] = "public_gcd"
 gcdPhase = "GCD_LOCKED"
 local locked = eval()
-assert(locked.kind == "candidate" and locked.dispatchSpellID == 31884, "shared GCD alone must not remove a ready injection")
-assert(locked.cooldownUncertain ~= true, "shared GCD must remain a positive non-CD readiness result")
+assert(locked.kind == "hold" and locked.reason == "burst_step_wait_ready_now",
+    "shared GCD alone must not remove a ready injection or authorize its first dispatch")
+assert(AutoBurst:GetSnapshot().active == true and AutoBurst:GetSnapshot().dispatchAttempt == 0)
+gcdPhase = "QUEUE_WINDOW"
+local queued = eval()
+assert(queued.kind == "hold" and queued.reason == "burst_step_wait_ready_now",
+    "the first physical action in a plan must wait beyond the queue window")
+gcdPhase = "READY_NOW"
+local ready = eval()
+assert(ready.kind == "candidate" and ready.dispatchSpellID == 31884)
+assert(ready.cooldownUncertain ~= true, "shared GCD must remain a positive non-CD readiness result")
 """)
 
 
@@ -679,8 +702,8 @@ assert(first.kind == "candidate" and first.dispatchSpellID == 31884,
 cooldowns[31884] = "unknown"
 gcdPhase = "GCD_LOCKED"
 local retry = eval()
-assert(retry.kind == "candidate" and retry.dispatchSpellID == 31884,
-    "focused runtime uncertainty must not remove the waiting injection")
+assert(retry.kind == "hold" and retry.reason == "burst_wait_confirm_gcd_locked",
+    "focused runtime uncertainty must retain ownership without publishing a GCD-locked token")
 local snap = AutoBurst:GetSnapshot()
 assert(snap.active == true and snap.waitingForConfirmation == true,
     "the exact waiting step must retain ownership until success or matching failures")
@@ -1296,10 +1319,14 @@ assert(injection.kind == "candidate" and injection.dispatchSpellID == 31884,
 def test_unknown_window_after_confirmed_injection_keeps_latched_candidate() -> None:
     run_lua(AUTO_BURST_HARNESS + r"""
 cooldowns[343527] = "unknown"
-gcdPhase = "GCD_LOCKED"
 local injection = eval()
 assert(injection.kind == "candidate" and injection.dispatchSpellID == 31884, "official window uncertainty must not prevent the pre step")
 AutoBurst:RecordSpellcastSucceeded(31884)
+gcdPhase = "GCD_LOCKED"
+local locked = eval()
+assert(locked.kind == "hold" and locked.reason == "burst_step_wait_queue_window",
+    "the next latched window must not publish a token while GCD remains locked")
+gcdPhase = "QUEUE_WINDOW"
 local window = eval()
 assert(window.kind == "candidate" and window.dispatchSpellID == 343527, "unknown window cooldown must continue the latched window candidate")
 assert(window.cooldownUncertain == true, "window candidate must mark uncertainty without treating it as success")
@@ -1392,16 +1419,19 @@ assert(provisional.kind == "candidate" and provisional.dispatchSpellID == 31884,
 assert(AutoBurst:RecordSpellcastFailed(31884, "UNIT_SPELLCAST_FAILED") == true)
 cooldowns[31884] = "ready"
 nowValue = 0.10
+local barrierOne = eval()
+assert(barrierOne.kind == "hold" and barrierOne.reason == "burst_failure_retry_barrier",
+    "the first failed logical attempt must publish a no-token retry barrier")
+nowValue = 0.15
+local barrierTwo = eval()
+assert(barrierTwo.kind == "hold" and barrierTwo.reason == "burst_failure_retry_barrier",
+    "the retry barrier must cover two fresh transport frames")
+nowValue = 0.20
 local retry = eval()
 assert(retry.kind == "candidate" and retry.dispatchSpellID == 31884,
-    "a matching failure must return to the same logical injection")
-cooldowns[31884] = "cooldown"
-nowValue = 0.15
-assert(eval().kind == "candidate", "a later cooldown transition must remain provisional")
-nowValue = 0.35
-local window = eval()
-assert(window.kind == "candidate" and window.dispatchSpellID == 343527,
-    "the prior failed attempt must not poison a later stable retry confirmation")
+    "a matching failure must retry through a new logical attempt")
+assert(AutoBurst:GetSnapshot().dispatchAttempt == 2,
+    "the retry must not reuse the original logical dispatch attempt")
 """)
 
 
@@ -1410,6 +1440,12 @@ def test_two_matching_failures_release_optional_step_without_unbounded_stall() -
 local injection = eval()
 assert(injection.kind == "candidate" and injection.dispatchSpellID == 31884)
 assert(AutoBurst:RecordSpellcastFailed(31884, "UNIT_SPELLCAST_FAILED") == true)
+assert(AutoBurst:RecordSpellcastFailed(31884, "UNIT_SPELLCAST_FAILED_QUIET") == false,
+    "duplicate receipts for one logical attempt must not count as a second rejection")
+local barrierOne = eval()
+assert(barrierOne.kind == "hold" and barrierOne.reason == "burst_failure_retry_barrier")
+local barrierTwo = eval()
+assert(barrierTwo.kind == "hold" and barrierTwo.reason == "burst_failure_retry_barrier")
 local retry = eval()
 assert(retry.kind == "candidate" and retry.dispatchSpellID == 31884)
 assert(AutoBurst:GetSnapshot().matchingFailureCount == 1)
@@ -1419,6 +1455,66 @@ assert(released.kind == "hold" and released.reason == "burst_next_step_pending")
 local window = eval()
 assert(window.kind == "candidate" and window.dispatchSpellID == 343527,
     "simple mode must continue after two exact rejection receipts")
+""")
+
+
+def test_arcane_surge_enters_queue_window_then_retries_only_when_ready_now() -> None:
+    run_lua(AUTO_BURST_HARNESS + r"""
+testContext = { class = "MAGE", specIndex = 1, specID = 62 }
+officialSpellID = 321507
+settings.burstProfiles.MAGE_1 = {
+    customInjectionSpellIDs = { 55342 },
+    injectionOrder = { 55342, 365350 },
+    autoBurstSequence = {
+        order = { "injection:55342", "injection:365350", "window", "trinket:13", "trinket:14" },
+        enabled = {
+            ["injection:55342"] = true,
+            ["injection:365350"] = true,
+            ["trinket:13"] = false,
+            ["trinket:14"] = false,
+        },
+    },
+}
+bindings[321507] = "ready"; bindings[55342] = "ready"; bindings[365350] = "ready"
+bindingTokens[321507] = 1; bindingTokens[55342] = 2; bindingTokens[365350] = 3
+cooldowns[321507] = "ready"; cooldowns[55342] = "ready"; cooldowns[365350] = "ready"
+
+local mirrorImage = eval()
+assert(mirrorImage.kind == "candidate" and mirrorImage.dispatchSpellID == 55342)
+assert(AutoBurst:RecordSpellcastSucceeded(55342) == true)
+
+gcdPhase = "GCD_LOCKED"
+local locked = eval()
+assert(locked.kind == "hold" and locked.reason == "burst_step_wait_queue_window",
+    "Arcane Surge must not create a logical attempt while the preceding GCD is locked")
+local lockedSnapshot = AutoBurst:GetSnapshot()
+assert(lockedSnapshot.dispatchAttempt == 1 and lockedSnapshot.currentSpellID == 365350,
+    "GCD waiting must retain the locked Arcane Surge without incrementing attempt identity")
+
+gcdPhase = "QUEUE_WINDOW"
+local arcaneSurge = eval()
+assert(arcaneSurge.kind == "candidate" and arcaneSurge.dispatchSpellID == 365350,
+    "Arcane Surge must make its first logical attempt in the public queue window")
+assert(arcaneSurge.dispatchAttempt == 2)
+assert(AutoBurst:RecordSpellcastFailed(365350, "UNIT_SPELLCAST_FAILED") == true)
+assert(eval().reason == "burst_failure_retry_barrier")
+assert(eval().reason == "burst_failure_retry_barrier")
+
+local queueRetry = eval()
+assert(queueRetry.kind == "hold" and queueRetry.reason == "burst_failure_retry_wait_ready_now",
+    "a rejected queue-window Arcane Surge must not retry inside the same queue opportunity")
+local waiting = AutoBurst:GetSnapshot()
+assert(waiting.dispatchAttempt == 2 and waiting.matchingFailureCount == 1,
+    "READY_NOW waiting must preserve the rejected attempt without incrementing retry identity")
+assert(waiting.failureObservedPhase == "QUEUE_WINDOW")
+
+gcdPhase = "READY_NOW"
+local retry = eval()
+assert(retry.kind == "candidate" and retry.dispatchSpellID == 365350,
+    "Arcane Surge must retry only after the public gate reaches full readiness")
+local retried = AutoBurst:GetSnapshot()
+assert(retried.dispatchAttempt == 3 and retried.failureRetryObservedPhase == "READY_NOW",
+    "the safe retry must use a fresh logical attempt and audit its GCD phase")
 """)
 
 
@@ -1491,6 +1587,12 @@ assert(provisional.kind == "candidate" and AutoBurst:GetSnapshot().active == tru
 assert(AutoBurst:RecordSpellcastFailed(343527, "UNIT_SPELLCAST_FAILED") == true)
 cooldowns[343527] = { charges = 2, maxCharges = 2, cooldownActive = false }
 nowValue = 0.20
+local barrierOne = eval()
+assert(barrierOne.kind == "hold" and barrierOne.reason == "burst_failure_retry_barrier")
+nowValue = 0.25
+local barrierTwo = eval()
+assert(barrierTwo.kind == "hold" and barrierTwo.reason == "burst_failure_retry_barrier")
+nowValue = 0.30
 local retry = eval()
 assert(retry.kind == "candidate" and retry.dispatchSpellID == 343527,
     "a failed optimistic charge transition must keep reoffering the same window")
@@ -1550,10 +1652,18 @@ def test_post_mode_delivers_cooldown_uncertain_injection_through_public_gcd() ->
 use_post_sequence()
 cooldowns[31884] = "unknown"
 gcdPhase = "GCD_LOCKED"
+local firstLocked = eval()
+assert(firstLocked.kind == "hold" and firstLocked.reason == "burst_step_wait_ready_now",
+    "the first window must remain locked without dispatching under shared GCD")
+gcdPhase = "READY_NOW"
 local result = eval()
-assert(result.kind == "candidate" and result.dispatchSpellID == 343527,
-    "post mode must retain an uncertain bound injection behind its window")
+assert(result.kind == "candidate" and result.dispatchSpellID == 343527)
 AutoBurst:RecordSpellcastSucceeded(343527)
+gcdPhase = "GCD_LOCKED"
+local injectionLocked = eval()
+assert(injectionLocked.kind == "hold" and injectionLocked.reason == "burst_step_wait_queue_window",
+    "post mode must retain its uncertain bound injection without dispatching under GCD lock")
+gcdPhase = "QUEUE_WINDOW"
 local injection = eval()
 assert(injection.kind == "candidate" and injection.dispatchSpellID == 31884)
 """)
@@ -1714,8 +1824,8 @@ assert(first.kind == "candidate" and first.dispatchSpellID == 31884, "ready pref
 cooldowns[31884] = "unknown"
 gcdPhase = "GCD_LOCKED"
 local retry = eval()
-assert(retry.kind == "candidate" and retry.dispatchSpellID == 31884,
-    "simple mode must retain and reoffer an uncertain waiting injection")
+assert(retry.kind == "hold" and retry.reason == "burst_wait_confirm_gcd_locked",
+    "simple mode must retain an uncertain waiting injection without publishing a GCD-locked token")
 local snap = AutoBurst:GetSnapshot()
 assert(snap.active == true and snap.currentSpellID == 31884 and snap.waitingForConfirmation == true)
 """)

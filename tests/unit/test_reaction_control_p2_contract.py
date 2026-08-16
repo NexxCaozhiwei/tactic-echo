@@ -31,8 +31,8 @@ def test_shared_macro_semantics_remain_available_for_primary_and_autoburst() -> 
 def test_control_settings_page_is_not_in_navigation_scope() -> None:
     panel = read("UI/ControlPanel.lua")
     assert "PAGE_META.control" not in panel
-    assert "BUILDERS.interrupt = nil" in panel
-    assert "LEGACY_PAGE_ALIAS.control = \"hud\"" in panel
+    assert 'interrupt = "hud"' in panel
+    assert 'control = "hud"' in panel
 
 
 def test_retired_reaction_mapping_does_not_modify_dispatch_or_burst_runtime_paths() -> None:

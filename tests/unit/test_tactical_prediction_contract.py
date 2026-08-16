@@ -25,8 +25,9 @@ class TacticalPredictionContractTests(unittest.TestCase):
 
     def test_advisors_call_burst_planner_directly_and_publish_no_prediction_history(self) -> None:
         advisors = (ADDON / "Tactics" / "TacticalAdvisors.lua").read_text(encoding="utf-8")
-        narrowed = advisors[advisors.index("Product scope is intentionally narrowed"):]
-        self.assertIn("TE.BurstPlanner:Build(primary, context, settings, runtime)", narrowed)
+        narrowed = advisors.split("function TacticalAdvisors:Refresh(force)", 1)[1]
+        self.assertIn("TE.BurstPlanner.Build", narrowed)
+        self.assertIn("TE.BurstPlanner, primary, context, settings, runtime", narrowed)
         self.assertIn('history = { active = false, items = {}, source = "retired_scope"', narrowed)
         self.assertIn("advisory = advisory", narrowed)
         self.assertNotIn("SignalFrame:SetState", narrowed)
@@ -38,10 +39,10 @@ class TacticalPredictionContractTests(unittest.TestCase):
         self.assertIn("schema = 4", model)
         self.assertIn("candidates = {}", model)
         self.assertIn("defense = {}", model)
-        self.assertIn("主键 + 爆发", control)
-        self.assertIn("BUILDERS.interrupt = nil", control)
-        self.assertIn("BUILDERS.defense = nil", control)
-        self.assertIn("BUILDERS.monitor = nil", control)
+        self.assertIn("主键 + 自动爆发", control)
+        self.assertIn('interrupt = "hud"', control)
+        self.assertIn('defense = "hud"', control)
+        self.assertIn('monitor = "general"', control)
 
 
 if __name__ == "__main__":

@@ -130,9 +130,6 @@ local function primaryVisual(item)
     if not item.binding or item.binding == "" then
         return "unbound", "未找到现实动作条绑定"
     end
-    if item.burstVerificationPending == true then
-        return "burst_check", "当前自动爆发步骤正在校验施放或冷却确认"
-    end
     if item.usableState == "cooldown" or item.cooldownActive == true then
         return "cooldown", "技能冷却中；图标转盘由客户端渲染，CD 标签由 HUD 统一绘制"
     end
@@ -158,6 +155,9 @@ local function advisoryVisual(item, kind)
     if not item.binding or item.binding == "" then
         return "unbound", "未在现实动作条白名单中找到绑定"
     end
+    if kind == "burst" and item.burstDispatchActive == true then
+        return "burst_dispatch", "当前自动爆发步骤已进入 BindingToken 派发链"
+    end
     -- Mirror the reference renderer's state priority: an invalid target/range or
     -- resource shortfall should be visible before a generic advisory label.
     if item.targetInvalid == true then
@@ -168,9 +168,6 @@ local function advisoryVisual(item, kind)
     end
     if item.resourceBlocked == true or item.usableState == "resource" then
         return "resource", item.unusableReason or "资源不足"
-    end
-    if item.burstVerificationPending == true then
-        return "burst_check", "当前自动爆发步骤正在校验施放或冷却确认"
     end
     if item.usableState == "cooldown" or item.cooldownActive == true then
         return "cooldown", "技能冷却中；图标转盘由客户端渲染，CD 标签由 HUD 统一绘制"
@@ -187,7 +184,8 @@ end
 local function effectIntent(item, kind, meta, visual)
     item, meta = item or {}, meta or {}
     local burstWindow = kind == "burst" and (item.burstWindow == true or item.burstRole == "window")
-    local burstActive = burstWindow and (item.burstState == "ACTIVE" or item.burstReady == true)
+    local burstActive = kind == "burst" and item.burstDispatchActive == true
+        or burstWindow and (item.burstState == "ACTIVE" or item.burstReady == true)
     return {
         -- Primary recommendation receives a restrained Blizzard-style crawling
         -- edge. Proc / interrupt / burst / mobility use their own intent;
@@ -245,6 +243,9 @@ function TacticalHudStyles:Resolve(item, kind, meta)
 
     if visual == "dispatchable" then
         colorKey, alpha = "ready", 1.00
+    elseif visual == "burst_dispatch" then
+        colorKey, alpha, overlay, label, desaturate = "ready", 1.00, "none", "派发", false
+        stateLabel = label
     elseif visual == "primary" then
         colorKey, alpha = "primary", 1.00
     elseif visual == "preview" then
@@ -262,12 +263,6 @@ function TacticalHudStyles:Resolve(item, kind, meta)
         -- the icon saturated and use the purple overlay/state text so a player
         -- can distinguish it from an actual grey cooldown card.
         colorKey, alpha, overlay, label, desaturate = "unknown", 0.84, "unknown", "待确认", false
-        stateLabel = label
-    elseif visual == "burst_check" then
-        -- “校验” is reserved for the active AutoBurst injection/window step.
-        -- General post-cast cooldown tracking remains internal and never
-        -- changes unrelated interrupt/defense/control HUD labels.
-        colorKey, alpha, overlay, label, desaturate = "unknown", 0.90, "unknown", "校验", false
         stateLabel = label
     elseif visual == "unbound" then
         colorKey, alpha, overlay, label, desaturate = "unbound", 0.48, "unbound", "无绑定", true
