@@ -311,7 +311,11 @@ local function spellCharges(spellID)
         if ok then current, maximum, startTime, duration, modRate = a, b, c, d, e end
     end
     local safeCurrent, safeMaximum = numeric(current), numeric(maximum)
-    if safeCurrent == nil and safeMaximum == nil then return nil end
+    -- Retail may describe an ordinary cooldown spell as 1/1. Only a maximum
+    -- above one is charge semantics; 1/1 must not reach the HUD or AutoBurst.
+    if safeMaximum == nil then return nil, false end
+    if safeMaximum <= 1 then return nil, true end
+    if safeCurrent ~= nil then safeCurrent = math.max(0, math.min(safeMaximum, safeCurrent)) end
     local cd = deriveCooldown(startTime, duration)
     return {
         current = safeCurrent,
@@ -459,10 +463,11 @@ local function applySharedCooldownState(state, sample, gcd)
     state.gcdUnknownReason = gcd.reason
     state.gcdActive = gcd.active == true
     local charges
-    if sample.charges ~= nil or sample.maxCharges ~= nil then
+    local sampledMaximum = numeric(sample.maxCharges)
+    if sampledMaximum and sampledMaximum > 1 then
         charges = {
-            current = sample.charges,
-            maximum = sample.maxCharges,
+            current = numeric(sample.charges),
+            maximum = sampledMaximum,
             cooldownRemaining = sample.chargeCooldownRemaining,
             cooldownDuration = sample.chargeCooldownDuration,
             cooldownStart = sample.chargeCooldownStart,
@@ -712,9 +717,9 @@ function IconState:CollectCooldownOnly(spellID, options)
         end
     end
 
-    local charges = spellCharges(spellID)
+    local charges, explicitlyNonCharge = spellCharges(spellID)
     local trackedCharges
-    if TE.CooldownTracker and type(TE.CooldownTracker.GetCharges) == "function" then
+    if explicitlyNonCharge ~= true and TE.CooldownTracker and type(TE.CooldownTracker.GetCharges) == "function" then
         local ok, value = pcall(TE.CooldownTracker.GetCharges, TE.CooldownTracker, spellID, trackerMeta)
         if ok and type(value) == "table" then trackedCharges = value end
     end
@@ -1054,9 +1059,10 @@ function IconState:Collect(spellID, options)
     -- Charges use live API values first. When charge numerics become protected
     -- in combat, the same tracker maintains the pre-cached max/current/recharge
     -- state from casts and lazy recovery. It is presentation-only.
-    charges = spellCharges(spellID)
+    local explicitlyNonCharge
+    charges, explicitlyNonCharge = spellCharges(spellID)
     local trackedCharges
-    if TE.CooldownTracker and type(TE.CooldownTracker.GetCharges) == "function" then
+    if explicitlyNonCharge ~= true and TE.CooldownTracker and type(TE.CooldownTracker.GetCharges) == "function" then
         local ok, value = pcall(TE.CooldownTracker.GetCharges, TE.CooldownTracker, spellID, trackerMeta)
         if ok and type(value) == "table" then trackedCharges = value end
     end

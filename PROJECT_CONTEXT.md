@@ -1,19 +1,47 @@
-# Tactic Echo 项目上下文 — 1.1.7
+# Tactic Echo 项目上下文 — 1.4.4
 
-- 当前唯一基线：`1.1.7`；版本基线统一位于 `docs/baselines/`，每次版本化源码改动必须同步更新该目录下对应 baseline、根目录 `CHANGELOG.md`、`VERSION`、TOC 和 `Core/Bootstrap.lua`。
-- 自动打断设计处于硬暂停：Defaults、Normalize 和 `AutoReaction:Evaluate()` 共同保证旧 SavedVariables 也不能产生 `reaction candidate`、BindingToken、TEAP reaction 帧或 TEK 自动打断请求。
-- `ReactionObservation`、`ReactionInterruptEvents`、P2 动作条/宏识别与 P3 HUD 打断提示仍为只读能力；不应由这些证据重新开启自动派发。
-- AutoBurst 不允许任何脱战例外：`inCombat=false` 时必须清理残留 plan/capture 并返回空结果；`SignalFrame:SetState("armed")`、`Run`、切图和首次进战都不能建立或续接 pre-combat bridge，更不能产生 Burst TEAP/TEK 派发。
-- 主 HUD 左键复用既有 `ToggleRun()`；爆发、打断、控制、防御/生存 HUD 图标只可通过 `HudClickRouter` 的静态 secure proxy 复用可靠、可见的暴雪默认动作条按钮或已识别宏。proxy 同时支持 `LeftButtonDown`/`LeftButtonUp`，以兼容 `ActionButtonUseKeyDown`。
-- HUD 和原生默认动作条的真实左键会进入短暂 `manual_hold`，动作码与 BindingToken 为 0，优先于 TEAP/TEK 的后续派发。13/14 槽物品卡优先使用对应装备槽位的真实来源。
-- 战斗中映射发生变化、来源缺失、按钮隐藏或处于特殊动作条时必须 fail-closed；不得直接 `Button:Click()`、新建绑定、写宏或重定向目标。
-- 1.1.1 共享宏资格：AutoBurst、P4 Reaction 常规宏、控制、防御、生存 HUD 统一调用 Resolver 的当前动作栏身份规则；有效 index 只同 index 有界读取，非 index 恢复仍需动作条/handle 只读名称、代表 SpellID 与唯一正文语义。已验证宏继续兼容 `/cast`、`/use`、条件、`@focus`/`@mouseover`/`@cursor`、目标管理与 `/castsequence`，但控制、防御、生存始终 `BindingToken=0`、仅手动 HUD；AutoBurst 只接受正文关联且语义允许的来源。P4 opaque action-info 仍仅 target-only reaction transport。
-- 1.1.1 自动启停：默认 `pause_out_of_combat` 策略对外命名为“自动启停”。未进战斗或脱战时底层 TEAP 仍输出 `paused` 非派发帧，但 HUD/紧凑条/设置中心显示为“待命”；手动暂停与脱战停止仍显示“暂停”。
-- 1.1.1 诊断请求作用域化：无关 `BUTTON3` / “坐骑”宏不得显示为胁迫、冰冻陷阱等控制技能候选；若同一有效 index 的当前按钮正文暂不可读且动作条文本命名请求技能，仅显示该同一按钮失败记录，不授权扫描或替代。
-- 1.1.2 TEK 手动接管：连发介入白名单主键保持豁免，默认 `W/A/S/D/SPACE` 不触发让步；非白名单真实键盘输入，包括 `Ctrl`、`Alt`、`Shift`、`Win` 修饰键，按下到抬起期间必须持续阻断自动派发。
-- 1.1.3 HUD 安全隐藏：战斗中隐藏 HUD 卡片不得直接调用 `Button:Hide()`；secure proxy 的旧映射不得在战斗中被重定向。
-- 1.1.4 HUD Button 保护收口：战斗中不调用卡片 Button 的 `SetAlpha`、`EnableMouse`、`Show` 或 `Hide`；只记录待处理状态，脱战后再真实更新。
-- 1.1.5 HUD 点击路由保护收口：`HudClickRouter` 在战斗中不调用 secure proxy 或 blocker 的 `SetAlpha`、`Show`、`Hide`；只记录 `tacticEchoCombatVisibilityPending` 和 `dirty`，脱战后再真实隐藏、显示或重建。
-- 1.1.6 HUD 容器缩放与布局保护收口：`TacticalBoard` 在战斗中不调用 board/defense 容器的 `SetScale` 或 `SetAlpha`；`TacticalHudLayout` 在战斗中不执行缩放、定位、尺寸或显示状态重排，只标记 pending/dirty，脱战后应用。
-- 1.1.7 HUD 容器可见性保护收口：`TacticalBoard` 在战斗中不调用 board/defense 容器及状态文本的 `SetShown`、`Show` 或 `Hide`；只记录 `tacticEchoCombatShownPending`，脱战后应用。
-- 主推荐、CD 数字、DurationObject 转盘、标签、技能排序及既有宏兼容策略保持不变。
+## 当前基线与范围
+
+当前唯一开发基线是 `1.4.4`。最高优先级规则位于 `AGENTS.md`；当前版本行为以 `docs/baselines/BASELINE_1.4.4.md`、实时源码和测试共同解释。
+
+产品范围只保留：首页/设置中心、HUD 主键、官方主推荐输入链路，以及最多三个自动注入组。打断、控制、防御、生存、TargetCastPrompt、姓名板群控扫描、反应高亮、监控/调试页、MappingExport 与 OfficialApiProbe 是历史功能，不得从旧配置或历史文档恢复。
+
+## 输入与自动注入
+
+唯一输入通道为：
+
+```text
+官方推荐（只读）
+→ 主键或 AutoBurst OrderedPlan 候选
+→ 当前已验证 Blizzard 默认动作条/宏
+→ BindingToken
+→ TEAP v3
+→ TEK 全部门禁
+→ 单次 SendInput
+```
+
+每个专精最多配置三个平级自动注入组。每组有一个窗口、最多六个注入技能和饰品 13/14；HUD 最多展示 27 张组内顺序卡。所有组共享一个 Coordinator、一个活动组和一套 AutoBurst plan/capture 状态机。活动计划不被其他组窗口抢占或递归生成新计划。
+
+窗口和步骤必须使用稳定技能/装备身份，不保存动作条位置或瞬时键位作为步骤身份。宏来源必须经过共享解析器验证当前按钮/槽位、当前宏身份和正文语义；AddOn 不创建、不修改宏，也不保存宏正文。
+
+## 计划与确认
+
+计划创建和每步派发前都使用共享 RuntimeSnapshot、IconState/CooldownResolver、GCDGate 和当前动作条绑定进行预检。共享 GCD 是时序，不是技能自身 CD。单帧通用不可用、资源不足、UNKNOWN 或普通施法期间的瞬态不得草率删除步骤。
+
+当前步骤只由精确 `UNIT_SPELLCAST_SUCCEEDED`、自身非 GCD CD 开始或真实多充能减少确认。两个不同共享快照的同类不可用证据，或两个精确匹配失败/中断收据，才允许按 `simple/focused` 规则有界释放。
+
+任何脱战帧都必须先清除 plan/capture，再返回无 Burst 候选。进战从干净 encounter epoch 开始。
+
+## HUD 与冷却
+
+HUD 只消费普通标量快照，不拥有派发权限。主键和全部已启用组按配置顺序显示；只有真实 Burst 候选的活动组当前步骤显示派发状态。
+
+HUD 数字只读取 IconState/Tracker 已确认的秒数并向上取整。DurationObject 只绘制原生转盘，不能提供 HUD 数字。纯共享 GCD 隐藏；普通技能的 `1/1` 隐藏；只有 `maxCharges > 1` 的真实多充能技能显示充能。
+
+HUD 卡、secure proxy、blocker、主容器和布局在战斗中不得直接执行受保护的显隐、透明度、缩放、位置或尺寸变化，必须延迟到脱战应用。
+
+## 交付边界
+
+每次版本化源码修改必须同步：`VERSION`、AddOn TOC、`Core/Bootstrap.lua`、`CHANGELOG.md` 和 `docs/baselines/BASELINE_<VERSION>.md`。根目录不得保存 baseline 或 patch manifest 副本。
+
+单元测试、合同测试、Python compileall 和 Lua 语法检查只证明离线合同；Windows Hook、前台判断、真实 SendInput、SpellQueueWindow、宏行为、自动注入顺序和 HUD 实时数字必须实机验证。部署还必须核对 live TOC 和代表性 SHA256。

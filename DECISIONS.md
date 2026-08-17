@@ -1,3 +1,25 @@
+# 1.4.4 决策：多自动注入组与 HUD 冷却/充能真实性
+
+## 当前范围
+
+产品范围只保留首页/设置中心、HUD 主键、官方主推荐输入链路和最多三个自动注入组。打断、控制、防御、生存、TargetCastPrompt、姓名板群控扫描、反应高亮、监控/调试页、MappingExport 与 OfficialApiProbe 均为退役历史，不得从旧 SavedVariables、旧测试或下方历史决策恢复。
+
+## 多组所有权
+
+自动注入是 AutoBurst 的用户可见扩展。每个专精最多保存三个平级组，但运行时始终只有一个 Coordinator、一个活动组、一个 plan 和一个 pre-window capture。官方推荐精确命中组窗口后才允许该组参与 OrderedPlan；活动期间其他窗口不抢占、不排队、不补发，也不能因注入链内出现另一个窗口而递归生成新计划。
+
+AutoBurst 不是第二条输入通道。主键和 Burst 候选最终都必须经过当前已验证动作条/宏、BindingToken、TEAP v3、TEK 全部门禁和单次 SendInput。HUD、Tooltip、冷却转盘和诊断不拥有候选或派发权限。
+
+## HUD 冷却与充能
+
+`GetSpellBaseCooldown()` 只在 API 边界由毫秒转换为秒；`C_Spell`、动作条、Tooltip、充能 recharge 和 tracker 内部值均按秒处理，不得再用数值大小猜测单位。转换后不超过 2.5 秒的静态基础时长不能启动 HUD 自身 CD 兜底，以避免奥术弹幕等无自身 CD 技能显示 500s。
+
+Blizzard `DurationObject` 只负责转盘，HUD 数字只读取 IconState/Tracker 已确认的安全标量并向上取整。只有 `maxCharges > 1` 的真实多充能技能显示充能；普通技能的 `1/1` 不得进入 HUD、Tooltip、充能边框或 AutoBurst 充能确认。
+
+## 历史记录边界
+
+以下 1.1.7 及更早条目继续保留作为演进记录；若与本条、`AGENTS.md` 或当前 baseline 冲突，以当前规则为准。
+
 # 1.1.7 决策：HUD 容器保护、点击路由保护与 TEK 修饰键手动接管
 
 ## 决策

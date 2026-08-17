@@ -821,7 +821,7 @@ end
 local function updateChargeEdge(card, item)
     local charges = safeNumber(item and item.charges)
     local maxCharges = safeNumber(item and item.maxCharges)
-    local partial = charges ~= nil and maxCharges ~= nil and maxCharges > 0 and charges < maxCharges
+    local partial = charges ~= nil and maxCharges ~= nil and maxCharges > 1 and charges < maxCharges
     -- The native charge Cooldown edge is sufficient in native mode.  The old
     -- rectangular WHITE8X8 charge outline is reserved for minimal mode.
     local showMinimalEdge = partial and card.resolvedAppearance and card.resolvedAppearance.theme ~= "native"
@@ -993,7 +993,9 @@ local function tooltipLines(item, visual, card)
     if defensivePriority then lines[#lines + 1] = "防御优先级：" .. tostring(math.floor(defensivePriority)) end
     if item.defensiveConditionText then lines[#lines + 1] = "技能条件：" .. safeText(item.defensiveConditionText, "未知") end
     local charges, maxCharges = safeNumber(item.charges), safeNumber(item.maxCharges)
-    if charges ~= nil and maxCharges ~= nil then lines[#lines + 1] = "充能：" .. tostring(charges) .. "/" .. tostring(maxCharges) end
+    if charges ~= nil and maxCharges ~= nil and maxCharges > 1 then
+        lines[#lines + 1] = "充能：" .. tostring(charges) .. "/" .. tostring(maxCharges)
+    end
     if isItemBackedCard(item) and (item.cooldownOnGCD == true or item.cooldownGcdAlias == true) then
         lines[#lines + 1] = isEquippedTrinketCard(item)
             and "冷却：公共 GCD 已隐藏；饰品自身就绪"
@@ -1506,7 +1508,7 @@ function TacticalIconButton:RefreshDynamic(card, item)
     local charges, maxCharges = safeNumber(item.charges), safeNumber(item.maxCharges)
     local stackCount = safeNumber(item.itemCount)
     if card.resolvedChargeStyle and card.resolvedChargeStyle.enabled ~= false then
-        if charges and maxCharges and maxCharges > 0 then
+        if charges and maxCharges and maxCharges > 1 then
             card.chargeText:SetText(string.format("%d/%d", charges, maxCharges))
         elseif stackCount ~= nil and stackCount >= 0 then
             -- Consumable followers (potion etc.) expose their bag count in the

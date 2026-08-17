@@ -3,7 +3,7 @@
 版本：`1.0.26`  
 状态：历史设计参考；当前脱战边界以 P5.8 为准。
 
-> **当前版本覆盖说明（1.0.53 P5.8）**：本文记录 1.0.26 的序列设计历史。P5.8 的有效规则是：只要 `inCombat=false`，AutoBurst 必须清除残留 plan/capture 并返回空结果；不允许跨越脱战→进战保留计划，也不允许任何 pre-combat bridge。现行验收以 `P5.8_HUD_MANUAL_CLICK_AND_OOC_GATE_TEST.md` 为准。
+> **历史覆盖说明**：本文记录 1.0.26 的序列设计历史。旧 P5.8 测试已归档到 `archive/legacy-reaction-tests/`，不得作为当前验收依据；当前行为以 `AGENTS.md`、`baselines/BASELINE_1.4.4.md` 与根目录 `TASKS.md` 为准。
 
 ## 目标
 

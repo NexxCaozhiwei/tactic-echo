@@ -1,16 +1,44 @@
-# 1.1.7 实机验收
+# 1.4.4 实机验收
 
-先执行 `docs/P5.11_SHARED_MACRO_POLICY_TEST.md`，并保留 P5.10 当前动作栏身份、P5.8 脱战 Burst、自动打断暂停与 HUD 基础点击验证。
+当前版本：`1.4.4`
 
-1. 用猎人 `[@cursor] 冰冻陷阱` 宏验证当前 `CTRL+1` 精确来源；同时保留 `CTRL+2` 的同技能按钮，确认 HUD 不会跨槽位替代。
-2. 在控制诊断中确认无关 `BUTTON3` / “坐骑”宏没有被列为胁迫或冰冻陷阱候选；若同一 CTRL+1 有效 index 正文暂不可读，只有该当前按钮可显示失败记录，仍不得执行。
-3. 验证 action-info 代表 SpellID 不能单独通过：正文不含请求技能、或两个允许标签指向不同可匹配宏时，分别应报告语义失配/歧义并阻断。
-4. 回归控制、防御、生存已有宏（含 `/use`、条件、`@focus`、`@mouseover`、`@cursor`、目标管理和 `/castsequence`）：只允许正文已验证的当前宏成为 HUD 手动来源，且 BindingToken 恒为 0。
-5. 验证 `/use item:5512` 等生存物品宏只在当前身份与正文精确 Item 语义都确认时可被 HUD 复用；宏名/图标/列表不能建立来源。
-6. 隐藏来源、切换特殊动作条或在战斗中改变来源时，HUD 必须 fail-closed；脱战重新映射后才可恢复，且战斗中不得再出现 `HudClickRouter.lua` 触发的 `ADDON_ACTION_BLOCKED UNKNOWN()`。
-7. 战斗中调整 HUD 缩放、脱战淡化缩放、防御栏分离/缩放或布局预设时，HUD 可以延迟到脱战后应用新布局，但不得出现 `TacticEchoTacticalBoard:SetScale()` 或布局 API 的 `ADDON_ACTION_BLOCKED`。
-8. 战斗中切换防御卡显示、HUD 隐藏/显示、空闲隐藏或安全 fallback 时，不得出现 `TacticEchoDefenseBoard:SetShown()`、`Show()` 或 `Hide()` 的 `ADDON_ACTION_BLOCKED`。
-9. 按键按下即施放开启、关闭均测试；HUD 与原生默认动作条左键均应写入 `manual_hold`，动作码/BindingToken 为 0，优先于后续派发。
-10. 回归 P5.8：自动打断仍为 `auto_interrupt_suspended`；任何脱战帧不得产生 Burst plan/capture/TEAP/TEK；主键启停、CD 数字、DurationObject 转盘、状态/来源标签、爆发顺序和 HUD 排序不得变化。
+以下项目是当前版本需要完成的人工验收。离线测试不能替代这些结果。
 
-当前版本：`1.1.7`
+## HUD 冷却与充能
+
+- [ ] 奥术弹幕等无自身 CD 技能不显示 500s 或其他伪造自身 CD。
+- [ ] 普通单 CD 技能不显示 `1/1` 充能文字、充能边框或错误 Tooltip。
+- [ ] 真实两充能技能正确表现 `2/2 → 1/2 → 2/2`，且 recharge 转盘和数字没有被普通 GCD 覆盖。
+- [ ] 长 CD 技能施放后，HUD 纯秒数与默认动作条同步；后续客户端校正能覆盖本地静态兜底。
+- [ ] 主键、窗口、注入技能和饰品的纯共享 GCD 均不误显示为自身 CD。
+- [ ] `/reload` 后上述行为保持一致，不依赖旧 tracker 状态。
+
+## 自动注入组与顺序
+
+- [ ] 设置页可以创建、编辑、启用和停用最多三个组，窗口 SpellID 输入和说明清晰。
+- [ ] 每组可以完整操作窗口、六个注入和饰品 13/14 共九个步骤。
+- [ ] HUD 按组保存顺序分别展示全部启用组，组内步骤顺序与设置一致，末端无异常大空白。
+- [ ] 官方推荐命中不同组窗口时，只启动对应组；活动计划期间其他窗口不抢占、不排队、不递归生成计划。
+- [ ] 窗口与组内注入、不同启用组窗口之间的互斥校验正确；普通注入技能可跨组复用。
+- [ ] 奥法弹幕 → 大法师之触、奥术涌动等已配置步骤能按组内顺序稳定派发和确认。
+- [ ] DK 符文武器增效 → 冰龙吐息等第二组链路能稳定生成计划、派发和确认。
+- [ ] `simple` 与 `focused` 在步骤真实不可用时符合各自释放边界。
+
+## 输入与安全边界
+
+- [ ] HUD 主键和自动注入候选都经现有 BindingToken → TEAP → TEK 路径，不出现旁路输入。
+- [ ] 真实动作条左键、HUD 人工点击及非白名单键盘输入能稳定触发 manual hold/让权。
+- [ ] 脱战、切图和 `/reload` 不残留 plan/capture，也不产生 Burst TEAP 帧或 TEK 请求。
+- [ ] 战斗中移动、缩放、显隐或刷新 HUD 不触发 `ADDON_ACTION_BLOCKED` / `LUA_WARNING`。
+
+## 失败取证
+
+失败时记录：
+
+1. 角色、专精、时间点和注入组配置；
+2. HUD 当时显示的组、步骤、CD/充能和状态；
+3. AddOn 最近 AutoBurst/Coordinator 原因、planId、groupId、当前步骤；
+4. TEK Trace 中的 `dispatch_origin`、BindingToken、门禁原因和 SendInput 结果；
+5. 是否刚执行 `/reload`、切图、改动作条或改绑定。
+
+验收通过后，将勾选结果、失败/跳过项及剩余风险写入交付说明；不要把“未复现”写成“已验证通过”。

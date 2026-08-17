@@ -1,6 +1,6 @@
 # 自动注入
 
-版本：`1.4.3`
+版本：`1.4.4`
 
 “自动注入”是 AutoBurst 的用户可见扩展名称。每个专精最多配置三个独立技能组，但运行时始终只有一个 Coordinator、一个活动组、一个 plan 和一个 pre-window capture。
 
@@ -35,5 +35,7 @@
 ## HUD 与协议
 
 HUD 按 `autoInjectionGroups.order` 展示全部已启用组，并把每组序列分别排列；组内严格保持已保存步骤顺序，最多三组、每组九张、合计 27 张卡。全部卡片保持只读和 `bindingToken=0`；只有 SignalFrame 已产生真实 Burst TEAP 候选时，活动组的精确当前步骤显示“派发”。
+
+HUD 冷却数字只读取 `IconState` / `CooldownTracker` 已确认的安全秒数，Blizzard `DurationObject` 只绘制转盘。没有安全数字时隐藏徽标；纯共享 GCD 不显示为技能自身 CD。只有当前 `maxCharges > 1` 的真实多充能技能才显示充能，普通技能的 `1/1` 不得显示。
 
 TEAP v3 仍为 20 字节，`dispatchOrigin="burst"` 与 flags `0x20` 不变。groupId 只存在于 AddOn 配置、状态、HUD 和诊断中，不编码到协议。

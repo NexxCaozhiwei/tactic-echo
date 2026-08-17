@@ -1,6 +1,6 @@
 # 自动爆发 1.0.22：安装与诊断（历史参考）
 
-> **当前版本覆盖说明（1.0.53 P5.8）**：本文保留 1.0.18–1.0.22 的历史安装与诊断记录。P5.8 已永久移除任何 `pre-combat bridge` 执行授权：脱战不得创建/保留 Burst capture 或 plan，不得产生 Burst candidate、TEAP Burst 帧或 TEK 派发。有关旧版“脱战窗口 → bridge → 进战续接”的步骤仅供历史追溯，不得作为现行验收或实现依据；现行验收以 `P5.8_HUD_MANUAL_CLICK_AND_OOC_GATE_TEST.md` 为准。
+> **历史覆盖说明**：本文保留 1.0.18–1.0.22 的安装与诊断记录。旧 P5.8 测试已归档到 `archive/legacy-reaction-tests/`；有关“脱战窗口 → bridge → 进战续接”的步骤仅供历史追溯。当前行为以 `AGENTS.md`、`baselines/BASELINE_1.4.4.md` 与根目录 `TASKS.md` 为准。
 
 ## 本次故障的直接证据
 

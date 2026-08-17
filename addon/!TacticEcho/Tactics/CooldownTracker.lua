@@ -97,9 +97,10 @@ end
 local function positiveCooldownDuration(value)
     value = number(value)
     if not value or value <= 0 then return nil end
-    -- Compatibility APIs may expose milliseconds while modern APIs expose
-    -- seconds. Raw protected values never survive `number`.
-    if value > 1000 then value = value / 1000 end
+    -- Every caller except GetSpellBaseCooldown already exposes seconds. Unit
+    -- conversion belongs at that API boundary; guessing by magnitude turns a
+    -- 500 ms no-CD/GCD value into a 500 second HUD timer and also corrupts
+    -- legitimate long cooldowns expressed in seconds.
     return value > 0 and value or nil
 end
 
@@ -176,7 +177,9 @@ local function baseCooldownDuration(spellID)
     if type(GetSpellBaseCooldown) ~= "function" then return nil end
     local ok, milliseconds = pcall(GetSpellBaseCooldown, spellID)
     if not ok then return nil end
-    return normaliseCooldownDuration(milliseconds)
+    milliseconds = number(milliseconds)
+    if not milliseconds or milliseconds <= 0 then return nil end
+    return normaliseCooldownDuration(milliseconds / 1000)
 end
 
 local function cacheFallbackDuration(entry)
@@ -295,6 +298,69 @@ local function mergeEntryIDs(entry, ids)
     end
 end
 
+-- Refresh a canonical entry from explicit charge API data. A maximum of one
+-- is ordinary cooldown semantics, not a charge spell. Clear an older tracked
+-- multi-charge snapshot only when at least one current identity returned a
+-- readable maximum and none of the equivalent identities remains multi-charge;
+-- opaque/nil reads retain the last confirmed tracker state.
+local function refreshEntryCharges(entry)
+    if not entry or not (C_Spell and type(C_Spell.GetSpellCharges) == "function") then return nil end
+
+    local sawReadableMaximum = false
+    local allIdentitiesReadable = #(entry.ids or {}) > 0
+    local selectedMaximum, selectedCurrent, selectedRecharge, selectedStart
+    for _, spellID in ipairs(entry.ids or {}) do
+        local ok, info = pcall(C_Spell.GetSpellCharges, spellID)
+        if ok and type(info) == "table" then
+            local maximum = number(info.maxCharges)
+            if maximum ~= nil then
+                sawReadableMaximum = true
+                if maximum > 1 then
+                    local current = number(info.currentCharges)
+                    if selectedMaximum == nil or (selectedCurrent == nil and current ~= nil) then
+                        selectedMaximum = maximum
+                        selectedCurrent = current
+                        selectedRecharge = positiveCooldownDuration(info.cooldownDuration)
+                        selectedStart = number(info.cooldownStartTime)
+                    end
+                end
+            else
+                allIdentitiesReadable = false
+            end
+        else
+            allIdentitiesReadable = false
+        end
+    end
+
+    if selectedMaximum then
+        entry.maxCharges = selectedMaximum
+        if selectedRecharge then entry.chargeDuration = selectedRecharge end
+        if selectedCurrent ~= nil then
+            local current = math.max(0, math.min(selectedMaximum, selectedCurrent))
+            local recharge = selectedRecharge or entry.chargeDuration or 0
+            Tracker.charges[entry.key] = {
+                current = current,
+                max = selectedMaximum,
+                duration = recharge,
+                endTime = selectedStart and recharge > 0 and selectedStart + recharge or 0,
+            }
+            return true
+        end
+
+        local tracked = Tracker.charges[entry.key]
+        if tracked and tracked.max ~= selectedMaximum then Tracker.charges[entry.key] = nil end
+        return true
+    end
+
+    if sawReadableMaximum and allIdentitiesReadable then
+        entry.maxCharges = nil
+        entry.chargeDuration = nil
+        Tracker.charges[entry.key] = nil
+        return false
+    end
+    return nil
+end
+
 local function cacheFromApi(entry)
     if inCombat() or not entry then return nil end
     local live = entryLiveCooldown(entry)
@@ -307,27 +373,7 @@ local function cacheFromApi(entry)
 
     -- Charge observations use the same canonical entry. A replacement spell and
     -- its base alias cannot therefore render different recharge timers.
-    if C_Spell and type(C_Spell.GetSpellCharges) == "function" then
-        for _, spellID in ipairs(entry.ids or {}) do
-            local ok, info = pcall(C_Spell.GetSpellCharges, spellID)
-            if ok and type(info) == "table" then
-                local maximum = number(info.maxCharges)
-                if maximum and maximum > 1 then
-                    local current = number(info.currentCharges) or maximum
-                    local recharge = positiveCooldownDuration(info.cooldownDuration) or entry.chargeDuration or 0
-                    local start = number(info.cooldownStartTime)
-                    entry.maxCharges, entry.chargeDuration = maximum, recharge
-                    Tracker.charges[entry.key] = {
-                        current = current,
-                        max = maximum,
-                        duration = recharge,
-                        endTime = start and recharge > 0 and start + recharge or 0,
-                    }
-                    break
-                end
-            end
-        end
-    end
+    refreshEntryCharges(entry)
     return live
 end
 
@@ -711,14 +757,13 @@ function Tracker:GetCharges(spellID, meta)
     }
 end
 
-function Tracker:ReconcileSpell(spellID)
-    spellID = number(spellID)
-    if not spellID then return end
-    local meta = eventMeta(spellID)
-    local key = self:ResolveIdentity(spellID, meta)
-    local entry = key and self.entries[key] or nil
-    local data = entry and self.cooldowns[key] or nil
+local function reconcileEntryCooldown(self, entry)
+    local data = entry and self.cooldowns[entry.key] or nil
     if not data then return end
+
+    -- A later readable runtime snapshot must replace a static/event fallback,
+    -- including when the first post-cast probes all occurred during the GCD.
+    if self:ConfirmEntry(entry) then return end
 
     -- Public activity flags can only clear a fallback when the spell is not on
     -- the GCD. `isOnGCD=true` is deliberately ignored because it also occurs in
@@ -727,10 +772,28 @@ function Tracker:ReconcileSpell(spellID)
         local active, onGCD = publicCooldownState(candidateID)
         if active == true then return end
         if active == false and onGCD ~= true then
-            self.cooldowns[key] = nil
+            self.cooldowns[entry.key] = nil
             return
         end
     end
+end
+
+function Tracker:ReconcileSpell(spellID)
+    spellID = number(spellID)
+    if not spellID then return end
+    local meta = eventMeta(spellID)
+    local key = self:ResolveIdentity(spellID, meta)
+    reconcileEntryCooldown(self, key and self.entries[key] or nil)
+end
+
+function Tracker:ReconcileAllCooldowns()
+    local keys = {}
+    for key in pairs(self.cooldowns) do keys[#keys + 1] = key end
+    for _, key in ipairs(keys) do reconcileEntryCooldown(self, self.entries[key]) end
+end
+
+function Tracker:ReconcileAllCharges()
+    for _, entry in pairs(self.entries) do refreshEntryCharges(entry) end
 end
 
 function Tracker:RefreshOutOfCombat()
@@ -785,8 +848,12 @@ watcher:SetScript("OnEvent", function(_, event, ...)
     if event == "UNIT_SPELLCAST_SUCCEEDED" then
         local unit, _, spellID = ...
         if unit == "player" then Tracker:RecordCast(spellID) end
-    elseif event == "SPELL_UPDATE_COOLDOWN" or event == "SPELL_UPDATE_CHARGES" then
-        Tracker:ReconcileSpell(select(1, ...))
+    elseif event == "SPELL_UPDATE_COOLDOWN" then
+        -- This is a global invalidation event on Retail and does not reliably
+        -- carry a SpellID. Reconcile only currently tracked cooldowns.
+        Tracker:ReconcileAllCooldowns()
+    elseif event == "SPELL_UPDATE_CHARGES" then
+        Tracker:ReconcileAllCharges()
     elseif event == "PLAYER_LOGIN" or event == "PLAYER_REGEN_ENABLED" then
         primeAndRefreshOutOfCombat()
     elseif event == "PLAYER_DEAD" or event == "PLAYER_ENTERING_WORLD" then

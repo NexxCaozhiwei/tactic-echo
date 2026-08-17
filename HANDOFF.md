@@ -1,30 +1,32 @@
-# 1.1.7 交接：HUD 容器可见性战斗保护收口
+# Tactic Echo 1.4.4 交接
 
-- 当前版本：`1.1.7`。
-- HUD 卡片 Button 在战斗中继续不调用 `SetAlpha`、`EnableMouse`、`Show` 或 `Hide`；可见性变化只记录状态，避免 `ADDON_ACTION_BLOCKED UNKNOWN()`。
-- `HudClickRouter` 的 secure proxy 和 blocker 在战斗中也不再调用 `SetAlpha`、`Show` 或 `Hide`；只记录 `tacticEchoCombatVisibilityPending` / `dirty`，脱战后再真实隐藏、显示或重建。
-- `TacticalBoard` 在战斗中不再对 `TacticEchoTacticalBoard` 或 defense 容器调用 `SetScale` / `SetAlpha`；`TacticalHudLayout` 的缩放、定位、尺寸和显示状态变化延迟到脱战后应用。
-- `TacticalBoard` 在战斗中也不再对 board/defense 容器或状态文本调用 `SetShown`、`Show`、`Hide`；只记录 `tacticEchoCombatShownPending`，脱战后再真实应用。
-- TEK 连发介入白名单主键继续不让步；非白名单真实键盘输入，包括 `Ctrl`、`Alt`、`Shift`、`Win` 修饰键，按下到抬起期间持续 `manual_input_held`，用于避免物理修饰键叠加自动派发主键。
-- 默认策略“自动启停”在未进战斗或脱战时显示为“待命”；底层 TEAP 仍是非派发 `paused`，进战自动恢复运行。
-- `ActionBarBindingResolver` 是 AutoBurst、P4 Reaction 常规路由、控制、防御、生存 HUD 的唯一常规宏资格入口；已确认的现有宏语义保持兼容，HUD 人工来源固定 `BindingToken=0`。
-- `action_info_*` 正文不可读形态只保留有真实 BindingToken 的 P4 target-only transport；不进入 HUD 或 AutoBurst。
-- 控制诊断仅显示与请求技能有关的当前宏失败。无关 `BUTTON3` / “坐骑”等宏不会污染胁迫、冰冻陷阱候选；同一有效 index 的当前文本命名技能时可保留同槽失败诊断。
-- 实机验收使用 `docs/P5.11_SHARED_MACRO_POLICY_TEST.md`，并继续回归自动打断硬暂停、脱战 AutoBurst 硬门控、HUD `manual_hold`、CD/转盘/标签/排序。
+## 当前状态
 
+- 当前唯一开发基线：`1.4.4`。
+- 当前产品范围：首页/设置中心、HUD 主键、官方主推荐输入链路，以及最多三个自动注入组。
+- 自动注入继续复用 AutoBurst OrderedPlan；运行时只有一个 Coordinator、一个活动组、一个 plan 和一个 pre-window capture。
+- 打断、控制、防御、生存、TargetCastPrompt、姓名板群控扫描、只读反应高亮、监控/调试页、MappingExport 与 OfficialApiProbe 均已退役，不得恢复加载或派发。
+- 版本化源码交付必须同时更新 `VERSION`、TOC、`Core/Bootstrap.lua`、`CHANGELOG.md` 和 `docs/baselines/BASELINE_<VERSION>.md`。
 
-# Tactic Echo Handoff — 1.0.53 P5.8
+## 1.4.4 变更重点
 
-## 当前硬边界
+1. `GetSpellBaseCooldown()` 的毫秒值固定在 API 边界转换为秒，运行时 `C_Spell`、动作条、Tooltip、充能 recharge 和 tracker 数值继续按秒处理。
+2. 转换后不超过 2.5 秒的基础时长不能启动 HUD 自身 CD 兜底，避免奥术弹幕的 500ms 公共时序显示成 500s。
+3. `SPELL_UPDATE_COOLDOWN` 作为全局失效事件重新校正所有活动 tracker 条目。
+4. 只有 `maxCharges > 1` 的真实多充能技能进入 IconState、HUD、Tooltip 和 AutoBurst 充能语义；普通技能不显示 `1/1`。
+5. HUD 数字继续只读取安全普通标量；Blizzard `DurationObject` 只绘制转盘并隐藏自身数字。
 
-- 自动打断设计暂停。不得只修改 UI 默认值；`Config/Normalize.lua` 和 `Tactics/AutoReaction.lua` 的硬暂停必须同时保留。旧 SavedVariables、完整读条证据与已识别绑定均不得恢复自动打断。
-- 不得提供测试、调试或 SavedVariables 的隐藏重新启用通道。自动打断只能返回 `auto_interrupt_suspended`，不会形成 reaction candidate、BindingToken、TEAP reaction 标记或 TEK 请求。
-- 自动爆发严格受战斗状态限制：任意 `inCombat=false` 帧必须在规则读取、capture 恢复、计划比较、计划创建和候选材料化之前清除残留 Burst plan/capture，并返回空结果。不得保留或恢复 `pre-combat bridge`、Burst candidate、Burst TEAP 帧或 TEK 请求；`Run`、`armed`、切图和进战事件均不能构成脱战例外。
-- HUD 点击只能经 `UI/HudClickRouter.lua` 的 `SecureActionButtonTemplate` 静态代理复用已有、当前可见的默认动作条按钮/已识别宏；不得改为 `Button:Click()`、新建绑定、宏改写、目标选择或直接 TEK 输入。
-- HUD proxy 必须同时接收 `LeftButtonDown` / `LeftButtonUp`，兼容 `ActionButtonUseKeyDown`；代理与 blocker 位于 HUD card 上方输入层。13/14 槽物品卡必须优先锚定对应装备槽位来源。
-- `Tactics/ManualActionPriority.lua` 仅记录真实 HUD/原生默认动作条左键的短暂人工占用；`SignalFrame` 必须以 `manual_hold`、动作码 0、BindingToken 0 覆盖可能已计算的派发候选。
-- 战斗内动作条页、宏、可见性或特殊动作条变化时，不可重定向 secure proxy；必须阻断直到脱战重建。
+## 不可回归边界
 
-## 实机验收
+- AutoBurst 不是第二条输入通道；候选必须经过已验证动作条来源、BindingToken、TEAP v3 和 TEK 全部门禁。
+- 任何 `inCombat=false` 帧都不能创建或保留 Burst plan/capture，也不能产生 Burst candidate。
+- HUD、Tooltip、转盘和诊断不得建立 Token、写 TEAP 或改变派发资格。
+- 计划步骤只接受精确成功事件、自身非 GCD CD 开始或真实多充能减少确认；泛 GCD、UNKNOWN、单个失败事件和图标灰度不能确认成功。
+- 战斗中不得直接重排或显隐受保护 HUD/secure 元素，只能记录 pending/dirty。
+- 玩家真实键盘或动作条输入优先于后续自动派发。
 
-以 `docs/P5.8_HUD_MANUAL_CLICK_AND_OOC_GATE_TEST.md` 为准：先验证任何脱战官方窗口都不会建立/派发 Burst；再分别在“按键按下即施放”开启、关闭时检查四类 HUD 手动卡、13/14 槽精确来源、无来源/战斗内失配阻断，以及 HUD/原生动作条人工点击的 `manual_hold` 优先级。CD/转盘/标签/排序不得回归。
+## 下一步
+
+按 [TASKS.md](TASKS.md) 完成 1.4.4 实机验收。任何实机失败都应先保存 AddOn 诊断、TEK Trace、角色/专精、注入组配置和大致时间点，再判断是展示、计划、BindingToken、协议还是 TEK 门禁问题。
+
+离线测试通过不能替代 Windows Hook、真实 SendInput、WoW 施法顺序和 HUD 实时数值验收。部署状态也不是文档中的永久事实；每次交付仍需核对 live TOC 与代表性文件哈希。
