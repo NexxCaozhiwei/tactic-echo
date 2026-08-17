@@ -6,14 +6,14 @@ local TE = _G.TacticEcho
 local TacticalHudModel = {}
 TE.TacticalHudModel = TacticalHudModel
 
-local MAX_BURST_CARDS = 9 -- window + up to six injections + two trinkets
+local MAX_BURST_CARDS = 27 -- up to three ordered groups, nine steps per group
 
 local NUMERIC_FIELDS = {
     "spellID", "matchedSpellID", "itemID", "itemCount", "itemSlot", "charges", "maxCharges",
     "cooldownRemaining", "cooldownDuration", "cooldownStart",
     "gcdRemaining", "gcdDuration", "gcdStart",
     "chargeCooldownRemaining", "chargeCooldownDuration", "chargeCooldownStart", "castingSpellID", "castingStartTimeMS", "castingEndTimeMS", "defensivePriority",
-    "actionSlot", "slot", "inventorySlot", "bindingSourceIndex", "bindingToken", "displayBindingToken", "dispatchBindingToken", "burstOrder", "channelingSpellID", "empoweringSpellID",
+    "actionSlot", "slot", "inventorySlot", "bindingSourceIndex", "bindingToken", "displayBindingToken", "dispatchBindingToken", "burstOrder", "autoInjectionGroupOrder", "channelingSpellID", "empoweringSpellID",
     "reactionQualifyingCount", "reactionAoeThreshold",
 }
 
@@ -219,6 +219,8 @@ local function signature(item)
     return table.concat({
         plainText(item.spellID, "?"),
         plainText(item.itemID, "-"),
+        plainText(item.autoInjectionGroupId, "-"),
+        plainText(item.burstOrder, "-"),
         plainText(visual.visualState, "unknown"),
         plainText(item.hidden == true and "1" or "0", "0"),
         plainText(item.usableState, "unknown"),

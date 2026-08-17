@@ -171,11 +171,18 @@ local function layoutQueue(nodes, hud)
                 else cursorY = cursorY - gap end
             end
         end
-        return height
+        return height, width, count
     end
 
-    local burstLane = {}
+    local burstGroups, burstGroupById = {}, {}
     for _, card in ipairs(nodes.tactical and nodes.tactical.burst or {}) do
+        local groupId = card and card.item and card.item.autoInjectionGroupId or "__legacy"
+        local burstLane = burstGroupById[groupId]
+        if not burstLane then
+            burstLane = {}
+            burstGroupById[groupId] = burstLane
+            burstGroups[#burstGroups + 1] = burstLane
+        end
         burstLane[#burstLane + 1] = { card = card, key = "burst" }
     end
     local interruptControlLane = {
@@ -185,7 +192,28 @@ local function layoutQueue(nodes, hud)
     }
 
     local laneY = base.maxY + 10
-    local burstHeight = appendLane(burstLane, base.minX, laneY, hud.burstGrowth or "RIGHT")
+    local burstDirection = hud.burstGrowth or "RIGHT"
+    local burstDX = select(1, directionVector(burstDirection))
+    local burstHeight = 0
+    if burstDX ~= 0 then
+        local groupY = laneY
+        for _, burstLane in ipairs(burstGroups) do
+            local height = appendLane(burstLane, base.minX, groupY, burstDirection)
+            if height > 0 then
+                burstHeight = burstHeight + height + (burstHeight > 0 and 10 or 0)
+                groupY = laneY + burstHeight + 10
+            end
+        end
+    else
+        local groupX = base.minX
+        for _, burstLane in ipairs(burstGroups) do
+            local height, width, count = appendLane(burstLane, groupX, laneY, burstDirection)
+            if count > 0 then
+                burstHeight = math.max(burstHeight, height)
+                groupX = groupX + width + 10
+            end
+        end
+    end
     if burstHeight > 0 then laneY = laneY + burstHeight + 10 end
     appendLane(interruptControlLane, base.minX, laneY, hud.tacticalGrowth or "RIGHT")
     return placements
@@ -273,22 +301,18 @@ end
 
 local function layoutFingerprint(nodes, hud)
     local function shownMarker(card) return cardShown(card) and "1" or "0" end
-    return table.concat({
+    local parts = {
         tostring(hud.layoutPreset or "queue_horizontal"), tostring(hud.primaryGrowth or "RIGHT"), tostring(hud.burstGrowth or "RIGHT"),
         tostring(clamp(hud.gap, 2, 24)), tostring(moduleSize(hud, "main", hud.primarySize, 44, 120)),
         tostring(moduleSize(hud, "burst", hud.tacticalSize, 28, 88)),
         tostring(clamp(hud.scale, 0.60, 2.00)), tostring(clamp(hud.backdropAlpha, 0, 1)),
         tostring(hud.locked == true), tostring(hud.showDragHandle ~= false), shownMarker(nodes.primary),
-        shownMarker(nodes.tactical and nodes.tactical.burst and nodes.tactical.burst[1]),
-        shownMarker(nodes.tactical and nodes.tactical.burst and nodes.tactical.burst[2]),
-        shownMarker(nodes.tactical and nodes.tactical.burst and nodes.tactical.burst[3]),
-        shownMarker(nodes.tactical and nodes.tactical.burst and nodes.tactical.burst[4]),
-        shownMarker(nodes.tactical and nodes.tactical.burst and nodes.tactical.burst[5]),
-        shownMarker(nodes.tactical and nodes.tactical.burst and nodes.tactical.burst[6]),
-        shownMarker(nodes.tactical and nodes.tactical.burst and nodes.tactical.burst[7]),
-        shownMarker(nodes.tactical and nodes.tactical.burst and nodes.tactical.burst[8]),
-        shownMarker(nodes.tactical and nodes.tactical.burst and nodes.tactical.burst[9]),
-    }, "|")
+    }
+    for _, card in ipairs(nodes.tactical and nodes.tactical.burst or {}) do
+        local groupId = card and card.item and card.item.autoInjectionGroupId or "-"
+        parts[#parts + 1] = shownMarker(card) .. ":" .. tostring(groupId)
+    end
+    return table.concat(parts, "|")
 end
 
 function TacticalHudLayout:Apply(board, defenseFrame, nodes, hud)

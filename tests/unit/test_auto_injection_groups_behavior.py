@@ -374,7 +374,8 @@ def test_ui_and_hud_capacity_share_the_nine_step_contract() -> None:
     auto = (ADDON / "Tactics" / "AutoBurst.lua").read_text(encoding="utf-8")
     groups = (ADDON / "Tactics" / "AutoInjectionGroups.lua").read_text(encoding="utf-8")
     assert "for rowIndex = 1, 9 do" in control
-    assert "local HUD_SEQUENCE_MAX_CARDS = 9" in auto
+    assert "local HUD_GROUP_MAX_CARDS = 9" in auto
+    assert "local HUD_TOTAL_MAX_CARDS = 27" in auto
     assert "MAX_SEQUENCE_STEPS = 9" in groups
     assert "for rowIndex = 1, 6 do" not in control
 
@@ -384,7 +385,7 @@ def test_ui_guides_disabled_group_configuration_before_enablement() -> None:
     for marker in (
         "当前组保持关闭，可继续编辑",
         "请先填写并应用窗口 SpellID",
-        "当前组配置完整；确认顺序后可勾选“启用当前组”",
+        "当前组配置完整；可在这里启用，或继续调整下方设置",
         "窗口技能不能再次作为本组注入技能",
         "GetGroupReadiness",
     ):
@@ -400,7 +401,7 @@ def test_window_spellid_editor_is_explicit_and_not_overwritten_by_periodic_refre
         "保存窗口技能",
         "第二步：添加注入技能",
         "第三步：调整当前组顺序（最多九步）",
-        "第四步：启用当前组",
+        "当前组启用状态",
         "local identityContainer, identityGroupId",
         "if value == identityContainer and currentGroupId == identityGroupId then return end",
         'windowBox:SetScript("OnEnterPressed"',
@@ -408,6 +409,32 @@ def test_window_spellid_editor_is_explicit_and_not_overwritten_by_periodic_refre
         assert marker in control
     identity_refresh = control.split("local function refreshIdentityBoxes()", 1)[1].split("registerControl(refreshIdentityBoxes)", 1)[0]
     assert identity_refresh.index("if value == identityContainer and currentGroupId == identityGroupId then return end") < identity_refresh.index("windowBox:SetText")
+
+
+def test_hud_projects_all_enabled_groups_in_persisted_order() -> None:
+    auto = (ADDON / "Tactics" / "AutoBurst.lua").read_text(encoding="utf-8")
+    model = (ADDON / "UI" / "TacticalHudModel.lua").read_text(encoding="utf-8")
+    board = (ADDON / "UI" / "TacticalBoard.lua").read_text(encoding="utf-8")
+    layout = (ADDON / "UI" / "TacticalHudLayout.lua").read_text(encoding="utf-8")
+    for marker in (
+        "for groupOrder, groupId in ipairs(container.order or {})",
+        'group.enabled == true',
+        "item.autoInjectionGroupOrder = groupOrder",
+        'out.recommendationState = out.active and "auto_injection_group_sequences"',
+    ):
+        assert marker in auto
+    assert "MAX_BURST_CARDS = 27" in model
+    assert "MAX_BURST_CARDS = 27" in board
+    assert "local burstGroups, burstGroupById = {}, {}" in layout
+    assert "card.item.autoInjectionGroupId" in layout
+
+
+def test_auto_injection_enablement_precedes_basic_settings_and_scroll_height_follows_rows() -> None:
+    control = (ADDON / "UI" / "ControlPanel.lua").read_text(encoding="utf-8")
+    assert control.index('createSection(pane, "当前组启用状态"') < control.index('createSection(pane, "当前组基本设置"')
+    assert "local visibleRows = math.max(1, math.min(#entries, 9))" in control
+    assert "sequenceFooter:SetPoint" in control
+    assert "pane:SetHeight(math.max(620, -footerY + 64))" in control
 
 
 def test_hud_first_materialized_card_commits_immediately() -> None:

@@ -1,12 +1,12 @@
 # Tactic Echo 战术回响
 
-当前版本：`1.4.2`
+当前版本：`1.4.3`
 
 Tactic Echo 是一套 World of Warcraft Retail 辅助项目：游戏内 AddOn 只读观察官方主推荐和玩家既有动作条，Windows 端 TEK 通过 TEAP 协议在安全门控下执行单次按键派发。当前产品范围已经大幅收窄，只保留：首页/设置中心、HUD 主键、官方主推荐输入链路，以及内部复用 AutoBurst OrderedPlan 的“自动注入”设置页/运行链路。
 
 ## 当前范围
 
-- HUD 只展示主键与当前自动注入组队列；候选历史、打断、控制、位移、防御、生存卡片保持隐藏或空输出。
+- HUD 只展示主键与全部已启用自动注入组队列；各组按保存顺序分别排列，组内保持用户设置的步骤顺序。候选历史、打断、控制、位移、防御、生存卡片保持隐藏或空输出。
 - 打断、控制、防御、生存、TargetCastPrompt、姓名板群控扫描、只读反应高亮、监控/调试页面、MappingExport、OfficialApiProbe 均为退役功能，不应加载、轮询、显示或通过设置页重新启用。
 - 自动打断、自动控制等反应自动化暂停开发并暂停使用；后续若恢复，必须先重新审计安全边界和性能成本。
 - 自动注入允许每个专精配置最多三个组，但始终共享唯一 AutoBurst plan/capture；只要 `inCombat=false`，不得创建/保留 plan/capture，不得生成 Burst candidate、TEAP Burst 帧或 TEK 请求。

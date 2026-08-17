@@ -17,7 +17,7 @@ local board
 local defenseFrame
 local nodes = {}
 local slotStates = {}
-local MAX_BURST_CARDS = 9
+local MAX_BURST_CARDS = 27
 
 local function perfCount(name, amount)
     local perf = TE.PerformanceDiagnostics

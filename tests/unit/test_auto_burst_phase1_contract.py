@@ -404,8 +404,8 @@ def test_ordered_sequence_supports_window_six_injections_and_two_trinkets_per_sp
     assert "sequence_preflight_no_eligible" in auto
     assert "当前组顺序（最多九步）" in ui
     assert "新增注入 SpellID" in ui
-    assert "MAX_BURST_CARDS = 9" in model
-    assert "MAX_BURST_CARDS = 9" in board
-    assert "nodes.tactical.burst[9]" in layout
+    assert "MAX_BURST_CARDS = 27" in model
+    assert "MAX_BURST_CARDS = 27" in board
+    assert "for _, card in ipairs(nodes.tactical and nodes.tactical.burst or {})" in layout
     assert "Phase 1.5 测试规则" not in ui
     assert "官方窗口 SpellID" not in ui

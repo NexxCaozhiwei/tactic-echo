@@ -4186,9 +4186,11 @@ local function hudMarkRole(item, role, state, sourceOrder)
     return item
 end
 
--- Keep the HUD projection aligned with the persisted sequence contract:
--- one window, up to six injections, and two equipped trinkets.
-local HUD_SEQUENCE_MAX_CARDS = 9
+-- Each configured group keeps the nine-step sequence contract. The HUD is a
+-- read-only projection of all enabled groups, in persisted group order, so it
+-- owns enough display slots for all three groups without changing dispatch.
+local HUD_GROUP_MAX_CARDS = 9
+local HUD_TOTAL_MAX_CARDS = 27
 
 local function hudUnboundSequenceSpell(snapshot, spellID, role, reason)
     local runtime = TE.RuntimeSnapshot
@@ -4230,60 +4232,77 @@ local function hudUnboundSequenceItem(slot, reason)
     }
 end
 
-local function hudConfiguredSequence(snapshot, context, state, preferredGroupId)
-    local group, container
-    if TE.AutoInjectionGroups then
-        group, container = TE.AutoInjectionGroups:GetDisplayGroup(context, preferredGroupId)
-    end
-    if type(group) ~= "table" then return {}, nil, { "自动注入组不可用" }, nil end
+local function hudConfiguredGroups(snapshot, context, activeGroupId)
+    local container
+    if TE.AutoInjectionGroups then container = select(1, TE.AutoInjectionGroups:Get(context)) end
+    if type(container) ~= "table" then return {}, nil, { "自动注入组不可用" }, {} end
 
-    local items, diagnostics = {}, {}
+    local items, diagnostics, displayedGroups = {}, {}, {}
     local runtime = TE.RuntimeSnapshot
-    for _, entry in ipairs(group.sequence and group.sequence.entries or {}) do
-        if entry.enabled == true and #items < HUD_SEQUENCE_MAX_CARDS then
-            local item, itemReason
-            if entry.category == "trinket" then
-                local slot = hudNumber(entry.inventorySlot)
-                local itemID
-                if slot and runtime and type(runtime.GetInventoryItemID) == "function"
-                    and type(snapshot) == "table" and snapshot.snapshotUnavailable ~= true then
-                    itemID, itemReason = runtime:GetInventoryItemID(snapshot, slot)
-                end
-                if itemID then
-                    item, itemReason = hudItemCandidate(snapshot, itemID, "trinket", "饰品 " .. tostring(slot), {
-                        inventorySlot = slot,
-                    })
-                end
-                if not item then item = hudUnboundSequenceItem(slot, itemReason) end
-            else
-                local spellID = entry.category == "window" and hudNumber(group.windowSpellID) or hudNumber(entry.spellID)
-                if spellID then
-                    if runtime and type(snapshot) == "table" and snapshot.snapshotUnavailable ~= true then
-                        item, itemReason = hudSpellCandidate(snapshot, spellID,
-                            entry.category == "window" and "offensiveCooldowns" or "rotationSpells",
-                            entry.category == "window" and "自动注入窗口" or "自动注入技能", {
-                                requiresHostileTarget = false,
-                                gcdSnapshot = snapshot.gcdSnapshot,
-                                castSnapshot = snapshot.castSnapshot,
+    for groupOrder, groupId in ipairs(container.order or {}) do
+        local group = container.groups and container.groups[groupId] or nil
+        if type(group) == "table" and group.enabled == true and #items < HUD_TOTAL_MAX_CARDS then
+            displayedGroups[#displayedGroups + 1] = {
+                groupId = group.groupId,
+                groupName = group.name,
+                groupOrder = groupOrder,
+                windowSpellID = group.windowSpellID,
+            }
+            local groupItemCount = 0
+            local groupState = {
+                state = activeGroupId and tostring(activeGroupId) == tostring(group.groupId) and "ACTIVE" or "READY",
+            }
+            for _, entry in ipairs(group.sequence and group.sequence.entries or {}) do
+                if entry.enabled == true and groupItemCount < HUD_GROUP_MAX_CARDS
+                    and #items < HUD_TOTAL_MAX_CARDS then
+                    local item, itemReason
+                    if entry.category == "trinket" then
+                        local slot = hudNumber(entry.inventorySlot)
+                        local itemID
+                        if slot and runtime and type(runtime.GetInventoryItemID) == "function"
+                            and type(snapshot) == "table" and snapshot.snapshotUnavailable ~= true then
+                            itemID, itemReason = runtime:GetInventoryItemID(snapshot, slot)
+                        end
+                        if itemID then
+                            item, itemReason = hudItemCandidate(snapshot, itemID, "trinket", "饰品 " .. tostring(slot), {
+                                inventorySlot = slot,
                             })
+                        end
+                        if not item then item = hudUnboundSequenceItem(slot, itemReason) end
+                    else
+                        local spellID = entry.category == "window" and hudNumber(group.windowSpellID) or hudNumber(entry.spellID)
+                        if spellID then
+                            if runtime and type(snapshot) == "table" and snapshot.snapshotUnavailable ~= true then
+                                item, itemReason = hudSpellCandidate(snapshot, spellID,
+                                    entry.category == "window" and "offensiveCooldowns" or "rotationSpells",
+                                    entry.category == "window" and "自动注入窗口" or "自动注入技能", {
+                                        requiresHostileTarget = false,
+                                        gcdSnapshot = snapshot.gcdSnapshot,
+                                        castSnapshot = snapshot.castSnapshot,
+                                    })
+                            end
+                            if not item then item = hudUnboundSequenceSpell(snapshot, spellID, entry.category, itemReason) end
+                        end
                     end
-                    if not item then item = hudUnboundSequenceSpell(snapshot, spellID, entry.category, itemReason) end
+                    if item then
+                        groupItemCount = groupItemCount + 1
+                        item.autoInjectionGroupId = group.groupId
+                        item.autoInjectionGroupName = group.name
+                        item.autoInjectionGroupOrder = groupOrder
+                        item.burstStepKey = entry.key
+                        item.burstSequenceConfigured = true
+                        item.burstSequenceEnabled = true
+                        hudMarkRole(item, entry.category == "window" and "window" or entry.category,
+                            groupState, groupItemCount)
+                        items[#items + 1] = item
+                    elseif itemReason then
+                        diagnostics[#diagnostics + 1] = tostring(group.groupId) .. ":" .. tostring(itemReason)
+                    end
                 end
-            end
-            if item then
-                item.autoInjectionGroupId = group.groupId
-                item.autoInjectionGroupName = group.name
-                item.burstStepKey = entry.key
-                item.burstSequenceConfigured = true
-                item.burstSequenceEnabled = true
-                hudMarkRole(item, entry.category == "window" and "window" or entry.category, state, #items + 1)
-                items[#items + 1] = item
-            elseif itemReason then
-                diagnostics[#diagnostics + 1] = tostring(itemReason)
             end
         end
     end
-    return items, container and container.profileKey, diagnostics, group
+    return items, container.profileKey, diagnostics, displayedGroups
 end
 
 function AutoBurst:BuildHudSnapshot(primary, context, settings, runtimeSnapshot)
@@ -4317,33 +4336,27 @@ function AutoBurst:BuildHudSnapshot(primary, context, settings, runtimeSnapshot)
         out.state, out.stateLabel, out.notice = "SUPPRESSED", "已抑制", profileReason or "当前专精暂无爆发辅助配置"
         return out
     end
-    -- The current HUD is a direct, read-only projection of the configured
-    -- AutoBurst sequence. Legacy window-assistant policies, candidate sources,
+    -- The current HUD is a direct, read-only projection of every enabled
+    -- configured group. Legacy window-assistant policies, candidate sources,
     -- compact mode and debug settings no longer decide which cards are shown.
     local autoInjectionEnabled = settings.autoInjectionEnabled
     if autoInjectionEnabled == nil then autoInjectionEnabled = settings.autoBurstEnabled end
     if autoInjectionEnabled ~= true then
-        out.state, out.stateLabel, out.notice = "SUPPRESSED", "自动注入关闭", "开启自动注入后显示当前技能组顺序"
+        out.state, out.stateLabel, out.notice = "SUPPRESSED", "自动注入关闭", "开启自动注入后按组顺序显示全部已启用组"
         return out
     end
-    local sequenceState = { state = stateSnapshot and stateSnapshot.active == true and "ACTIVE" or "READY" }
     local coordinator = TE.AutoInjectionCoordinator
     local coordinatorSnapshot = coordinator and coordinator:GetSnapshot(context) or {}
-    local preferredGroupId = stateSnapshot and stateSnapshot.activeGroupId
-        or coordinatorSnapshot.activeGroupId or coordinatorSnapshot.matchedGroupId
-        or coordinatorSnapshot.displayGroupId
-    local group
-    out.items, out.profileKey, out.diagnostics, group = hudConfiguredSequence(
-        runtimeSnapshot, context, sequenceState, preferredGroupId)
-    out.activeGroupId = stateSnapshot and stateSnapshot.activeGroupId or coordinatorSnapshot.activeGroupId
+    local activeGroupId = stateSnapshot and stateSnapshot.activeGroupId or coordinatorSnapshot.activeGroupId
+    out.items, out.profileKey, out.diagnostics, out.displayedGroups = hudConfiguredGroups(
+        runtimeSnapshot, context, activeGroupId)
+    out.activeGroupId = activeGroupId
     out.matchedGroupId = coordinatorSnapshot.matchedGroupId
-    out.displayGroupId = group and group.groupId or nil
-    out.displayGroupName = group and group.name or nil
-    out.groupWindowSpellID = group and group.windowSpellID or nil
+    out.displayGroupCount = #out.displayedGroups
     out.active = #out.items > 0
-    out.recommendationState = out.active and "auto_injection_group_sequence" or "sequence_unavailable"
-    out.notice = out.active and ((group and group.name or "自动注入组") .. "顺序")
-        or "当前专精没有可显示的自动注入步骤"
+    out.recommendationState = out.active and "auto_injection_group_sequences" or "sequence_unavailable"
+    out.notice = out.active and ("已按组顺序显示 " .. tostring(out.displayGroupCount) .. " 个自动注入组")
+        or "当前专精没有已启用且可显示的自动注入组"
     return out
 end
 

@@ -12,21 +12,24 @@ def test_burst_queue_has_fixed_window_slot_and_followup_roles() -> None:
     auto = read("Tactics/AutoBurst.lua")
     model = read("UI/TacticalHudModel.lua")
     board = read("UI/TacticalBoard.lua")
-    assert "HUD_SEQUENCE_MAX_CARDS = 9" in auto
+    assert "HUD_GROUP_MAX_CARDS = 9" in auto
+    assert "HUD_TOTAL_MAX_CARDS = 27" in auto
     assert 'entry.category == "window"' in auto
     assert 'entry.category == "trinket"' in auto
     assert 'role == "window"' in auto
-    assert "MAX_BURST_CARDS = 9" in model
+    assert "MAX_BURST_CARDS = 27" in model
     assert "burst = buildFixedItems" in model
     assert "for index = 1, MAX_BURST_CARDS" in board
 
 
 def test_hud_sequence_uses_the_same_persisted_order_as_autoburst() -> None:
     auto = read("Tactics/AutoBurst.lua")
-    assert "hudConfiguredSequence" in auto
-    assert "TE.BurstProfiles:GetAutoBurstSequence(context)" in auto
-    assert "for _, entry in ipairs(sequence.entries or {})" in auto
+    assert "hudConfiguredGroups" in auto
+    assert "for groupOrder, groupId in ipairs(container.order or {})" in auto
+    assert "for _, entry in ipairs(group.sequence and group.sequence.entries or {})" in auto
     assert "entry.enabled == true" in auto
+    assert "group.enabled == true" in auto
+    assert "item.autoInjectionGroupOrder = groupOrder" in auto
     assert "burstDisplayMode" not in auto
 
 

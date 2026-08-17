@@ -65,7 +65,7 @@ class TacticalHudRedesignContractTests(unittest.TestCase):
         model = (ADDON / "UI" / "TacticalHudModel.lua").read_text(encoding="utf-8")
         board = (ADDON / "UI" / "TacticalBoard.lua").read_text(encoding="utf-8")
         animator = (ADDON / "UI" / "TacticalHudAnimator.lua").read_text(encoding="utf-8")
-        self.assertIn("MAX_BURST_CARDS = 9", model)
+        self.assertIn("MAX_BURST_CARDS = 27", model)
         self.assertIn("candidates = {}", model)
         self.assertIn("defense = {}", model)
         self.assertIn("ShouldCommit", board)

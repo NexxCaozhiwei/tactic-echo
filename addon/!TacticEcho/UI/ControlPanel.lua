@@ -1308,6 +1308,36 @@ local function buildAutoInjectionSettings(pane)
     refreshGroupButtons()
     y = y - 48
 
+    y = createSection(pane, "当前组启用状态", y)
+    local readinessText = createText(pane, "GameFontHighlightSmall", 14, y, 700, "")
+    local function refreshReadiness()
+        local group = selected()
+        if not group then
+            readinessText:SetText("请先新建或选择技能组。")
+            return
+        end
+        local ready, reason = groups:GetGroupReadiness(context(), group.groupId)
+        if ready then
+            readinessText:SetText(group.enabled == true and "当前组已启用并参与窗口匹配。"
+                or "当前组配置完整；可在这里启用，或继续调整下方设置。")
+        else
+            readinessText:SetText("当前组保持关闭，可继续编辑。待完成："
+                .. tostring(AUTO_INJECTION_REASON_LABELS[reason] or reason or "配置尚未完成"))
+        end
+    end
+    registerControl(refreshReadiness)
+    refreshReadiness()
+    y = y - 40
+    createCheckbox(pane, "启用当前组", 14, y, function()
+        local group = selected(); return group and group.enabled == true or false
+    end, function(value)
+        local group = selected()
+        if not group then return end
+        local ok, reason = groups:SetGroupEnabled(context(), group.groupId, value)
+        report(ok, reason)
+    end, "设置完整后即可启用；启用时会检查全部组的窗口与注入冲突。")
+    y = y - 44
+
     y = createSection(pane, "当前组基本设置", y)
     createChoice(pane, "执行模式", 14, y, 210, {
         { value = "simple", label = "简易：跳过确认失效步骤" },
@@ -1389,6 +1419,7 @@ local function buildAutoInjectionSettings(pane)
 
     local rows = {}
     local refreshRows
+    local sequenceRowsTop = y
     local function entryLabel(entry)
         if entry.category == "window" then return "窗口：" .. sequenceSpellLabel(entry.spellID) .. "（固定）" end
         if entry.category == "trinket" then return "饰品 " .. tostring(entry.inventorySlot) end
@@ -1421,6 +1452,8 @@ local function buildAutoInjectionSettings(pane)
         rows[rowIndex] = row
         y = y - 32
     end
+    local sequenceFooter = CreateFrame("Frame", nil, pane)
+    sequenceFooter:SetSize(CONTENT_PANE_WIDTH, 40)
     refreshRows = function()
         local group = selected()
         local entries = group and group.sequence and group.sequence.entries or {}
@@ -1440,10 +1473,12 @@ local function buildAutoInjectionSettings(pane)
                 row.toggle.text:SetText(entry.enabled == true and "停用" or "启用")
             end
         end
+        local visibleRows = math.max(1, math.min(#entries, 9))
+        local footerY = sequenceRowsTop - visibleRows * 32 - 8
+        sequenceFooter:ClearAllPoints()
+        sequenceFooter:SetPoint("TOPLEFT", pane, "TOPLEFT", 0, footerY)
+        pane:SetHeight(math.max(620, -footerY + 64))
     end
-    registerControl(refreshRows)
-    refreshRows()
-    y = y - 8
 
     local function trinketEntry(key)
         local group = selected()
@@ -1451,46 +1486,18 @@ local function buildAutoInjectionSettings(pane)
             if entry.key == key then return entry end
         end
     end
-    createCheckbox(pane, "饰品 13 已确认脱 GCD", 14, y, function()
+    createCheckbox(sequenceFooter, "饰品 13 已确认脱 GCD", 14, 0, function()
         local entry = trinketEntry("trinket:13"); return entry and entry.offGCDExplicit == true or false
     end, function(value)
         local group = selected(); if group then groups:SetTrinketOffGCD(context(), group.groupId, "trinket:13", value) end
     end, "只在实测确认该饰品不触发公共冷却时勾选。")
-    createCheckbox(pane, "饰品 14 已确认脱 GCD", RIGHT_X, y, function()
+    createCheckbox(sequenceFooter, "饰品 14 已确认脱 GCD", RIGHT_X, 0, function()
         local entry = trinketEntry("trinket:14"); return entry and entry.offGCDExplicit == true or false
     end, function(value)
         local group = selected(); if group then groups:SetTrinketOffGCD(context(), group.groupId, "trinket:14", value) end
     end, "只在实测确认该饰品不触发公共冷却时勾选。")
-    y = y - 54
-
-    y = createSection(pane, "第四步：启用当前组", y)
-    local readinessText = createText(pane, "GameFontHighlightSmall", 14, y, 700, "")
-    local function refreshReadiness()
-        local group = selected()
-        if not group then
-            readinessText:SetText("请先新建或选择技能组。")
-            return
-        end
-        local ready, reason = groups:GetGroupReadiness(context(), group.groupId)
-        if ready then
-            readinessText:SetText(group.enabled == true and "当前组已启用并可参与窗口匹配。"
-                or "当前组配置完整；确认顺序后可勾选“启用当前组”。")
-        else
-            readinessText:SetText("当前组保持关闭，可继续编辑。待完成："
-                .. tostring(AUTO_INJECTION_REASON_LABELS[reason] or reason or "配置尚未完成"))
-        end
-    end
-    registerControl(refreshReadiness)
-    refreshReadiness()
-    y = y - 40
-    createCheckbox(pane, "启用当前组", 14, y, function()
-        local group = selected(); return group and group.enabled == true or false
-    end, function(value)
-        local group = selected()
-        if not group then return end
-        local ok, reason = groups:SetGroupEnabled(context(), group.groupId, value)
-        report(ok, reason)
-    end, "请先设置窗口 SpellID、加入至少一个可选步骤并完成排序；启用时会检查全部组冲突。")
+    registerControl(refreshRows)
+    refreshRows()
 end
 
 local function buildBurst(pane)

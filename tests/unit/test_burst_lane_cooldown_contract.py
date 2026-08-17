@@ -10,9 +10,10 @@ def test_burst_and_interrupt_control_are_separate_layout_lanes() -> None:
     layout = read("UI/TacticalHudLayout.lua")
     panel = read("UI/ControlPanel.lua")
     assert "Burst and interrupt/control are separate HUD modules" in layout
-    assert "local burstLane = {}" in layout
+    assert "local burstGroups, burstGroupById = {}, {}" in layout
     assert "local interruptControlLane = {" in layout
-    assert 'appendLane(burstLane, base.minX, laneY, hud.burstGrowth or "RIGHT")' in layout
+    assert "for _, burstLane in ipairs(burstGroups) do" in layout
+    assert "appendLane(burstLane, base.minX, groupY, burstDirection)" in layout
     assert 'appendLane(interruptControlLane, base.minX, laneY, hud.tacticalGrowth or "RIGHT")' in layout
     assert '"爆发方向"' in panel
     assert '"打断控制方向"' not in panel

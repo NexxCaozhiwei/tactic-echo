@@ -51,7 +51,8 @@ def test_hud_uses_one_authoritative_content_selector() -> None:
 
 def test_hud_burst_lane_projects_saved_sequence_in_order() -> None:
     burst = read("Tactics/AutoBurst.lua")
-    assert "HUD_SEQUENCE_MAX_CARDS = 9" in burst
+    assert "HUD_GROUP_MAX_CARDS = 9" in burst
+    assert "HUD_TOTAL_MAX_CARDS = 27" in burst
     assert "GetAutoBurstSequence(context)" in burst
     assert "for _, entry in ipairs(sequence.entries or {})" in burst
     assert "entry.enabled == true" in burst
