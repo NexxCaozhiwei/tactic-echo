@@ -57,9 +57,11 @@ def test_configuration_table_default_injection_seeds_are_exact() -> None:
 
 def test_configuration_table_mapping_remains_specialization_sequence_only() -> None:
     auto_burst = (ROOT / "addon" / "!TacticEcho" / "Tactics" / "AutoBurst.lua").read_text(encoding="utf-8")
+    groups = (ROOT / "addon" / "!TacticEcho" / "Tactics" / "AutoInjectionGroups.lua").read_text(encoding="utf-8")
     profiles = (ROOT / "addon" / "!TacticEcho" / "Tactics" / "BurstProfiles.lua").read_text(encoding="utf-8")
     assert "GetAutoBurstSequence" in auto_burst
-    assert 'source = "profile_sequence"' in auto_burst
+    assert 'source = "auto_injection_group"' in groups
+    assert "profileKey" in groups
     assert "autoBurstUseProfileFallback" not in auto_burst
     assert "autoBurstWindowSpellID" not in auto_burst
     assert "AUTO_BURST_MAX_INJECTIONS = 6" in profiles

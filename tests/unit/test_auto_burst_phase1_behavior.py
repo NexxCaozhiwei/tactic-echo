@@ -53,6 +53,7 @@ local TE = _G.TacticEcho
 function TE:RegisterEventsSafe(frame, events) frame.events = events end
 settings = {
     autoBurstEnabled = true,
+    autoInjectionEnabled = true,
     autoBurstMode = "simple",
     autoBurstDebug = false,
     burstProfiles = {},
@@ -242,6 +243,8 @@ function TE.GCDGate:BeginCycle(primary) return { phase = gcdPhase } end
 function TE.GCDGate:Classify(cycle) return gcdPhase, "test_" .. tostring(gcdPhase) end
 
 dofile(ROOT .. "/addon/!TacticEcho/Tactics/BurstProfiles.lua")
+dofile(ROOT .. "/addon/!TacticEcho/Tactics/AutoInjectionGroups.lua")
+dofile(ROOT .. "/addon/!TacticEcho/Tactics/AutoInjectionCoordinator.lua")
 dofile(ROOT .. "/addon/!TacticEcho/Tactics/AutoBurst.lua")
 local AutoBurst = TE.AutoBurst
 testContext = { class = "PALADIN", specIndex = 3 }
@@ -297,6 +300,80 @@ local done = eval()
 assert(done.kind == "hold", "completed plan should hold until official leaves window")
 local snap = AutoBurst:GetSnapshot()
 assert(snap.active == false and snap.requireWindowDeparture == true, "completed plan must keep departure lock")
+""")
+
+
+def test_multi_group_coordinator_keeps_one_plan_and_requires_a_new_missed_window_edge() -> None:
+    run_lua(AUTO_BURST_HARNESS + r"""
+local first = eval()
+assert(first.kind == "candidate" and first.dispatchSpellID == 31884)
+local Groups = TE.AutoInjectionGroups
+local ok, second = Groups:AddGroup(testContext)
+assert(ok)
+assert(Groups:SetGroupWindow(testContext, second, 400))
+assert(Groups:AddInjection(testContext, second, 401))
+assert(Groups:MoveStep(testContext, second, "injection:401", -1))
+assert(Groups:SetGroupEnabled(testContext, second, true))
+bindings[400], bindings[401] = "ready", "ready"
+bindingTokens[400], bindingTokens[401] = 7, 8
+cooldowns[400], cooldowns[401] = "ready", "ready"
+
+officialSpellID = 400
+local stillFirst = eval()
+assert(stillFirst.kind == "candidate" and stillFirst.dispatchSpellID == 31884,
+    "another group window must not preempt the current group")
+AutoBurst:RecordSpellcastSucceeded(31884)
+local firstWindow = eval()
+assert(firstWindow.kind == "candidate" and firstWindow.dispatchSpellID == 343527,
+    "the active group must retain its ordered window step")
+AutoBurst:RecordSpellcastSucceeded(343527)
+local completed = eval()
+assert(completed.dispatchSpellID ~= 401, "a window observed while busy must not chain immediately")
+assert(eval().kind == "none", "the missed group window must not replay while still visible")
+officialSpellID = 999
+assert(eval().kind == "none")
+officialSpellID = 400
+local secondStart = eval()
+assert(secondStart.kind == "candidate" and secondStart.dispatchSpellID == 401,
+    "a real leave/enter edge may start the second group")
+local firstRuntime = AutoBurst.groupRuntime["PALADIN_3:group-1"]
+assert(firstRuntime and firstRuntime.lastConfirmedWindowReceipt
+    and firstRuntime.lastConfirmedWindowReceipt.groupId == "group-1",
+    "the first group receipt must remain in its specialization-scoped runtime")
+assert(AutoBurst.runtimeGroupKey == "PALADIN_3:" .. second,
+    "the active scalar executor state must be namespaced by profile and group")
+assert(AutoBurst.lastConfirmedWindowReceipt == nil,
+    "the second group must not inherit the first group's window receipt")
+local snapshot = AutoBurst:GetSnapshot()
+assert(snapshot.activeGroupId == second and snapshot.groupWindowSpellID == 400)
+""")
+
+
+def test_auto_injection_disabled_and_unmatched_windows_leave_official_path_unowned() -> None:
+    run_lua(AUTO_BURST_HARNESS + r"""
+settings.autoInjectionEnabled = false
+local disabled = eval()
+assert(disabled.kind == "none" and AutoBurst.plan == nil,
+    "the total switch must leave the official path unowned")
+settings.autoInjectionEnabled = true
+officialSpellID = 999001
+local unmatched = eval()
+assert(unmatched.kind == "none" and AutoBurst.plan == nil,
+    "an unmatched official recommendation must stay on the official path")
+""")
+
+
+def test_active_group_configuration_change_aborts_without_old_candidate_leakage() -> None:
+    run_lua(AUTO_BURST_HARNESS + r"""
+local candidate = eval()
+assert(candidate.kind == "candidate" and candidate.dispatchSpellID == 31884)
+local Groups = TE.AutoInjectionGroups
+assert(Groups:SetGroupMode(testContext, "group-1", "focused"))
+local changed = eval()
+assert(changed.kind == "none" and changed.bindingToken == nil,
+    "a changed active group must not leak its old candidate token")
+assert(AutoBurst.plan == nil and AutoBurst.requireWindowDeparture == true,
+    "a changed active group must terminate behind the existing departure lock")
 """)
 
 
@@ -437,6 +514,7 @@ AutoBurst.lastOfficialSpellID = 343527
 AutoBurst.currentWindowSpellID = 343527
 AutoBurst.windowGeneration = 3
 AutoBurst.consumedWindowGeneration = 3
+AutoBurst.runtimeGroupId = "group-1"
 AutoBurst.firstHealthyFramePending = false
 -- A state/event refresh immediately after arm may happen inside a few ms. It
 -- paints the Burst hold but must not consume the transport-tick barrier.

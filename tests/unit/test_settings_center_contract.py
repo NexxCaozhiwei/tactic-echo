@@ -14,7 +14,7 @@ class SettingsCenterContractTests(unittest.TestCase):
         for token in (
             'label = "常规"',
             'label = "HUD"',
-            'label = "自动爆发"',
+            'label = "自动注入"',
             'label = "配置文件"',
             'local NAV_ORDER = { "general", "hud", "burst", "profiles" }',
             'TacticEchoSettingsCenter',

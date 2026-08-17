@@ -73,7 +73,8 @@ class AutoBurstOrderedTrinketContractTests(unittest.TestCase):
         self.assertIn("/teab status|on|off", diagnostics)
         self.assertNotIn("trinket <官方窗口SpellID>", diagnostics)
         self.assertNotIn("autoBurstInjectionKind", diagnostics)
-        self.assertIn("爆发窗口、注入技能、饰品和顺序", diagnostics)
+        self.assertIn("窗口、注入技能、饰品和顺序", diagnostics)
+        self.assertIn("TE 设置 → 自动注入", diagnostics)
 
 
 if __name__ == "__main__":

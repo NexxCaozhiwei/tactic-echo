@@ -88,6 +88,12 @@ local AutoBurst = {
     -- existing mapping exports; the richer record is sequence-scoped.
     lastInjectionPreflight = nil,
     lastSequencePreflight = nil,
+    -- Group-specific window receipts and generations are swapped into the
+    -- legacy scalar executor fields. Only one group may own those scalars at a
+    -- time, so the OrderedPlan implementation remains singular.
+    runtimeGroupId = nil,
+    runtimeGroupKey = nil,
+    groupRuntime = {},
 }
 TE.AutoBurst = AutoBurst
 
@@ -308,6 +314,8 @@ local function log(self, event, fields)
         elapsed = now(),
         planId = self.plan and self.plan.id or (fields and fields.planId),
         ruleId = self.plan and self.plan.rule and self.plan.rule.id or (fields and fields.ruleId),
+        groupId = self.plan and self.plan.rule and self.plan.rule.groupId
+            or (fields and fields.groupId) or self.runtimeGroupId,
     }
     for key, value in pairs(fields or {}) do record[key] = value end
     store.lastEvent = record
@@ -374,6 +382,7 @@ local function recordDecision(self, phase, reason, fields)
         consumedWindowGeneration = self.consumedWindowGeneration or 0,
         activePlanGeneration = self.activePlanGeneration,
         departureLockGeneration = self.departureLockGeneration,
+        activeGroupId = self.runtimeGroupId,
     }
     self.lastDecision = record
     if phase == "armed" and reason then
@@ -558,7 +567,52 @@ function AutoBurst:RecordSpellcastFailed(spellID, event)
     return true
 end
 
-local function profileRule(context)
+local function saveGroupRuntime(self)
+    local groupKey = self.runtimeGroupKey
+    if not groupKey then return end
+    self.groupRuntime[groupKey] = {
+        windowGeneration = self.windowGeneration or 0,
+        consumedWindowGeneration = self.consumedWindowGeneration or 0,
+        activePlanGeneration = self.activePlanGeneration,
+        departureLockGeneration = self.departureLockGeneration,
+        requireWindowDeparture = self.requireWindowDeparture == true,
+        lockedWindowSpellID = self.lockedWindowSpellID,
+        currentWindowSpellID = self.currentWindowSpellID,
+        lastConfirmedWindowReceipt = shallowCopy(self.lastConfirmedWindowReceipt),
+    }
+end
+
+local function loadGroupRuntime(self, groupId, profileKey)
+    if not groupId then return end
+    local groupKey = tostring(profileKey or "unknown") .. ":" .. tostring(groupId)
+    -- Preserve an already materialized legacy/test runtime on its first
+    -- namespacing pass. Normal production selection starts with no group id.
+    if self.runtimeGroupKey == nil and self.runtimeGroupId == groupId then
+        self.runtimeGroupKey = groupKey
+        return
+    end
+    if self.runtimeGroupKey == groupKey then return end
+    saveGroupRuntime(self)
+    local state = self.groupRuntime[groupKey] or {}
+    self.runtimeGroupId = groupId
+    self.runtimeGroupKey = groupKey
+    self.windowGeneration = number(state.windowGeneration) or 0
+    self.consumedWindowGeneration = number(state.consumedWindowGeneration) or 0
+    self.activePlanGeneration = state.activePlanGeneration
+    self.departureLockGeneration = state.departureLockGeneration
+    self.requireWindowDeparture = state.requireWindowDeparture == true
+    self.lockedWindowSpellID = positiveSpellID(state.lockedWindowSpellID)
+    self.currentWindowSpellID = positiveSpellID(state.currentWindowSpellID)
+    self.lastConfirmedWindowReceipt = type(state.lastConfirmedWindowReceipt) == "table"
+        and shallowCopy(state.lastConfirmedWindowReceipt) or nil
+end
+
+-- Standalone test and emergency-load compatibility. The production TOC always
+-- loads AutoInjectionGroups/Coordinator before this file, so normal gameplay
+-- cannot select this adapter. Keeping it preserves the frozen 1.3.0 OrderedPlan
+-- harness and provides fail-soft diagnostics if a third-party loader omits the
+-- new configuration files.
+local function legacyProfileRule(context)
     local settings = tactics()
     local mode = settings.autoBurstMode == "focused" and "focused" or "simple"
     if not (TE.BurstProfiles and type(TE.BurstProfiles.GetAutoBurstSequence) == "function") then
@@ -567,43 +621,28 @@ local function profileRule(context)
     local sequence, profileKey, reason, profile = TE.BurstProfiles:GetAutoBurstSequence(context)
     if not sequence or not profile then return nil, reason or "burst_sequence_unavailable" end
     if profile.enabled == false then return nil, "burst_profile_disabled" end
-
     local windowSpellID = positiveSpellID(sequence.windowSpellID)
     if not windowSpellID then return nil, "burst_sequence_window_missing" end
-
     local steps, firstOptionalSpellID, optionalCount = {}, nil, 0
     for _, entry in ipairs(sequence.entries or {}) do
         if entry.enabled ~= false then
             local step
             if entry.category == "window" then
-                step = {
-                    key = "window", role = "window", category = "window", kind = "spell",
-                    spellID = windowSpellID, optional = false,
-                }
+                step = { key = "window", role = "window", category = "window", kind = "spell",
+                    spellID = windowSpellID, optional = false }
             elseif entry.category == "trinket" then
                 local slot = inventorySlot(entry.inventorySlot)
                 if slot then
-                    step = {
-                        key = entry.key, role = entry.role or ("trinket_" .. tostring(slot)), category = "trinket",
-                        kind = "inventory", inventorySlot = slot, optional = true,
-                        offGCDExplicit = entry.offGCDExplicit == true,
-                    }
+                    step = { key = entry.key, role = entry.role or ("trinket_" .. tostring(slot)),
+                        category = "trinket", kind = "inventory", inventorySlot = slot,
+                        optional = true, offGCDExplicit = entry.offGCDExplicit == true }
                 end
             else
                 local spellID = positiveSpellID(entry.spellID)
                 if spellID then
-                    step = {
-                        key = entry.key, role = entry.role or "injection", category = "injection",
+                    step = { key = entry.key, role = entry.role or "injection", category = "injection",
                         kind = "spell", spellID = spellID, optional = true,
-                        -- Devourer's Void Metamorphosis is gated by its aura-backed
-                        -- Soul resource. Retail can report the verified action as
-                        -- unusable without setting the generic insufficientPower
-                        -- boolean. Keep this compatibility marker profile-scoped;
-                        -- ordinary optional injections retain the strict two-boolean
-                        -- resource contract below.
-                        specialResourceUnusableCompat = profileKey == "DEMONHUNTER_3"
-                            and spellID == 1217605,
-                    }
+                        specialResourceUnusableCompat = profileKey == "DEMONHUNTER_3" and spellID == 1217605 }
                     firstOptionalSpellID = firstOptionalSpellID or spellID
                 end
             end
@@ -613,31 +652,29 @@ local function profileRule(context)
             end
         end
     end
-
-    -- A window by itself is deliberately left to the ordinary official path.
-    -- AutoBurst only claims it when at least one enabled optional action remains
-    -- in the current specialization sequence.
     if optionalCount <= 0 then return nil, "burst_sequence_no_enabled_optional_steps" end
     local firstStep = steps[1]
-    if not firstStep or (not isWindowStep(steps[1]) and not isOptionalStep(steps[1])) then
-        return nil, "burst_sequence_invalid_steps"
-    end
+    if not firstStep then return nil, "burst_sequence_invalid_steps" end
     local requiresPreWindowCapture = not isWindowStep(firstStep)
-    local direction = requiresPreWindowCapture and "pre" or "window_first"
     return {
         id = tostring(profileKey) .. ":sequence:" .. tostring(sequence.signature or "default"),
-        profileKey = profileKey,
-        source = "profile_sequence",
-        windowSpellID = windowSpellID,
-        injectionSpellID = firstOptionalSpellID,
-        injectionKind = "sequence",
-        steps = steps,
-        optionalStepCount = optionalCount,
-        requiresPreWindowCapture = requiresPreWindowCapture,
-        direction = direction,
-        mode = mode,
+        profileKey = profileKey, source = "profile_sequence_compat", windowSpellID = windowSpellID,
+        injectionSpellID = firstOptionalSpellID, injectionKind = "sequence", steps = steps,
+        optionalStepCount = optionalCount, requiresPreWindowCapture = requiresPreWindowCapture,
+        direction = requiresPreWindowCapture and "pre" or "window_first", mode = mode,
         sequenceSignature = sequence.signature,
     }, nil
+end
+
+local function profileRule(self, context, officialSpellID)
+    local coordinator = TE.AutoInjectionCoordinator
+    if not coordinator or type(coordinator.Observe) ~= "function" then
+        return legacyProfileRule(context)
+    end
+    local rule, reason, groupId = coordinator:Observe(context, officialSpellID, self)
+    if groupId then loadGroupRuntime(self, groupId, rule and rule.profileKey) end
+    if rule and groupId then coordinator:Claim(groupId) end
+    return rule, reason
 end
 
 -- AutoBurst consumes the same current-action-bar macro contract as every
@@ -1262,6 +1299,8 @@ local function candidateResult(self, plan, step, sample)
         schema = 1,
         elapsed = offeredAt,
         planId = plan.id,
+        groupId = plan.groupId,
+        groupName = plan.groupName,
         windowGeneration = plan.windowGeneration,
         role = step.role,
         actionKind = stepKind(step),
@@ -1285,6 +1324,8 @@ local function candidateResult(self, plan, step, sample)
         officialSpellID = plan.officialSpellID,
         bindingInfo = sample.bindingInfo,
         planId = plan.id,
+        groupId = plan.groupId,
+        groupName = plan.groupName,
         windowGeneration = plan.windowGeneration,
         ruleId = plan.rule.id,
         ruleSource = plan.rule.source,
@@ -1994,6 +2035,10 @@ function AutoBurst:ActivateWorldTransitionFence(reason)
     self.currentWindowSpellID = nil
     self.lastOfficialSpellID = nil
     self.lastConfirmedWindowReceipt = nil
+    self.runtimeGroupId = nil
+    self.runtimeGroupKey = nil
+    self.groupRuntime = {}
+    if TE.AutoInjectionCoordinator then TE.AutoInjectionCoordinator:Reset("world_transition") end
     self.firstHealthyFramePending = true
     self.eventPauseUntil = 0
     self.eventPauseReason = nil
@@ -2050,6 +2095,10 @@ function AutoBurst:BeginCombatEpoch(reason)
     self.currentWindowSpellID = nil
     self.lastOfficialSpellID = nil
     self.lastConfirmedWindowReceipt = nil
+    self.runtimeGroupId = nil
+    self.runtimeGroupKey = nil
+    self.groupRuntime = {}
+    if TE.AutoInjectionCoordinator then TE.AutoInjectionCoordinator:Reset("combat_epoch") end
     self.firstHealthyFramePending = true
     self.eventPauseUntil = 0
     self.eventPauseReason = nil
@@ -2313,6 +2362,7 @@ local function finishStep(self, plan, source, cycle)
             planId = plan.id,
             windowGeneration = number(plan.windowGeneration) or number(self.windowGeneration),
             combatEpoch = self.combatEpoch or 0,
+            groupId = plan.rule and plan.rule.groupId or self.runtimeGroupId,
         }
     end
     plan.wait = nil
@@ -2468,6 +2518,9 @@ local function createPlan(self, rule, officialSpellID, creation, resolveContext,
     local plan = {
         id = self.nextPlanId,
         rule = rule,
+        groupId = rule.groupId,
+        groupName = rule.groupName,
+        groupSequenceSignature = rule.groupSequenceSignature or rule.sequenceSignature,
         officialSpellID = officialSpellID,
         windowGeneration = number(creation.windowGeneration) or number(self.windowGeneration) or 0,
         armedEpoch = self.armedEpoch or 0,
@@ -2531,6 +2584,8 @@ local function createPlan(self, rule, officialSpellID, creation, resolveContext,
     self.lastWindowRejectReason = nil
     log(self, "plan_created", {
         direction = rule.direction, mode = rule.mode, officialSpellID = officialSpellID,
+        groupId = rule.groupId, groupName = rule.groupName,
+        groupSequenceSignature = rule.groupSequenceSignature or rule.sequenceSignature,
         injectionKind = rule.injectionKind or "spell", injectionTrinketSlot = rule.injectionTrinketSlot,
         injectionItemID = plan.steps[1] and stepKind(plan.steps[1]) == "inventory" and plan.steps[1].expectedItemID or nil,
         sequenceLength = #plan.steps,
@@ -2898,9 +2953,11 @@ function AutoBurst:Evaluate(official, runtime)
         return noneResult()
     end
 
-    if settings.autoBurstEnabled ~= true then
+    local autoInjectionEnabled = settings.autoInjectionEnabled
+    if autoInjectionEnabled == nil then autoInjectionEnabled = settings.autoBurstEnabled end
+    if autoInjectionEnabled ~= true then
         if self.plan or self.preWindowCapture then self:Abort("auto_burst_disabled", false) end
-        recordDecision(self, "idle", "auto_burst_disabled", { officialSpellID = officialSpellID })
+        recordDecision(self, "idle", "auto_injection_disabled", { officialSpellID = officialSpellID })
         return noneResult()
     end
     -- The existing SignalFrame armed intent is the independent “自动运行”
@@ -2912,7 +2969,7 @@ function AutoBurst:Evaluate(official, runtime)
     end
 
     local context = runtime.context or (TE.Context and TE.Context:GetPlayer()) or {}
-    local rule, ruleReason = profileRule(context)
+    local rule, ruleReason = profileRule(self, context, officialSpellID)
     if not rule then
         if self.plan or self.preWindowCapture then self:Abort(ruleReason, false) end
         recordDecision(self, "idle", ruleReason or "rule_unavailable", { officialSpellID = officialSpellID })
@@ -3631,6 +3688,9 @@ function AutoBurst:GetRuntimeState()
         schema = 1,
         active = plan ~= nil,
         planId = plan and plan.id or nil,
+        activeGroupId = plan and plan.groupId or self.runtimeGroupId,
+        activeGroupName = plan and plan.groupName or nil,
+        matchedGroupId = TE.AutoInjectionCoordinator and TE.AutoInjectionCoordinator.matchedGroupId or nil,
         state = plan and plan.state or nil,
         currentStep = plan and plan.stepIndex or nil,
         currentRole = step and step.role or nil,
@@ -3646,6 +3706,8 @@ function AutoBurst:GetRuntimeState()
         requireWindowDeparture = self.requireWindowDeparture == true,
         preWindowCaptureActive = type(capture) == "table" and capture.active == true,
         windowGeneration = self.windowGeneration or 0,
+        groupWindowGeneration = self.windowGeneration or 0,
+        groupDepartureLock = self.requireWindowDeparture == true,
         activePlanGeneration = self.activePlanGeneration,
         lastDecisionKind = type(self.lastDecision) == "table" and self.lastDecision.kind or nil,
         lastDecisionReason = type(self.lastDecision) == "table" and self.lastDecision.reason or nil,
@@ -3653,6 +3715,7 @@ function AutoBurst:GetRuntimeState()
 end
 
 function AutoBurst:GetSnapshot()
+    saveGroupRuntime(self)
     local plan = self.plan
     local capture = self.preWindowCapture
     local captureActive = type(capture) == "table"
@@ -3660,6 +3723,8 @@ function AutoBurst:GetSnapshot()
         return {
             schema = 1,
             active = false,
+            activeGroupId = self.runtimeGroupId,
+            matchedGroupId = TE.AutoInjectionCoordinator and TE.AutoInjectionCoordinator.matchedGroupId or nil,
             requireWindowDeparture = self.requireWindowDeparture == true,
             lockedWindowSpellID = self.lockedWindowSpellID,
             preCombatBridgeDepartureLock = self.preCombatBridgeDepartureLock == true,
@@ -3671,6 +3736,8 @@ function AutoBurst:GetSnapshot()
             armedEpoch = self.armedEpoch or 0,
             firstHealthyFramePending = self.firstHealthyFramePending == true,
             windowGeneration = self.windowGeneration or 0,
+            groupWindowGeneration = self.windowGeneration or 0,
+            groupDepartureLock = self.requireWindowDeparture == true,
             consumedWindowGeneration = self.consumedWindowGeneration or 0,
             activePlanGeneration = self.activePlanGeneration,
             departureLockGeneration = self.departureLockGeneration,
@@ -3709,6 +3776,7 @@ function AutoBurst:GetSnapshot()
                 and number(self.lastConfirmedWindowReceipt.windowGeneration) or nil,
             lastConfirmedWindowConfirmation = self.lastConfirmedWindowReceipt
                 and self.lastConfirmedWindowReceipt.confirmation or nil,
+            groupWindowReceipt = shallowCopy(self.lastConfirmedWindowReceipt),
             lastWindowRejectReason = self.lastWindowRejectReason,
         }
     end
@@ -3717,6 +3785,11 @@ function AutoBurst:GetSnapshot()
         schema = 1,
         active = true,
         planId = plan.id,
+        activeGroupId = plan.groupId,
+        activeGroupName = plan.groupName,
+        matchedGroupId = TE.AutoInjectionCoordinator and TE.AutoInjectionCoordinator.matchedGroupId or nil,
+        groupWindowSpellID = plan.rule and plan.rule.windowSpellID or nil,
+        groupSequenceSignature = plan.groupSequenceSignature,
         ruleId = plan.rule.id,
         direction = plan.rule.direction,
         mode = plan.rule.mode,
@@ -3730,7 +3803,12 @@ function AutoBurst:GetSnapshot()
         currentInventorySlot = stepKind(step) == "inventory" and inventorySlot(step and step.inventorySlot) or nil,
         currentItemID = stepKind(step) == "inventory" and positiveItemID(step and step.expectedItemID) or nil,
         sequenceLength = number(plan.sequenceLength) or #(plan.steps or {}),
+        groupSequenceLength = number(plan.sequenceLength) or #(plan.steps or {}),
         sequenceKeys = plan.sequenceKeys,
+        groupSequenceKeys = plan.sequenceKeys,
+        groupWindowGeneration = self.windowGeneration or 0,
+        groupDepartureLock = self.requireWindowDeparture == true,
+        groupWindowReceipt = shallowCopy(self.lastConfirmedWindowReceipt),
         planState = plan.state,
         stepState = plan.state,
         stepStatusReason = plan.pauseReason
@@ -4114,14 +4192,17 @@ local HUD_SEQUENCE_MAX_CARDS = 9
 
 local function hudUnboundSequenceSpell(snapshot, spellID, role, reason)
     local runtime = TE.RuntimeSnapshot
-    local name, icon = runtime:GetSpellInfo(snapshot, spellID)
+    local name, icon
+    if runtime and type(runtime.GetSpellInfo) == "function" and type(snapshot) == "table" then
+        name, icon = runtime:GetSpellInfo(snapshot, spellID)
+    end
     return {
         spellID = spellID,
         spellName = name or tostring(spellID),
         spellIcon = icon,
         category = role == "window" and "offensiveCooldowns" or "rotationSpells",
-        source = role == "window" and "自动爆发窗口" or "自动爆发注入",
-        burstSource = "auto_burst_sequence",
+        source = role == "window" and "自动注入窗口" or "自动注入技能",
+        burstSource = "auto_injection_group",
         advisoryOnly = true,
         displayOnly = true,
         bindingToken = 0,
@@ -4132,41 +4213,66 @@ local function hudUnboundSequenceSpell(snapshot, spellID, role, reason)
     }
 end
 
-local function hudConfiguredSequence(snapshot, context, state)
-    local sequence, profileKey, reason
-    if TE.BurstProfiles and type(TE.BurstProfiles.GetAutoBurstSequence) == "function" then
-        sequence, profileKey, reason = TE.BurstProfiles:GetAutoBurstSequence(context)
+local function hudUnboundSequenceItem(slot, reason)
+    return {
+        spellName = "饰品 " .. tostring(slot or "?"),
+        category = "trinket",
+        source = "自动注入饰品",
+        burstSource = "auto_injection_group",
+        advisoryOnly = true,
+        displayOnly = true,
+        bindingToken = 0,
+        bindingMissing = true,
+        inventorySlot = slot,
+        usableState = "unknown",
+        unusableReason = reason or "等待装备与动作条快照",
+        burstReady = false,
+    }
+end
+
+local function hudConfiguredSequence(snapshot, context, state, preferredGroupId)
+    local group, container
+    if TE.AutoInjectionGroups then
+        group, container = TE.AutoInjectionGroups:GetDisplayGroup(context, preferredGroupId)
     end
-    if type(sequence) ~= "table" then return {}, profileKey, { tostring(reason or "爆发顺序不可用") } end
+    if type(group) ~= "table" then return {}, nil, { "自动注入组不可用" }, nil end
 
     local items, diagnostics = {}, {}
     local runtime = TE.RuntimeSnapshot
-    for _, entry in ipairs(sequence.entries or {}) do
+    for _, entry in ipairs(group.sequence and group.sequence.entries or {}) do
         if entry.enabled == true and #items < HUD_SEQUENCE_MAX_CARDS then
             local item, itemReason
             if entry.category == "trinket" then
                 local slot = hudNumber(entry.inventorySlot)
                 local itemID
-                if slot then itemID, itemReason = runtime:GetInventoryItemID(snapshot, slot) end
+                if slot and runtime and type(runtime.GetInventoryItemID) == "function"
+                    and type(snapshot) == "table" and snapshot.snapshotUnavailable ~= true then
+                    itemID, itemReason = runtime:GetInventoryItemID(snapshot, slot)
+                end
                 if itemID then
                     item, itemReason = hudItemCandidate(snapshot, itemID, "trinket", "饰品 " .. tostring(slot), {
                         inventorySlot = slot,
                     })
                 end
+                if not item then item = hudUnboundSequenceItem(slot, itemReason) end
             else
-                local spellID = entry.category == "window" and hudNumber(sequence.windowSpellID) or hudNumber(entry.spellID)
+                local spellID = entry.category == "window" and hudNumber(group.windowSpellID) or hudNumber(entry.spellID)
                 if spellID then
-                    item, itemReason = hudSpellCandidate(snapshot, spellID,
-                        entry.category == "window" and "offensiveCooldowns" or "rotationSpells",
-                        entry.category == "window" and "自动爆发窗口" or "自动爆发注入", {
-                            requiresHostileTarget = false,
-                            gcdSnapshot = snapshot.gcdSnapshot,
-                            castSnapshot = snapshot.castSnapshot,
-                        })
+                    if runtime and type(snapshot) == "table" and snapshot.snapshotUnavailable ~= true then
+                        item, itemReason = hudSpellCandidate(snapshot, spellID,
+                            entry.category == "window" and "offensiveCooldowns" or "rotationSpells",
+                            entry.category == "window" and "自动注入窗口" or "自动注入技能", {
+                                requiresHostileTarget = false,
+                                gcdSnapshot = snapshot.gcdSnapshot,
+                                castSnapshot = snapshot.castSnapshot,
+                            })
+                    end
                     if not item then item = hudUnboundSequenceSpell(snapshot, spellID, entry.category, itemReason) end
                 end
             end
             if item then
+                item.autoInjectionGroupId = group.groupId
+                item.autoInjectionGroupName = group.name
                 item.burstStepKey = entry.key
                 item.burstSequenceConfigured = true
                 item.burstSequenceEnabled = true
@@ -4177,7 +4283,7 @@ local function hudConfiguredSequence(snapshot, context, state)
             end
         end
     end
-    return items, profileKey, diagnostics
+    return items, container and container.profileKey, diagnostics, group
 end
 
 function AutoBurst:BuildHudSnapshot(primary, context, settings, runtimeSnapshot)
@@ -4191,19 +4297,7 @@ function AutoBurst:BuildHudSnapshot(primary, context, settings, runtimeSnapshot)
             inCombat = context.inCombat == true,
         })
     end
-    if type(runtimeSnapshot) ~= "table" then
-        return {
-            schema = 2,
-            active = false,
-            state = "UNKNOWN",
-            stateLabel = "状态未知",
-            items = {},
-            advisoryOnly = true,
-            displayOnly = true,
-            source = "autoburst_runtime_snapshot_unavailable",
-            blockedReason = "runtime_snapshot_unavailable",
-        }
-    end
+    if type(runtimeSnapshot) ~= "table" then runtimeSnapshot = { snapshotUnavailable = true } end
 
     local profile, profileKey, profileReason
     if TE.BurstProfiles and type(TE.BurstProfiles.Get) == "function" then
@@ -4215,7 +4309,7 @@ function AutoBurst:BuildHudSnapshot(primary, context, settings, runtimeSnapshot)
     if type(stateSnapshot) ~= "table" then stateSnapshot = self:GetSnapshot() end
     local state = {
         state = stateSnapshot and stateSnapshot.active == true and "ACTIVE" or "READY",
-        label = stateSnapshot and stateSnapshot.active == true and "爆发执行中" or "爆发待命",
+        label = stateSnapshot and stateSnapshot.active == true and "自动注入执行中" or "自动注入待命",
     }
     local out = hudMakeOutput(profile, profileKey, state, profileReason, stateSnapshot, runtimeSnapshot)
 
@@ -4226,15 +4320,30 @@ function AutoBurst:BuildHudSnapshot(primary, context, settings, runtimeSnapshot)
     -- The current HUD is a direct, read-only projection of the configured
     -- AutoBurst sequence. Legacy window-assistant policies, candidate sources,
     -- compact mode and debug settings no longer decide which cards are shown.
-    if settings.autoBurstEnabled ~= true then
-        out.state, out.stateLabel, out.notice = "SUPPRESSED", "自动爆发关闭", "开启自动爆发后显示当前专精顺序"
+    local autoInjectionEnabled = settings.autoInjectionEnabled
+    if autoInjectionEnabled == nil then autoInjectionEnabled = settings.autoBurstEnabled end
+    if autoInjectionEnabled ~= true then
+        out.state, out.stateLabel, out.notice = "SUPPRESSED", "自动注入关闭", "开启自动注入后显示当前技能组顺序"
         return out
     end
     local sequenceState = { state = stateSnapshot and stateSnapshot.active == true and "ACTIVE" or "READY" }
-    out.items, out.profileKey, out.diagnostics = hudConfiguredSequence(runtimeSnapshot, context, sequenceState)
+    local coordinator = TE.AutoInjectionCoordinator
+    local coordinatorSnapshot = coordinator and coordinator:GetSnapshot(context) or {}
+    local preferredGroupId = stateSnapshot and stateSnapshot.activeGroupId
+        or coordinatorSnapshot.activeGroupId or coordinatorSnapshot.matchedGroupId
+        or coordinatorSnapshot.displayGroupId
+    local group
+    out.items, out.profileKey, out.diagnostics, group = hudConfiguredSequence(
+        runtimeSnapshot, context, sequenceState, preferredGroupId)
+    out.activeGroupId = stateSnapshot and stateSnapshot.activeGroupId or coordinatorSnapshot.activeGroupId
+    out.matchedGroupId = coordinatorSnapshot.matchedGroupId
+    out.displayGroupId = group and group.groupId or nil
+    out.displayGroupName = group and group.name or nil
+    out.groupWindowSpellID = group and group.windowSpellID or nil
     out.active = #out.items > 0
-    out.recommendationState = out.active and "auto_burst_sequence" or "sequence_unavailable"
-    out.notice = out.active and "当前专精自动爆发顺序" or "当前专精没有可显示的爆发步骤"
+    out.recommendationState = out.active and "auto_injection_group_sequence" or "sequence_unavailable"
+    out.notice = out.active and ((group and group.name or "自动注入组") .. "顺序")
+        or "当前专精没有可显示的自动注入步骤"
     return out
 end
 
@@ -4248,9 +4357,22 @@ local function recentPriorityEvents()
 end
 
 function AutoBurst:GetDiagnostics()
+    saveGroupRuntime(self)
     local settings = tactics()
     local context = TE.Context and TE.Context:GetPlayer() or {}
-    local rule, ruleReason = profileRule(context)
+    local coordinatorSnapshot = TE.AutoInjectionCoordinator
+        and TE.AutoInjectionCoordinator:GetSnapshot(context) or {}
+    local displayGroupId = self.plan and self.plan.groupId
+        or coordinatorSnapshot.activeGroupId or coordinatorSnapshot.matchedGroupId
+        or coordinatorSnapshot.displayGroupId
+    local rule, ruleReason
+    if self.plan and self.plan.rule then
+        rule = self.plan.rule
+    elseif TE.AutoInjectionGroups and displayGroupId then
+        rule, ruleReason = TE.AutoInjectionGroups:BuildRule(context, displayGroupId)
+    else
+        ruleReason = "group_unavailable"
+    end
     local snapshot = self:GetSnapshot()
     local resolvedSteps = {}
     if rule then
@@ -4271,17 +4393,34 @@ function AutoBurst:GetDiagnostics()
     return {
         schema = 2,
         build = TE.version,
-        enabled = settings.autoBurstEnabled == true,
-        mode = settings.autoBurstMode,
+        enabled = (settings.autoInjectionEnabled == nil and settings.autoBurstEnabled == true)
+            or settings.autoInjectionEnabled == true,
+        mode = rule and rule.mode or nil,
+        activeGroupId = coordinatorSnapshot.activeGroupId,
+        activeGroupName = coordinatorSnapshot.activeGroupName,
+        matchedGroupId = coordinatorSnapshot.matchedGroupId,
+        groupWindowSpellID = coordinatorSnapshot.groupWindowSpellID,
+        groupWindowGeneration = self.windowGeneration or 0,
+        groupDepartureLock = self.requireWindowDeparture == true,
+        groupWindowReceipt = shallowCopy(self.lastConfirmedWindowReceipt),
+        groupConflict = coordinatorSnapshot.groupConflict,
+        ignoredGroupId = coordinatorSnapshot.lastIgnoredGroupId,
+        ignoredGroupEvent = coordinatorSnapshot.lastIgnoredEvent,
+        migration = TE.AutoInjectionGroups and shallowCopy(TE.AutoInjectionGroups.lastMigration) or nil,
         macroPolicy = "broad_visible_actionbar",
         resolvedRule = rule and {
             id = rule.id,
             source = rule.source,
             profileKey = rule.profileKey,
+            groupId = rule.groupId,
+            groupName = rule.groupName,
             windowSpellID = rule.windowSpellID,
             direction = rule.direction,
             mode = rule.mode,
             sequenceSignature = rule.sequenceSignature,
+            groupSequenceSignature = rule.groupSequenceSignature,
+            groupSequenceLength = rule.groupSequenceLength,
+            groupSequenceKeys = rule.groupSequenceKeys,
             optionalStepCount = rule.optionalStepCount,
             steps = resolvedSteps,
         } or nil,
@@ -4374,6 +4513,12 @@ watcher:SetScript("OnEvent", function(_, event, unit, castGUID, spellID)
         AutoBurst.vehiclePaused = event == "UNIT_ENTERED_VEHICLE"
     elseif event == "PLAYER_SPECIALIZATION_CHANGED" and unit == "player" then
         AutoBurst:Abort("specialization_changed", false)
+        AutoBurst.runtimeGroupId = nil
+        AutoBurst.runtimeGroupKey = nil
+        AutoBurst.groupRuntime = {}
+        if TE.AutoInjectionCoordinator and type(TE.AutoInjectionCoordinator.Reset) == "function" then
+            TE.AutoInjectionCoordinator:Reset("specialization_changed")
+        end
     elseif event == "UNIT_SPELLCAST_SUCCEEDED" and unit == "player" then
         local accepted = AutoBurst:RecordSpellcastSucceeded(spellID)
         if accepted == true and TE.SignalFrame and type(TE.SignalFrame.Refresh) == "function" then

@@ -1,5 +1,5 @@
 -- Tactic Echo settings center (TEUI v2).
--- The four current pages cover runtime, HUD, AutoBurst and profiles. This file
+-- The four current pages cover runtime, HUD, Auto Injection and profiles. This file
 -- only changes settings/presentation and never creates a recommendation,
 -- BindingToken, TEAP frame or TEK input request.
 local TE = _G.TacticEcho
@@ -55,8 +55,8 @@ local CONTROL_GAP = 8
 
 local PAGE_META = {
     general = { label = "常规", description = "运行状态、手动启停 / 脱战策略与 Tactic Echo 自身快捷键。" },
-    hud = { label = "HUD", description = "主键与自动爆发队列的显示、大小、方向和常用外观。" },
-    burst = { label = "自动爆发", description = "自动爆发开关、执行模式、当前专精顺序与技能列表。" },
+    hud = { label = "HUD", description = "主键与自动注入队列的显示、大小、方向和常用外观。" },
+    burst = { label = "自动注入", description = "自动注入总开关、技能组、执行模式与九步顺序。" },
     profiles = { label = "配置文件", description = "保存、载入和管理配置；范围自动切换位于高级设置。" },
 }
 
@@ -66,7 +66,7 @@ local LEGACY_PAGE_ALIAS = {
     defense = "hud", defensive = "hud", actionbar = "general",
     safety = "general", monitor = "general", debug = "general",
 }
-PAGE_META.hud.description = "主键与自动爆发 HUD 的显示、图标大小、队列模式、标签和布局。"
+PAGE_META.hud.description = "主键与自动注入 HUD 的显示、图标大小、队列模式、标签和布局。"
 
 local COLOR_PRESETS = {
     white = { label = "白色", color = { r = 1.00, g = 1.00, b = 1.00, a = 1.00 } },
@@ -468,190 +468,8 @@ local function createEditBox(parent, label, x, y, width, initialText)
     return box
 end
 
-local function panelSpellInfo(spellID)
-    spellID = tonumber(spellID)
-    if not spellID then return tostring(spellID or "-"), nil end
-    if C_Spell and type(C_Spell.GetSpellInfo) == "function" then
-        local ok, info = pcall(C_Spell.GetSpellInfo, spellID)
-        if ok and type(info) == "table" then return info.name or tostring(spellID), info.iconID or info.icon end
-    end
-    if type(GetSpellInfo) == "function" then
-        local ok, name, _, icon = pcall(GetSpellInfo, spellID)
-        if ok and name then return name, icon end
-    end
-    return tostring(spellID), nil
-end
-
 local function panelStatus(message)
     setLabel("footerStatus", message or "设置已更新。")
-end
-
--- Shared priority-list editor. Each row is a self-contained priority card:
--- skill identity is on the top line and the order / enablement controls are on
--- the second line. Rows are pooled and refreshed in place so sorting does not
--- recreate the TEUI page or overlap controls.
-local function createSpellPriorityEditor(parent, title, description, y, options)
-    options = options or {}
-    local ROW_HEIGHT = 62
-    local ROW_GAP = 6
-    local BUTTON_Y = -32
-    local typeLabels = { selfheal = "自疗", minor = "轻减伤", major = "大减伤", emergency = "保命" }
-
-    y = createSection(parent, title, y)
-    createText(parent, "GameFontDisableSmall", 14, y, 720, description or "")
-    local topY = y - 38
-    local maxRows = math.max(1, tonumber(options.maxRows) or 6)
-    local rows = {}
-
-    for index = 1, maxRows do
-        local row = CreateFrame("Frame", nil, parent, "BackdropTemplate")
-        row:SetSize(696, ROW_HEIGHT)
-        panelBackdrop(row, 0.012, 0.018, 0.032, 0.92, 0.14, 0.20, 0.30, 0.96)
-        row.index = index
-
-        row.number = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-        row.number:SetPoint("TOPLEFT", row, "TOPLEFT", 8, -8)
-        row.number:SetWidth(24)
-        row.number:SetJustifyH("RIGHT")
-
-        row.icon = row:CreateTexture(nil, "ARTWORK")
-        row.icon:SetSize(24, 24)
-        row.icon:SetPoint("TOPLEFT", row, "TOPLEFT", 40, -6)
-
-        row.name = row:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
-        row.name:SetPoint("TOPLEFT", row.icon, "TOPRIGHT", 8, -2)
-        row.name:SetWidth(400)
-        row.name:SetJustifyH("LEFT")
-
-        row.source = row:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
-        row.source:SetPoint("TOPRIGHT", row, "TOPRIGHT", -12, -10)
-        row.source:SetWidth(150)
-        row.source:SetJustifyH("RIGHT")
-
-        row.up = createActionButton(row, "上", 12, BUTTON_Y, 58, function()
-            if not row.entry or not options.move then return end
-            local ok, reason = options.move(row.entry.spellID, -1)
-            panelStatus(ok and "优先级已上移。" or ("无法上移：" .. tostring(reason or "边界")))
-            ControlPanel:ApplyVisuals(true)
-        end)
-        row.down = createActionButton(row, "下", 78, BUTTON_Y, 58, function()
-            if not row.entry or not options.move then return end
-            local ok, reason = options.move(row.entry.spellID, 1)
-            panelStatus(ok and "优先级已下移。" or ("无法下移：" .. tostring(reason or "边界")))
-            ControlPanel:ApplyVisuals(true)
-        end)
-        row.remove = createActionButton(row, options.removeLabel or "停用", 144, BUTTON_Y, 70, function()
-            if not row.entry then return end
-            local ok, reason
-            if options.remove then
-                ok, reason = options.remove(row.entry.spellID, row.entry)
-            elseif options.setEnabled then
-                ok, reason = options.setEnabled(row.entry.spellID, false)
-            end
-            panelStatus(ok and "技能已从当前优先策略停用。" or ("操作失败：" .. tostring(reason or "未知")))
-            ControlPanel:ApplyVisuals(true)
-        end)
-
-        row.enabled = CreateFrame("CheckButton", nil, row, "UICheckButtonTemplate")
-        row.enabled:SetPoint("TOPLEFT", row, "TOPLEFT", 236, -29)
-        row.enabled.label = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-        row.enabled.label:SetPoint("LEFT", row.enabled, "RIGHT", 2, 0)
-        row.enabled.label:SetWidth(180)
-        row.enabled.label:SetJustifyH("LEFT")
-        row.enabled:SetScript("OnClick", function(button)
-            if not row.entry or not options.setEnabled then return end
-            local ok, reason = options.setEnabled(row.entry.spellID, button:GetChecked() == true)
-            panelStatus(ok and "技能触发优先级已更新。" or ("更新失败：" .. tostring(reason or "未知")))
-            ControlPanel:ApplyVisuals(true)
-        end)
-        rows[index] = row
-    end
-
-    local status = createText(parent, "GameFontDisableSmall", 14, topY - 48, 700, "")
-    local customCaption, customBox, addButton
-    if options.add then
-        customCaption = createText(parent, "GameFontHighlight", 14, topY - 80, 126, "自定义 SpellID")
-        customBox = CreateFrame("EditBox", nil, parent, "InputBoxTemplate")
-        customBox:SetAutoFocus(false)
-        customBox:SetSize(118, 24)
-        customBox:SetPoint("TOPLEFT", parent, "TOPLEFT", 148, topY - 78)
-        customBox:SetText("")
-        customBox:SetScript("OnEscapePressed", function(self) self:ClearFocus() end)
-        customBox:SetScript("OnEnterPressed", function(self) self:ClearFocus() end)
-        addButton = createActionButton(parent, options.addLabel or "添加当前专精已知技能", 280, topY - 80, 192, function()
-            local value = tonumber(customBox:GetText())
-            local ok, reason = options.add(value)
-            if ok then customBox:SetText("") end
-            panelStatus(ok and "自定义当前专精技能已加入列表。" or ("无法添加：" .. tostring(reason or "未知")))
-            ControlPanel:ApplyVisuals(true)
-        end)
-    end
-
-    local showRestore = options.showRestore ~= false and type(options.restore) == "function"
-    local resetButton
-    if showRestore then
-        resetButton = createActionButton(parent, options.resetLabel or "恢复当前专精默认", 14, topY - 116, 220, function()
-            local ok, reason = options.restore()
-            panelStatus(ok and "当前专精列表已恢复默认。" or ("恢复失败：" .. tostring(reason or "未知")))
-            ControlPanel:ApplyVisuals(true)
-        end)
-    end
-
-    local function refresh()
-        local entries, profileKey, reason, profile = {}, nil, nil, nil
-        if options.getEntries then entries, profileKey, reason, profile = options.getEntries() end
-        local visible = 0
-        for _, row in ipairs(rows) do
-            local entry = entries and entries[row.index] or nil
-            row.entry = entry
-            if entry then
-                visible = visible + 1
-                row:ClearAllPoints()
-                row:SetPoint("TOPLEFT", parent, "TOPLEFT", 14, topY - (visible - 1) * (ROW_HEIGHT + ROW_GAP))
-                row.number:SetText(tostring(visible) .. ".")
-                local name, icon = panelSpellInfo(entry.spellID)
-                row.icon:SetTexture(icon or "Interface\\Icons\\INV_Misc_QuestionMark")
-                row.name:SetText(name .. "  |cff7f8c9a(" .. tostring(entry.spellID) .. ")|r")
-                local isEnabled = entry.enabled ~= false
-                row.name:SetTextColor(isEnabled and 1.00 or 0.48, isEnabled and 0.82 or 0.52, isEnabled and 0.18 or 0.60)
-                row.enabled:SetChecked(isEnabled)
-                row.enabled.label:SetText(options.enabledLabel or "触发优先级")
-                local source = entry.custom and "自定义" or "专精默认"
-                if entry.type then source = source .. " / " .. (typeLabels[entry.type] or tostring(entry.type)) end
-                row.source:SetText(source)
-                row.remove.text:SetText(entry.custom and "移除" or (options.removeLabel or "停用"))
-                row:SetShown(true)
-            else
-                row:SetShown(false)
-            end
-        end
-
-        local lineY = topY - math.max(visible, 1) * (ROW_HEIGHT + ROW_GAP) + ROW_GAP - 6
-        status:ClearAllPoints()
-        status:SetPoint("TOPLEFT", parent, "TOPLEFT", 14, lineY)
-        local descriptor = profile and (profile.specLabel or profile.profileLabel or profile.profileKey) or profileKey or "未知专精"
-        local suffix = reason and (" · " .. tostring(reason)) or ""
-        status:SetText("当前专精：" .. tostring(descriptor) .. " · 列表项目：" .. tostring(visible) .. suffix)
-
-        local nextY = lineY - 30
-        if customCaption then
-            customCaption:ClearAllPoints(); customCaption:SetPoint("TOPLEFT", parent, "TOPLEFT", 14, nextY - 4)
-            customBox:ClearAllPoints(); customBox:SetPoint("TOPLEFT", parent, "TOPLEFT", 148, nextY + 1)
-            addButton:ClearAllPoints(); addButton:SetPoint("TOPLEFT", parent, "TOPLEFT", 280, nextY)
-            nextY = nextY - 38
-        end
-        if resetButton then
-            resetButton:ClearAllPoints(); resetButton:SetPoint("TOPLEFT", parent, "TOPLEFT", 14, nextY)
-        end
-    end
-
-    registerControl(refresh)
-    refresh()
-
-    -- Reserve the complete pool height. Subsequent static controls never share
-    -- an anchor with a list row, even after the user adds a custom burst spell.
-    local trailing = (options.add and 42 or 0) + (showRestore and 38 or 0) + 42
-    return topY - (maxRows * (ROW_HEIGHT + ROW_GAP) + trailing)
 end
 
 local function refreshTacticalBoard()
@@ -730,7 +548,7 @@ function ControlPanel:ApplyToggleHotkey(binding, fromStored)
     binding = type(binding) == "string" and binding or ""
     local settings = ensureSettings()
     if binding ~= "" and binding == settings.autoBurstToggleHotkey then
-        setHotkeyHint("启动/暂停快捷键不能与自动爆发快捷键相同。")
+        setHotkeyHint("启动/暂停快捷键不能与自动注入快捷键相同。")
         return false, "auto_burst_hotkey_conflict"
     end
     if not fromStored then settings.toggleHotkey = binding end
@@ -789,14 +607,14 @@ function ControlPanel:ApplyAutoBurstHotkey(binding, fromStored)
     binding = type(binding) == "string" and binding or ""
     local settings = ensureSettings()
     if binding ~= "" and binding == settings.toggleHotkey then
-        setAutoBurstHotkeyHint("自动爆发快捷键不能与启动/暂停快捷键相同。")
+        setAutoBurstHotkeyHint("自动注入快捷键不能与启动/暂停快捷键相同。")
         return false, "toggle_hotkey_conflict"
     end
     if not fromStored then settings.autoBurstToggleHotkey = binding end
     pendingAutoBurstHotkey = binding
     if InCombatLockdown and InCombatLockdown() then
         pendingAutoBurstApplyAfterCombat = true
-        setAutoBurstHotkeyHint("自动爆发快捷键已保存，将在脱战后应用：" .. formatHotkey(binding))
+        setAutoBurstHotkeyHint("自动注入快捷键已保存，将在脱战后应用：" .. formatHotkey(binding))
         self:UpdateInputStatus()
         return false, "deferred_in_combat"
     end
@@ -805,7 +623,7 @@ function ControlPanel:ApplyAutoBurstHotkey(binding, fromStored)
         if type(ClearOverrideBindings) == "function" then ClearOverrideBindings(owner) end
     end)
     if not clearOk then
-        setAutoBurstHotkeyHint("清除旧自动爆发快捷键失败：" .. tostring(clearError))
+        setAutoBurstHotkeyHint("清除旧自动注入快捷键失败：" .. tostring(clearError))
         return false, "clear_override_failed"
     end
     if binding ~= "" then
@@ -816,14 +634,14 @@ function ControlPanel:ApplyAutoBurstHotkey(binding, fromStored)
         local ok, err = pcall(SetOverrideBindingClick, owner, true, binding,
             "TacticEchoAutoBurstToggleHotkeyButton", "LeftButton")
         if not ok then
-            setAutoBurstHotkeyHint("应用自动爆发快捷键失败：" .. tostring(err))
+            setAutoBurstHotkeyHint("应用自动注入快捷键失败：" .. tostring(err))
             return false, "override_binding_failed"
         end
     end
     pendingAutoBurstApplyAfterCombat = false
     settings.autoBurstToggleHotkey = binding
-    setAutoBurstHotkeyHint(binding == "" and "自动爆发快捷键已清除。"
-        or ("自动爆发快捷键已应用：" .. formatHotkey(binding)))
+    setAutoBurstHotkeyHint(binding == "" and "自动注入快捷键已清除。"
+        or ("自动注入快捷键已应用：" .. formatHotkey(binding)))
     self:UpdateInputStatus()
     return true
 end
@@ -876,18 +694,18 @@ local function ensureAutoBurstHotkeyCapture()
     end
     autoBurstHotkeyCapture:SetScript("OnEscapePressed", function(box)
         box:ClearFocus(); box:Hide()
-        setAutoBurstHotkeyHint("自动爆发快捷键录入已取消。")
+        setAutoBurstHotkeyHint("自动注入快捷键录入已取消。")
     end)
     autoBurstHotkeyCapture:SetScript("OnKeyDown", function(box, key)
         local captured = normalizeCapturedHotkey(key)
         if not captured then return end
         box:ClearFocus(); box:Hide()
         if captured == "__cancel" then
-            setAutoBurstHotkeyHint("自动爆发快捷键录入已取消。")
+            setAutoBurstHotkeyHint("自动注入快捷键录入已取消。")
             return
         end
         pendingAutoBurstHotkey = captured
-        setAutoBurstHotkeyHint("待应用的自动爆发快捷键：" .. formatHotkey(captured) .. "。点击“应用”提交。")
+        setAutoBurstHotkeyHint("待应用的自动注入快捷键：" .. formatHotkey(captured) .. "。点击“应用”提交。")
         ControlPanel:UpdateInputStatus()
     end)
     autoBurstHotkeyCapture:Hide()
@@ -905,7 +723,7 @@ function ControlPanel:BeginAutoBurstHotkeyCapture()
     local capture = ensureAutoBurstHotkeyCapture()
     capture:SetText("")
     capture:Show(); capture:SetFocus()
-    setAutoBurstHotkeyHint("请按下自动爆发开关快捷键组合；按 Esc 取消。该键只切换自动爆发设置。")
+    setAutoBurstHotkeyHint("请按下自动注入开关快捷键组合；按 Esc 取消。该键只切换自动注入设置。")
 end
 
 function ControlPanel:ApplyVisuals(saveProfile)
@@ -947,12 +765,13 @@ end
 
 function ControlPanel:ToggleAutoBurst(source)
     local tactics = select(1, ensureTactics())
-    tactics.autoBurstEnabled = tactics.autoBurstEnabled ~= true
-    panelStatus(tactics.autoBurstEnabled == true
-        and "自动爆发已开启；可派发状态显示 HAD。"
-        or "自动爆发已关闭；可派发状态显示 LCC。")
+    tactics.autoInjectionEnabled = tactics.autoInjectionEnabled ~= true
+    tactics.autoBurstEnabled = tactics.autoInjectionEnabled
+    panelStatus(tactics.autoInjectionEnabled == true
+        and "自动注入已开启；可派发状态显示 HAD。"
+        or "自动注入已关闭；可派发状态显示 LCC。")
     self:ApplyVisuals(false)
-    return tactics.autoBurstEnabled == true, source
+    return tactics.autoInjectionEnabled == true, source
 end
 
 function ControlPanel:SetToggleHotkey(binding)
@@ -1212,7 +1031,7 @@ function ControlPanel:UpdateInputStatus()
     if page == "general" then
         setLabel("generalRuntime", "当前状态：" .. compactStatus.label
             .. "\n官方主推荐：" .. tostring(primary.spellName or "等待") .. "  ·  键位：" .. tostring(primary.binding or "无")
-            .. "\n自动爆发：" .. (tactics.autoBurstEnabled == true and "已开启（HAD）" or "已关闭（LCC）"))
+            .. "\n自动注入：" .. (tactics.autoInjectionEnabled == true and "已开启（HAD）" or "已关闭（LCC）"))
         local policyLabel = TE.SignalFrame and type(TE.SignalFrame.GetSessionPolicyLabel) == "function"
             and TE.SignalFrame:GetSessionPolicyLabel() or tostring(settings.sessionPolicy)
         setLabel("generalPolicy", "当前：" .. policyLabel)
@@ -1220,8 +1039,8 @@ function ControlPanel:UpdateInputStatus()
         local autoBurstToggleHotkey = type(settings.autoBurstToggleHotkey) == "string"
             and settings.autoBurstToggleHotkey or ""
         setLabel("generalAutoBurstHotkey", autoBurstToggleHotkey ~= ""
-            and ("自动爆发快捷键：" .. autoBurstToggleHotkey)
-            or "自动爆发快捷键：未设置")
+            and ("自动注入快捷键：" .. autoBurstToggleHotkey)
+            or "自动注入快捷键：未设置")
     end
 
     if page == "profiles" then
@@ -1271,7 +1090,7 @@ local function buildGeneral(pane)
     end)
     createActionButton(pane, "清除", 508, y - 58, 90, function() ControlPanel:SetToggleHotkey("") end)
     y = y - 118
-    y = createSection(pane, "自动爆发快捷键", y)
+    y = createSection(pane, "自动注入快捷键", y)
     createReadout(pane, "generalAutoBurstHotkey", "当前快捷键", 14, y, 720, "GameFontHighlightSmall")
     local autoBurstHotkeyBox = createEditBox(pane, "快捷键", LEFT_X, y - 58, 150,
         ensureSettings().autoBurstToggleHotkey)
@@ -1318,7 +1137,7 @@ local function buildHudLabelStyles(pane, mainStyle, burstStyle, y)
     y = buildTextStyleSection(pane, mainStyle.chargeLabel, "充能 / 可用次数", y)
     y = buildTextStyleSection(pane, mainStyle.cooldownText, "CD 时间（HUD 统一秒数）", y)
     y = buildTextStyleSection(pane, mainStyle.stateText, "状态文字", y)
-    y = createSection(pane, "自动爆发", y)
+    y = createSection(pane, "自动注入", y)
     y = buildTextStyleSection(pane, burstStyle.keyLabel, "快捷键", y)
     y = buildTextStyleSection(pane, burstStyle.chargeLabel, "充能 / 可用次数", y)
     y = buildTextStyleSection(pane, burstStyle.cooldownText, "CD 时间（HUD 统一秒数）", y)
@@ -1342,7 +1161,7 @@ local function buildHUD(pane)
         local mainStyle = getModuleStyle("main")
         local burstStyle = getModuleStyle("burst")
         createChoice(pane, "内容", LEFT_X, y, 260, {
-            { value = "tactical", label = "主键 + 自动爆发" },
+            { value = "tactical", label = "主键 + 自动注入" },
             { value = "primary", label = "仅主键" },
         }, function()
             return hud.queueMode == "primary" and "primary" or "tactical"
@@ -1400,29 +1219,20 @@ local function buildHUD(pane)
     end
 end
 
-local function buildBurstSettings(pane)
+-- 1.4.0 Auto Injection editor; this is the sole page mounted in TEUI.
+local function buildAutoInjectionSettings(pane)
     local y = -12
     local tactics = select(1, ensureTactics())
-    y = createSection(pane, "自动爆发", y)
-    createCheckbox(pane, "启用自动爆发", 14, y, function() return tactics.autoBurstEnabled == true end, function(value)
-        tactics.autoBurstEnabled = value == true
-    end, "命中窗口技能后，按下方顺序执行已启用并通过检查的步骤。")
-    y = y - 38
-    createChoice(pane, "执行模式", 14, y, 300, {
-        { value = "simple", label = "简易：跳过本轮不可用步骤" },
-        { value = "focused", label = "严格：任一步骤不可用则不启动" },
-    }, function() return tactics.autoBurstMode end, function(value)
-        tactics.autoBurstMode = value == "focused" and "focused" or "simple"
-    end, "简易模式尽量完成可用步骤；严格模式要求所有启用步骤都可用。")
-    y = y - 48
-
-    y = createSection(pane, "爆发顺序（当前专精）", y)
-    createText(pane, "GameFontDisableSmall", 14, y, 720,
-        "HUD 与自动爆发都使用此顺序。窗口技能固定保留；注入和饰品可调整位置或停用。")
-    y = y - 38
-
-    local function sequenceBurstContext()
+    local groups = TE.AutoInjectionGroups
+    local function context()
         return (TE.Context and TE.Context:GetPlayer()) or {}
+    end
+    local function container()
+        return groups and select(1, groups:Get(context())) or nil
+    end
+    local function selected()
+        local value = container()
+        return value and value.groups[value.selectedGroupId] or nil, value
     end
     local function sequenceSpellLabel(spellID)
         spellID = tonumber(spellID)
@@ -1431,167 +1241,202 @@ local function buildBurstSettings(pane)
             local ok, value = pcall(C_Spell.GetSpellName, spellID)
             if ok and type(value) == "string" and value ~= "" then name = value end
         end
-        if not name and spellID and type(GetSpellInfo) == "function" then
-            local ok, value = pcall(GetSpellInfo, spellID)
-            if ok and type(value) == "string" and value ~= "" then name = value end
-        end
         return (name or "SpellID") .. " " .. tostring(spellID or "-")
     end
-    local function sequenceEntryLabel(entry)
-        if not entry then return "" end
-        if entry.category == "window" then
-            return "窗口技能：" .. sequenceSpellLabel(entry.spellID) .. "（固定）"
-        end
-        if entry.category == "trinket" then
-            return "饰品 " .. tostring(entry.inventorySlot or "?") .. "：实时装备栏步骤"
-        end
-        return "注入技能 " .. tostring(entry.slotIndex or "?") .. "：" .. sequenceSpellLabel(entry.spellID)
+    local function report(ok, reason, success)
+        panelStatus(ok and (success or "自动注入设置已更新。")
+            or ("自动注入设置未更新：" .. tostring(reason or "unknown")))
+        refreshControls("burst")
+        ControlPanel:ApplyVisuals(false)
     end
-    local sequenceRows = {}
-    local refreshSequenceRows
-    for rowIndex = 1, 6 do
-        local row = { index = rowIndex }
-        row.label = createText(pane, "GameFontHighlightSmall", 14, y - 4, 332, "")
-        row.up = createActionButton(pane, "上", 354, y, 38, function()
-            if not row.key or not (TE.BurstProfiles and TE.BurstProfiles.MoveAutoBurstStep) then return end
-            local ok, reason = TE.BurstProfiles:MoveAutoBurstStep(sequenceBurstContext(), row.key, -1)
-            if not ok then panelStatus("爆发顺序未调整：" .. tostring(reason)) end
-            if refreshSequenceRows then refreshSequenceRows() end
-            ControlPanel:ApplyVisuals(false)
+
+    y = createSection(pane, "自动注入", y)
+    createCheckbox(pane, "启用自动注入", 14, y, function()
+        return tactics.autoInjectionEnabled == true
+    end, function(value)
+        tactics.autoInjectionEnabled = value == true
+        tactics.autoBurstEnabled = tactics.autoInjectionEnabled
+    end, "官方推荐精确命中某个已启用组的窗口技能时，由唯一活动计划按该组顺序派发。")
+    y = y - 44
+    createText(pane, "GameFontDisableSmall", 14, y, 720,
+        "最多三个独立技能组；同一时刻仅一个组拥有计划。组间不会排队，也不会补发错过的窗口。")
+    y = y - 38
+
+    y = createSection(pane, "技能组", y)
+    local groupButtons = {}
+    for slot = 1, 3 do
+        local button = createActionButton(pane, "技能组 " .. tostring(slot), 14 + (slot - 1) * 180, y, 166, function()
+            local value = container()
+            local id = value and value.order[slot] or nil
+            if id then
+                report(groups:SelectGroup(context(), id), nil, "已切换编辑技能组。")
+            else
+                local ok, created = groups:AddGroup(context())
+                report(ok, ok and nil or created, ok and "已创建技能组。" or nil)
+            end
         end)
-        row.down = createActionButton(pane, "下", 398, y, 38, function()
-            if not row.key or not (TE.BurstProfiles and TE.BurstProfiles.MoveAutoBurstStep) then return end
-            local ok, reason = TE.BurstProfiles:MoveAutoBurstStep(sequenceBurstContext(), row.key, 1)
-            if not ok then panelStatus("爆发顺序未调整：" .. tostring(reason)) end
-            if refreshSequenceRows then refreshSequenceRows() end
-            ControlPanel:ApplyVisuals(false)
-        end)
-        row.toggle = createActionButton(pane, "启用", 444, y, 62, function()
-            if not row.key or row.fixed or not (TE.BurstProfiles and TE.BurstProfiles.SetAutoBurstStepEnabled) then return end
-            local ok, reason = TE.BurstProfiles:SetAutoBurstStepEnabled(sequenceBurstContext(), row.key, not row.enabled)
-            if not ok then panelStatus("步骤状态未调整：" .. tostring(reason)) end
-            if refreshSequenceRows then refreshSequenceRows() end
-            ControlPanel:ApplyVisuals(false)
-        end)
-        row.fixedLabel = createText(pane, "GameFontDisableSmall", 516, y - 4, 88, "固定")
-        sequenceRows[#sequenceRows + 1] = row
-        y = y - 34
+        groupButtons[slot] = button
     end
-    refreshSequenceRows = function()
-        local sequence
-        if TE.BurstProfiles and type(TE.BurstProfiles.GetAutoBurstSequence) == "function" then
-            sequence = select(1, TE.BurstProfiles:GetAutoBurstSequence(sequenceBurstContext()))
+    createActionButton(pane, "新增组", 566, y, 90, function()
+        local ok, value
+        if groups then ok, value = groups:AddGroup(context()) else ok, value = false, "模块未加载" end
+        report(ok, value, ok and "已创建技能组。" or nil)
+    end)
+    local function refreshGroupButtons()
+        local value = container()
+        for slot, button in ipairs(groupButtons) do
+            local id = value and value.order[slot] or nil
+            local group = id and value.groups[id] or nil
+            button.text:SetText(group and ((id == value.selectedGroupId and "▶ " or "") .. group.name)
+                or ("＋ 技能组 " .. tostring(slot)))
+            button.selected = group and id == value.selectedGroupId or false
+            setButtonVisual(button, button.selected)
         end
-        local entries = sequence and sequence.entries or {}
-        for index, row in ipairs(sequenceRows) do
+    end
+    registerControl(refreshGroupButtons)
+    refreshGroupButtons()
+    y = y - 48
+
+    createCheckbox(pane, "启用当前组", 14, y, function()
+        local group = selected(); return group and group.enabled == true or false
+    end, function(value)
+        local group = selected()
+        if not group then return end
+        local ok, reason = groups:SetGroupEnabled(context(), group.groupId, value)
+        report(ok, reason)
+    end, "启用前会检查窗口重复和跨组窗口/注入冲突。")
+    createChoice(pane, "执行模式", RIGHT_X, y, 210, {
+        { value = "simple", label = "简易：跳过确认失效步骤" },
+        { value = "focused", label = "严格：任一步骤失效则终止" },
+    }, function()
+        local group = selected(); return group and group.mode or "simple"
+    end, function(value)
+        local group = selected(); if group then groups:SetGroupMode(context(), group.groupId, value) end
+    end)
+    y = y - 42
+
+    local nameBox = createEditBox(pane, "组名称", 14, y, 210, "")
+    createActionButton(pane, "应用名称", 370, y, 92, function()
+        local group = selected(); if not group then return end
+        local ok, reason = groups:SetGroupName(context(), group.groupId, nameBox:GetText())
+        report(ok, reason)
+    end)
+    local windowBox = createEditBox(pane, "窗口 SpellID", RIGHT_X, y, 118, "")
+    createActionButton(pane, "应用", 636, y, 58, function()
+        local group = selected(); if not group then return end
+        local ok, reason = groups:SetGroupWindow(context(), group.groupId, windowBox:GetText())
+        report(ok, reason)
+    end)
+    local function refreshIdentityBoxes()
+        local group = selected()
+        nameBox:SetText(group and group.name or "")
+        windowBox:SetText(group and tostring(group.windowSpellID or "") or "")
+    end
+    registerControl(refreshIdentityBoxes)
+    refreshIdentityBoxes()
+    y = y - 42
+
+    local injectionBox = createEditBox(pane, "新增注入 SpellID", 14, y, 160, "")
+    createActionButton(pane, "加入当前组", 320, y, 112, function()
+        local group = selected(); if not group then return end
+        local ok, reason = groups:AddInjection(context(), group.groupId, injectionBox:GetText())
+        if ok then injectionBox:SetText("") end
+        report(ok, reason)
+    end)
+    local conflictText = createText(pane, "GameFontDisableSmall", 448, y - 4, 268, "")
+    local function refreshConflict()
+        local group = selected()
+        local validation = groups and select(1, groups:Validate(context())) or nil
+        local reason = group and validation and validation.byGroup[group.groupId] or nil
+        conflictText:SetText(reason and ("阻止：" .. reason) or "组配置校验通过")
+    end
+    registerControl(refreshConflict)
+    refreshConflict()
+    y = y - 50
+
+    y = createSection(pane, "当前组顺序（最多九步）", y)
+    createText(pane, "GameFontDisableSmall", 14, y, 720,
+        "窗口步骤固定存在但可以排序；最多六个注入技能，加饰品 13 / 14 共九步。")
+    y = y - 34
+
+    local rows = {}
+    local refreshRows
+    local function entryLabel(entry)
+        if entry.category == "window" then return "窗口：" .. sequenceSpellLabel(entry.spellID) .. "（固定）" end
+        if entry.category == "trinket" then return "饰品 " .. tostring(entry.inventorySlot) end
+        return "注入：" .. sequenceSpellLabel(entry.spellID)
+    end
+    for rowIndex = 1, 9 do
+        local row = {}
+        row.label = createText(pane, "GameFontHighlightSmall", 14, y - 4, 300, "")
+        row.up = createActionButton(pane, "上", 320, y, 38, function()
+            local group = selected(); if not group or not row.key then return end
+            local ok, reason = groups:MoveStep(context(), group.groupId, row.key, -1)
+            report(ok, reason)
+        end)
+        row.down = createActionButton(pane, "下", 364, y, 38, function()
+            local group = selected(); if not group or not row.key then return end
+            local ok, reason = groups:MoveStep(context(), group.groupId, row.key, 1)
+            report(ok, reason)
+        end)
+        row.toggle = createActionButton(pane, "启用", 408, y, 58, function()
+            local group = selected(); if not group or not row.key then return end
+            local ok, reason = groups:SetStepEnabled(context(), group.groupId, row.key, not row.enabled)
+            report(ok, reason)
+        end)
+        row.remove = createActionButton(pane, "移除", 472, y, 58, function()
+            local group = selected(); if not group or not row.spellID then return end
+            local ok, reason = groups:RemoveInjection(context(), group.groupId, row.spellID)
+            report(ok, reason)
+        end)
+        row.fixed = createText(pane, "GameFontDisableSmall", 540, y - 4, 80, "固定")
+        rows[rowIndex] = row
+        y = y - 32
+    end
+    refreshRows = function()
+        local group = selected()
+        local entries = group and group.sequence and group.sequence.entries or {}
+        for index, row in ipairs(rows) do
             local entry = entries[index]
             row.key = entry and entry.key or nil
+            row.spellID = entry and entry.category == "injection" and entry.spellID or nil
             row.enabled = entry and entry.enabled == true or false
-            row.fixed = entry and entry.fixed == true or false
             row.label:SetShown(entry ~= nil)
             row.up:SetShown(entry ~= nil and index > 1)
             row.down:SetShown(entry ~= nil and index < #entries)
-            row.toggle:SetShown(entry ~= nil and row.fixed ~= true)
-            row.fixedLabel:SetShown(entry ~= nil and row.fixed == true)
+            row.toggle:SetShown(entry ~= nil and entry.category ~= "window")
+            row.remove:SetShown(entry ~= nil and entry.category == "injection")
+            row.fixed:SetShown(entry ~= nil and entry.category == "window")
             if entry then
-                row.label:SetText(sequenceEntryLabel(entry) .. (entry.enabled == true and "" or "（已停用）"))
-                row.toggle.text:SetText(row.enabled and "停用" or "启用")
+                row.label:SetText(entryLabel(entry) .. (entry.enabled == true and "" or "（已停用）"))
+                row.toggle.text:SetText(entry.enabled == true and "停用" or "启用")
             end
         end
     end
-    registerControl(refreshSequenceRows)
-    refreshSequenceRows()
+    registerControl(refreshRows)
+    refreshRows()
     y = y - 8
-    createText(pane, "GameFontDisableSmall", 14, y, 720,
-        "要更换窗口或注入技能，请使用下方技能列表。饰品 13 / 14 始终代表对应装备栏。")
-    y = y - 34
 
-    local function getSequenceEntry(key)
-        if not (TE.BurstProfiles and type(TE.BurstProfiles.GetAutoBurstSequence) == "function") then return nil end
-        local sequence = select(1, TE.BurstProfiles:GetAutoBurstSequence(sequenceBurstContext()))
-        for _, entry in ipairs(sequence and sequence.entries or {}) do
+    local function trinketEntry(key)
+        local group = selected()
+        for _, entry in ipairs(group and group.sequence and group.sequence.entries or {}) do
             if entry.key == key then return entry end
         end
-        return nil
-    end
-    local function setTrinketOffGCD(key, value)
-        if not (TE.BurstProfiles and type(TE.BurstProfiles.SetAutoBurstTrinketOffGCD) == "function") then return end
-        local ok, reason = TE.BurstProfiles:SetAutoBurstTrinketOffGCD(sequenceBurstContext(), key, value == true)
-        if not ok then panelStatus("饰品 GCD 设置未调整：" .. tostring(reason)) end
     end
     createCheckbox(pane, "饰品 13 已确认脱 GCD", 14, y, function()
-        local entry = getSequenceEntry("trinket:13")
-        return entry and entry.offGCDExplicit == true
-    end, function(value) setTrinketOffGCD("trinket:13", value) end,
-        "只在实测确认该饰品不触发公共冷却时勾选。")
+        local entry = trinketEntry("trinket:13"); return entry and entry.offGCDExplicit == true or false
+    end, function(value)
+        local group = selected(); if group then groups:SetTrinketOffGCD(context(), group.groupId, "trinket:13", value) end
+    end, "只在实测确认该饰品不触发公共冷却时勾选。")
     createCheckbox(pane, "饰品 14 已确认脱 GCD", RIGHT_X, y, function()
-        local entry = getSequenceEntry("trinket:14")
-        return entry and entry.offGCDExplicit == true
-    end, function(value) setTrinketOffGCD("trinket:14", value) end,
-        "只在实测确认该饰品不触发公共冷却时勾选。")
-    y = y - 54
-
-    local function currentBurstContext()
-        return (TE.Context and TE.Context:GetPlayer()) or {}
-    end
-    local function editableBurstEntries(kind)
-        if not (TE.BurstProfiles and type(TE.BurstProfiles.GetEditableList) == "function") then
-            return {}, nil, "BurstProfiles 未加载", nil
-        end
-        return TE.BurstProfiles:GetEditableList(currentBurstContext(), kind)
-    end
-    local function burstMove(kind, spellID, delta)
-        if not (TE.BurstProfiles and type(TE.BurstProfiles.Move) == "function") then return false, "BurstProfiles 未加载" end
-        return TE.BurstProfiles:Move(currentBurstContext(), kind, spellID, delta)
-    end
-    local function burstEnable(kind, spellID, enabled)
-        if not (TE.BurstProfiles and type(TE.BurstProfiles.SetEnabled) == "function") then return false, "BurstProfiles 未加载" end
-        return TE.BurstProfiles:SetEnabled(currentBurstContext(), kind, spellID, enabled)
-    end
-    local function burstRemove(kind, spellID)
-        if not (TE.BurstProfiles and type(TE.BurstProfiles.RemoveCustom) == "function") then return false, "BurstProfiles 未加载" end
-        return TE.BurstProfiles:RemoveCustom(currentBurstContext(), kind, spellID)
-    end
-    local function burstAdd(kind, spellID)
-        if not (TE.BurstProfiles and type(TE.BurstProfiles.AddCustom) == "function") then return false, "BurstProfiles 未加载" end
-        return TE.BurstProfiles:AddCustom(currentBurstContext(), kind, spellID)
-    end
-    local function burstRestore()
-        if not (TE.BurstProfiles and type(TE.BurstProfiles.RestoreDefaults) == "function") then return false, "BurstProfiles 未加载" end
-        return TE.BurstProfiles:RestoreDefaults(currentBurstContext())
-    end
-
-    y = createSpellPriorityEditor(pane, "官方窗口候选库", "首个已启用、已知且有真实键位的技能是自动爆发窗口锚点。上方窗口步骤固定存在，可调整位置。", y, {
-        maxRows = 5,
-        enabledLabel = "窗口优先级",
-        removeLabel = "停用",
-        getEntries = function() return editableBurstEntries("trigger") end,
-        move = function(spellID, delta) return burstMove("trigger", spellID, delta) end,
-        setEnabled = function(spellID, enabled) return burstEnable("trigger", spellID, enabled) end,
-        remove = function(spellID) return burstRemove("trigger", spellID) end,
-        add = function(spellID) return burstAdd("trigger", spellID) end,
-        addLabel = "添加触发技能",
-        showRestore = false,
-    })
-
-    y = createSpellPriorityEditor(pane, "注入技能", "当前专精已启用的前 6 项可加入上方爆发顺序。此处维护 SpellID 和优先级；上方只调参与和位置。", y, {
-        maxRows = 6,
-        enabledLabel = "注入优先级",
-        removeLabel = "停用",
-        getEntries = function() return editableBurstEntries("injection") end,
-        move = function(spellID, delta) return burstMove("injection", spellID, delta) end,
-        setEnabled = function(spellID, enabled) return burstEnable("injection", spellID, enabled) end,
-        remove = function(spellID) return burstRemove("injection", spellID) end,
-        add = function(spellID) return burstAdd("injection", spellID) end,
-        addLabel = "添加注入技能",
-        restore = burstRestore,
-        resetLabel = "恢复当前专精全部爆发默认",
-    })
-
+        local entry = trinketEntry("trinket:14"); return entry and entry.offGCDExplicit == true or false
+    end, function(value)
+        local group = selected(); if group then groups:SetTrinketOffGCD(context(), group.groupId, "trinket:14", value) end
+    end, "只在实测确认该饰品不触发公共冷却时勾选。")
 end
 
 local function buildBurst(pane)
-    buildBurstSettings(pane)
+    buildAutoInjectionSettings(pane)
 end
 
 local function buildProfiles(pane)

@@ -45,7 +45,7 @@ def test_hud_page_keeps_practical_controls_and_removes_retired_controls() -> Non
         "无推荐时隐藏",
         "脱战显示",
         "显示拖动把手",
-        "主键 + 自动爆发",
+        "主键 + 自动注入",
         "仅主键",
         "主键大小",
         "爆发大小",

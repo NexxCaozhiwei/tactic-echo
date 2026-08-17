@@ -156,7 +156,7 @@ local function advisoryVisual(item, kind)
         return "unbound", "未在现实动作条白名单中找到绑定"
     end
     if kind == "burst" and item.burstDispatchActive == true then
-        return "burst_dispatch", "当前自动爆发步骤已进入 BindingToken 派发链"
+        return "burst_dispatch", "当前自动注入步骤已进入 BindingToken 派发链"
     end
     -- Mirror the reference renderer's state priority: an invalid target/range or
     -- resource shortfall should be visible before a generic advisory label.
@@ -209,7 +209,7 @@ local function effectIntent(item, kind, meta, visual)
 end
 
 local function sourceLabelFor(kind, item)
-    local labels = { primary = "官方", candidate = "候选", interrupt = "打断", defense = "防御", burst = "爆发", control = "控制", mobility = "位移" }
+    local labels = { primary = "官方", candidate = "候选", interrupt = "打断", defense = "防御", burst = "注入", control = "控制", mobility = "位移" }
     local label = labels[kind] or "提示"
     if kind == "burst" and item then
         if item.burstRole == "window" then label = "窗口"

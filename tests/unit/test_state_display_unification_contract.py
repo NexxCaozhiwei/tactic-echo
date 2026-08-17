@@ -29,7 +29,7 @@ class StateDisplayUnificationContractTests(unittest.TestCase):
             'display_only = "仅显示"',
             'local function userVisibleReason(rawReason, reasonText)',
             'setLabel("generalRuntime", "当前状态：" .. compactStatus.label',
-            '自动爆发：" .. (tactics.autoBurstEnabled == true and "已开启（HAD）" or "已关闭（LCC）")',
+            '自动注入：" .. (tactics.autoInjectionEnabled == true and "已开启（HAD）" or "已关闭（LCC）")',
         ):
             self.assertIn(token, control)
         self.assertNotIn('"运行状态：" .. tostring(runtimeState)', control)
@@ -59,7 +59,7 @@ class StateDisplayUnificationContractTests(unittest.TestCase):
         board = BOARD.read_text(encoding="utf-8")
         styles = STYLES.read_text(encoding="utf-8")
         icon = ICON.read_text(encoding="utf-8")
-        self.assertIn('dispatchable = autoBurstEnabled and "HAD" or "LCC"', board)
+        self.assertIn('dispatchable = autoInjectionEnabled == true and "HAD" or "LCC"', board)
         self.assertIn('dispatchable = "可用"', icon)
         self.assertNotIn('label = "HAD"', styles)
         self.assertIn('channeling = "引导中"', board)

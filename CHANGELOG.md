@@ -1,3 +1,12 @@
+# 1.4.0 — 多技能组自动注入
+
+- **AutoBurst 泛化为自动注入**：每个专精最多保存三个稳定 `groupId` 技能组；每组拥有独立名称、开关、`simple/focused` 模式、普通或爆发窗口、最多六个注入和饰品 13/14 九步顺序。
+- **单一计划协调器**：新增 `AutoInjectionGroups` 与 `AutoInjectionCoordinator`；空闲时以 `windowSpellID → groupId` 索引精确匹配，活动时只把唯一组规则交给现有 OrderedPlan 执行器，没有复制状态机、事件、轮询或输入路径。
+- **跨组隔离**：活动组锁定 `groupId`、窗口和组签名；其他组窗口只记录 `group_window_ignored_while_owner_active`，不抢占、不排队、不补发，必须经过新的离开/进入边沿才可启动。
+- **迁移与冲突保护**：旧 `autoBurstEnabled`、`autoBurstMode` 和每专精 `autoBurstSequence` 幂等迁移到组 1；重复窗口、跨组窗口/注入级联、缺失窗口和无可选步骤均确定性 fail-closed。
+- **设置页与 HUD 修复**：设置页可完整编辑九步和最多三个组；HUD 只显示活动、命中或当前选中组，并在首个有效快照立即显示，不再因初始 debounce 或短暂运行快照缺失隐藏整个注入序列。
+- **输入协议不变**：继续复用 BindingToken → TEAP v3 20 字节 → TEK；`dispatchOrigin="burst"` 与 flags `0x20` 保持不变，没有增加 groupId 协议字段或第二派发器。
+
 # 1.3.0 — AutoBurst 稳定基线
 
 - **P1–P3 正式验收**：冻结已实机通过的爆发链锁定、GCD/队列窗口派发、失败回执隔离与安全重试、HUD 真实“派发/阻止”展示，以及当前主键 + AutoBurst 加载链路结构收口。

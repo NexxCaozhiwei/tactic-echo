@@ -1,4 +1,4 @@
-# AGENTS.md — Tactic Echo 1.3.0 开发与安全边界
+# AGENTS.md — Tactic Echo 1.4.0 开发与安全边界
 
 ## 0. 当前收窄范围（最高优先级）
 
@@ -12,7 +12,7 @@
 
 ## 1. 基线与交付
 
-- 当前唯一开发基线：`1.3.0`。该基线由 `1.1.7` 继续收口：AutoBurst 与输入路径仍以 1.0.35 为冻结基线；HUD 冷却渲染仍以已实测稳定的 1.0.31 实时转盘路径为基础，并由 1.0.38 收口为“DurationObject 只画转盘、HUD 徽标统一纯秒数”。自动打断生产运行继续硬暂停，AutoBurst 保持脱战硬门控。HUD 卡片与 HUD 手动点击层在战斗中不得直接调用受保护 `Button:Hide()` / secure proxy Hide 路径；卡片 Button 在战斗中不得调用 `SetAlpha`、`EnableMouse`、`Show` 或 `Hide`，只能记录待处理状态；`HudClickRouter` 的 secure proxy 与 blocker 在战斗中同样不得调用 `SetAlpha`、`Show` 或 `Hide`，只能记录 `tacticEchoCombatVisibilityPending` 与 `dirty`；`TacticalBoard` 与 defense 容器在战斗中不得调用 `SetScale`、`SetAlpha`、`SetShown`、`Show` 或 `Hide`，`TacticalHudLayout` 在战斗中不得执行 `SetScale`、`SetPoint`、`SetSize`、`SetShown` 等布局变更，只能记录 pending/dirty，脱战后再真实隐藏、显示、缩放或重建。TEK 本地连发介入白名单仅豁免配置中的主键，默认 `W/A/S/D/SPACE` 不触发手动让步；非白名单真实键盘输入，包括不能单独加入白名单的 `Ctrl`、`Alt`、`Shift`、`Win` 修饰键，必须从按下到抬起持续 `manual_input_held`，抬起后再进入既有 release delay、freshness 与 replay guard。TEK 必须支持 `Shift+1` 至 `Shift+=` 等动作条绑定 token；扩展修饰键或新键位时必须同步 binding token 解析、SendInput 编码与测试。默认 `pause_out_of_combat` 策略对外命名为“自动启停”：未进战斗或脱战时保持底层 `paused` 安全帧，但 HUD/设置中心必须显示“待命”，进战后自动恢复运行；手动暂停和脱战停止仍显示为暂停。无论 Defaults、旧 SavedVariables、规则、官方窗口、已有 plan/capture 或既有 bridge 字段为何，只要 `inCombat=false`，不得创建/保留 Burst capture 或 plan，不得生成 Burst candidate、TEAP Burst 帧或 TEK 请求。默认动作条槽位可作为 TEAP/TEK 自动派发来源扫描，不要求对应动作条按钮当前可见；HUD 手动点击只能静态 secure proxy 复用可靠当前可见默认动作条按钮/已识别宏，隐藏按钮只能用于 TEAP/TEK 自动派发，不能成为 HUD 手动点击代理。HUD/原生默认动作条真实左键必须以 `manual_hold`、动作码 0、BindingToken 0 优先于后续派发。宏列表存在、宏名、图标及未知宏正文均不得作为当前动作栏身份或钢条判断依据。此前版本仅保留历史记录。
+- 当前唯一开发基线：`1.4.0`。用户可见的 AutoBurst 已泛化并更名为“自动注入”：每专精最多三个独立配置组必须共享唯一 `AutoInjectionCoordinator`、唯一 AutoBurst OrderedPlan、唯一 capture 和唯一候选；不得复制并行状态机、事件、轮询或输入路径。AutoBurst 与输入路径仍以 1.0.35 为冻结基线；HUD 冷却渲染仍以已实测稳定的 1.0.31 实时转盘路径为基础，并由 1.0.38 收口为“DurationObject 只画转盘、HUD 徽标统一纯秒数”。自动打断生产运行继续硬暂停，自动注入保持脱战硬门控。HUD 卡片与 HUD 手动点击层在战斗中不得直接调用受保护 `Button:Hide()` / secure proxy Hide 路径；卡片 Button 在战斗中不得调用 `SetAlpha`、`EnableMouse`、`Show` 或 `Hide`，只能记录待处理状态；`HudClickRouter` 的 secure proxy 与 blocker 在战斗中同样不得调用 `SetAlpha`、`Show` 或 `Hide`，只能记录 `tacticEchoCombatVisibilityPending` 与 `dirty`；`TacticalBoard` 与 defense 容器在战斗中不得调用 `SetScale`、`SetAlpha`、`SetShown`、`Show` 或 `Hide`，`TacticalHudLayout` 在战斗中不得执行 `SetScale`、`SetPoint`、`SetSize`、`SetShown` 等布局变更，只能记录 pending/dirty，脱战后再真实隐藏、显示、缩放或重建。TEK 本地连发介入白名单仅豁免配置中的主键，默认 `W/A/S/D/SPACE` 不触发手动让步；非白名单真实键盘输入，包括不能单独加入白名单的 `Ctrl`、`Alt`、`Shift`、`Win` 修饰键，必须从按下到抬起持续 `manual_input_held`，抬起后再进入既有 release delay、freshness 与 replay guard。TEK 必须支持 `Shift+1` 至 `Shift+=` 等动作条绑定 token；扩展修饰键或新键位时必须同步 binding token 解析、SendInput 编码与测试。默认 `pause_out_of_combat` 策略对外命名为“自动启停”：未进战斗或脱战时保持底层 `paused` 安全帧，但 HUD/设置中心必须显示“待命”，进战后自动恢复运行；手动暂停和脱战停止仍显示为暂停。无论 Defaults、旧 SavedVariables、组配置、官方窗口、已有 plan/capture 或既有 bridge 字段为何，只要 `inCombat=false`，不得创建/保留 Burst capture 或 plan，不得生成 Burst candidate、TEAP Burst 帧或 TEK 请求。默认动作条槽位可作为 TEAP/TEK 自动派发来源扫描，不要求对应动作条按钮当前可见；HUD 手动点击只能静态 secure proxy 复用可靠当前可见默认动作条按钮/已识别宏，隐藏按钮只能用于 TEAP/TEK 自动派发，不能成为 HUD 手动点击代理。HUD/原生默认动作条真实左键必须以 `manual_hold`、动作码 0、BindingToken 0 优先于后续派发。宏列表存在、宏名、图标及未知宏正文均不得作为当前动作栏身份或钢条判断依据。此前版本仅保留历史记录。
 - **基线归档是强制仓库规范**：所有 `BASELINE_<版本>.md` 只允许置于 `docs/baselines/`，根目录不得保存重复 baseline。每次版本化源码改动必须同步：① `docs/baselines/BASELINE_<VERSION>.md`；② 根目录 `CHANGELOG.md` 同版本条目；③ `VERSION`、TOC 与 `Core/Bootstrap.lua`。不得以临时根目录 baseline、仅更新 CHANGELOG 或仅更新版本号交付。
 - **补丁清单归档是强制仓库规范**：所有 `PATCH_MANIFEST*` 只允许置于 `docs/patch-manifests/`，根目录和 `docs/` 根层不得保存重复 patch manifest。清单只作为交付历史，不得替代当前 baseline、CHANGELOG 或 live source。
 - **P5.9 控制/防御/生存宏兼容**：控制、防御与生存 HUD 必须沿用 Burst/Interrupt 的既有宽松、只读宏关联原则。当前可见 Blizzard 默认动作条宏的 `/cast`、`/use`、条件分支、`@focus`、`@mouseover`、`@cursor`、目标管理辅助命令与 `/castsequence` 不得因缺少可解析 BindingToken 而从 HUD 手动入口移除；无键位或白名单外键位只能作为 `bindingToken=0` 的人工 HUD 点击来源，绝不授权 TEAP/TEK、自动控制、自动防御或自动生存。物品宏只能由已读取正文与精确 ItemID/`item:ID`/本地化物品名语义关联，宏名、图标、宏列表存在和猜测的宏分支均不得作为来源。
@@ -21,7 +21,7 @@
 - **1.2.0 共享宏资格（最高优先级）**：不得让 AutoBurst、Reaction、控制、防御或生存各自实现、放宽或回退宏身份规则。常规来源必须统一经 `ActionBarBindingResolver:IsVerifiedCurrentMacroSource()`：当前按钮/槽位身份已验证、正文语义已解析、关联为 `macro_body_*`、`macro_item_*` 或 `macro_inventory_*`。在此前提下，继续兼容 `/cast`、`/use`、条件分支、`@focus`、`@mouseover`、`@cursor`、目标管理辅助命令与 `/castsequence`，并保留原宏行为；控制、防御、生存只能作 `bindingToken=0` 的 HUD 手动来源。AutoBurst 还必须统一经 `IsAutoBurstMacroEligible()`，仅正文关联且语义允许的宏可进入 burst step。`action_info_*` 正文不可读兼容只保留给 P4 target-only transport，且须有真实 BindingToken；永不成为 HUD 或 AutoBurst 来源。所有宏失败诊断必须请求作用域化：不得把无关“坐骑”等宏显示为胁迫、冰冻陷阱等技能的候选；同一有效 numeric index 的当前按钮仅在动作条文本明确命名请求技能时可保留同槽位读取失败诊断，仍不授权恢复/扫描/替代。
 - 默认交付完整源码包。压缩包只能有一个项目根目录，不得包含 `build/`、`dist/`、`release/`、缓存、日志、SavedVariables、EXE、历史补丁或本机配置。
 - 每次代码修改必须保持根目录 `VERSION`、插件 TOC、`Core/Bootstrap.lua` 版本一致，并运行本文件第 9 节验证。
-- 不得以离线测试、PyInstaller 成功或进程存活作为 Windows Hook、前台判断、SendInput、自动爆发实机成功的证据。
+- 不得以离线测试、PyInstaller 成功或进程存活作为 Windows Hook、前台判断、SendInput、自动注入实机成功的证据。
 
 ## 2. 常规派发路径
 
@@ -38,30 +38,31 @@
 
 禁止新增任何绕过该路径的输入通道。AddOn 不得创建隐藏按钮、写按键、保存按键、编辑宏、合成宏、直接调用 Windows 输入或写虚拟键值。
 
-## 3. 自动爆发：可排序多步骤受控接管
+## 3. 自动注入（内部 AutoBurst）：多组配置共享单一受控计划
 
-AutoBurst 是官方推荐的受控候选层，不是第二条输入通道：
+自动注入是官方推荐的受控候选层，不是第二条输入通道：
 
 ```text
 OfficialRecommendation（不可变）
-→ AutoBurst OrderedPlan（候选）
+→ AutoInjectionCoordinator（最多三组中选择唯一所有者）
+→ AutoBurst OrderedPlan（唯一候选执行器）
 → 已解析 BindingToken
 → TEAP v3（dispatchOrigin=burst）
 → TEK 全部门禁
 → 单次 SendInput
 ```
 
-### 3.1 每专精数据模型
+### 3.1 每专精多组数据模型
 
-每个专精独立保存一条 sequence，步骤身份必须稳定：
+每个专精最多保存三个稳定 `groupId` 配置组；排序不得改变 groupId。每组独立保存名称、开关、`simple/focused`、唯一窗口和一条 sequence：
 
 ```text
-window                    -- 固定、不可停用
-injection:<SpellID>       -- 最多 6 个，来自该专精“注入技能”列表的已启用前 6 项
+window                    -- 固定、不可停用，可使用普通技能
+injection:<SpellID>       -- 每组最多 6 个，使用稳定 SpellID 身份
 trinket:13 / trinket:14   -- 固定装备栏身份，计划创建时锁定实际 ItemID
 ```
 
-顺序、启用状态和 `offGCDExplicit` 必须写入 `tactics.burstProfiles[profileKey].autoBurstSequence`。禁止按“注入第 N 槽位”、动作条键位、瞬时 ItemID 或跨专精全局变量保存顺序。窗口步骤永远存在；注入/饰品可独立启用、停用、上移、下移。旧 Phase 1.5 的手填窗口/注入 SpellID、方向、单饰品入口和 fallback 字段不得恢复或参与运行时规则。
+组配置必须写入 `tactics.burstProfiles[profileKey].autoInjectionGroups`；旧 `autoBurstSequence` 只允许幂等迁移到 `group-1`，不得继续作为正式运行配置。不同启用组窗口必须唯一；任何组窗口不得作为另一组注入，普通注入与饰品可跨组复用。窗口步骤永远存在；注入/饰品可独立启用、停用、上移、下移。活动计划必须冻结 groupId、窗口和 sequence signature；其他组窗口只记录 `group_window_ignored_while_owner_active`，不得抢占、排队或补发，必须等待新的离开/进入边沿。旧 Phase 1.5 的方向、单饰品入口和 fallback 字段不得恢复或参与运行时规则。
 
 ### 3.2 计划创建与预检
 
@@ -94,9 +95,9 @@ trinket:13 / trinket:14   -- 固定装备栏身份，计划创建时锁定实际
 
 ### 3.5 UI 与诊断
 
-爆发页只允许：自动爆发开关、`simple/focused`、当前专精的顺序调整、可选步骤启停、已实测确认的饰品脱 GCD标记，以及下方专精注入技能列表。不得重新加入手填规则或“测试规则”入口。
+自动注入页只允许：总开关、最多三个可选择/折叠的独立技能组、每组启用状态/名称/`simple|focused`、唯一窗口 SpellID、最多九步顺序编辑、可选步骤启停/移动/移除、已实测确认的饰品脱 GCD 标记与纯标量冲突原因。窗口步骤固定存在且不可停用；普通技能窗口仍须在运行期经过既有动作条与 BindingToken 校验。不得重新加入旧全局手填规则或“测试规则”入口。
 
-必须保留并导出：`sequence_preflight_selected`、`sequence_preflight_no_eligible`、`selectedOrder`、`excludedOrder`、`sequenceLength`、`sequenceKeys`、handoff 帧数、当前步骤、锁定饰品 slot/ItemID、计划中止/释放原因。诊断不得导出宏正文、原始受保护 cooldown 数值或用户敏感数据。
+必须保留并导出：`sequence_preflight_selected`、`sequence_preflight_no_eligible`、`selectedOrder`、`excludedOrder`、`sequenceLength`、`sequenceKeys`、handoff 帧数、当前步骤、锁定饰品 slot/ItemID、计划中止/释放原因，以及 `activeGroupId`、`activeGroupName`、`matchedGroupId`、组窗口/签名/长度/键、组代次/离开锁/收据、忽略组与配置冲突/迁移结果。诊断不得导出宏正文、原始受保护 cooldown 数值或用户敏感数据。
 
 ## 3.6 HUD 冷却展示、实时对象与真实动作条数值
 

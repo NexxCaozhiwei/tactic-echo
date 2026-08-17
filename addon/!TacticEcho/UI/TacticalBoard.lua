@@ -158,11 +158,12 @@ end
 
 local function statusText(primary)
     local visual = primary and primary.visual or {}
-    local autoBurstEnabled = type(TacticEchoDB) == "table"
-        and type(TacticEchoDB.tactics) == "table"
-        and TacticEchoDB.tactics.autoBurstEnabled == true
+    local tactics = type(TacticEchoDB) == "table" and type(TacticEchoDB.tactics) == "table"
+        and TacticEchoDB.tactics or nil
+    local autoInjectionEnabled = tactics and tactics.autoInjectionEnabled
+    if autoInjectionEnabled == nil and tactics then autoInjectionEnabled = tactics.autoBurstEnabled end
     local labels = {
-        dispatchable = autoBurstEnabled and "HAD" or "LCC",
+        dispatchable = autoInjectionEnabled == true and "HAD" or "LCC",
         primary = "官方推荐",
         display_only = "仅显示",
         blocked = "已阻断",

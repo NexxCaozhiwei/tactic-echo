@@ -323,7 +323,12 @@ local function normalizeTactics(tactics, priorHudSchema)
     tactics.mobilityEnabled = boolean(tactics.mobilityEnabled, defaults.mobilityEnabled)
     tactics.defensiveEnabled = boolean(tactics.defensiveEnabled, defaults.defensiveEnabled)
     tactics.defensiveOutOfCombatStandby = boolean(tactics.defensiveOutOfCombatStandby, defaults.defensiveOutOfCombatStandby)
-    tactics.autoBurstEnabled = boolean(tactics.autoBurstEnabled, defaults.autoBurstEnabled)
+    if tactics.autoInjectionEnabled == nil then
+        tactics.autoInjectionEnabled = boolean(tactics.autoBurstEnabled, defaults.autoInjectionEnabled)
+    else
+        tactics.autoInjectionEnabled = boolean(tactics.autoInjectionEnabled, defaults.autoInjectionEnabled)
+    end
+    tactics.autoBurstEnabled = tactics.autoInjectionEnabled == true
     tactics.autoBurstMode = isEnum(tactics.autoBurstMode, { simple = true, focused = true }, defaults.autoBurstMode)
     tactics.autoBurstDebug = false
     -- 1.0.26 retires the global legacy manual-rule manual rule.  Settings are now

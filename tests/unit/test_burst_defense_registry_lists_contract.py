@@ -104,11 +104,11 @@ class BurstDefenseRegistryListsContractTests(unittest.TestCase):
         self.assertNotIn("ALT+Q", defense_body)
         self.assertNotIn("403876", defense_body)
 
-    def test_teui_has_current_spec_autoburst_editor_without_retired_defense_editor(self) -> None:
+    def test_teui_has_current_spec_auto_injection_editor_without_retired_defense_editor(self) -> None:
         for marker in (
-            "自动爆发",
-            "注入技能",
-            "爆发顺序",
+            "自动注入",
+            "新增注入 SpellID",
+            "当前组顺序（最多九步）",
         ):
             self.assertIn(marker, self.ui)
         for retired in ("防御优先列表", "恢复当前专精防御默认"):

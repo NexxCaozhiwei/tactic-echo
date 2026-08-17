@@ -152,7 +152,7 @@ def test_burst_internal_hold_and_evaluator_fault_are_armed_observation_not_globa
 def test_window_departure_lock_runs_after_real_auto_run_gates() -> None:
     source = read(ADDON / "Tactics" / "AutoBurst.lua")
     lock_index = source.index("if self.requireWindowDeparture and officialSpellID == self.lockedWindowSpellID")
-    enabled_index = source.index("if settings.autoBurstEnabled ~= true then")
+    enabled_index = source.index("if autoInjectionEnabled ~= true then")
     intent_index = source.index('if runtime.intentState ~= "armed" then')
     paused_index = source.index("local paused, pauseReason = isRuntimePaused")
     assert enabled_index < intent_index < paused_index < lock_index
@@ -402,8 +402,8 @@ def test_ordered_sequence_supports_window_six_injections_and_two_trinkets_per_sp
     assert "selectedRuleForSequence" in auto
     assert "sequence_preflight_selected" in auto
     assert "sequence_preflight_no_eligible" in auto
-    assert "爆发顺序（当前专精）" in ui
-    assert "当前专精已启用的前 6 项可加入上方爆发顺序" in ui
+    assert "当前组顺序（最多九步）" in ui
+    assert "新增注入 SpellID" in ui
     assert "MAX_BURST_CARDS = 9" in model
     assert "MAX_BURST_CARDS = 9" in board
     assert "nodes.tactical.burst[9]" in layout

@@ -39,6 +39,8 @@ local function burstPlanMetadata(value)
     if type(value) ~= "table" then return nil end
     return {
         planId = tonumber(value.planId) or nil,
+        groupId = type(value.groupId) == "string" and value.groupId or nil,
+        groupName = type(value.groupName) == "string" and value.groupName or nil,
         ruleId = type(value.ruleId) == "string" and value.ruleId or nil,
         direction = value.direction == "post" and "post" or (value.direction == "pre" and "pre" or nil),
         mode = value.mode == "focused" and "focused" or (value.mode == "simple" and "simple" or nil),

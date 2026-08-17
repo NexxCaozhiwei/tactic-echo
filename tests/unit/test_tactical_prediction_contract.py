@@ -39,7 +39,7 @@ class TacticalPredictionContractTests(unittest.TestCase):
         self.assertIn("schema = 4", model)
         self.assertIn("candidates = {}", model)
         self.assertIn("defense = {}", model)
-        self.assertIn("主键 + 自动爆发", control)
+        self.assertIn("主键 + 自动注入", control)
         self.assertIn('interrupt = "hud"', control)
         self.assertIn('defense = "hud"', control)
         self.assertIn('monitor = "general"', control)

@@ -38,7 +38,8 @@ class AutoBurstHotkeyStatusContractTests(unittest.TestCase):
         start = self.panel.index("function ControlPanel:ToggleAutoBurst(source)")
         end = self.panel.index("function ControlPanel:SetToggleHotkey", start)
         narrowed = self.panel[start:end]
-        self.assertIn("tactics.autoBurstEnabled = tactics.autoBurstEnabled ~= true", narrowed)
+        self.assertIn("tactics.autoInjectionEnabled = tactics.autoInjectionEnabled ~= true", narrowed)
+        self.assertIn("tactics.autoBurstEnabled = tactics.autoInjectionEnabled", narrowed)
         for forbidden in (
             "SignalFrame:SetState",
             "SignalEncoder",
@@ -50,8 +51,8 @@ class AutoBurstHotkeyStatusContractTests(unittest.TestCase):
         self.assertIn('if state == "armed" then self:PauseDynamic() else self:StartDynamic() end', self.panel)
 
     def test_dispatchable_hud_line_uses_lcc_or_had_without_changing_icon_label(self) -> None:
-        self.assertIn("TacticEchoDB.tactics.autoBurstEnabled == true", self.board)
-        self.assertIn('dispatchable = autoBurstEnabled and "HAD" or "LCC"', self.board)
+        self.assertIn("tactics.autoInjectionEnabled", self.board)
+        self.assertIn('dispatchable = autoInjectionEnabled == true and "HAD" or "LCC"', self.board)
         self.assertIn('dispatchable = "可用"', self.icon)
 
 

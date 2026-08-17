@@ -37,7 +37,7 @@ def test_hud_uses_one_authoritative_content_selector() -> None:
     control = read("UI/ControlPanel.lua")
     normalize = read("Config/Normalize.lua")
     board = read("UI/TacticalBoard.lua")
-    assert 'label = "主键 + 自动爆发"' in control
+    assert 'label = "主键 + 自动注入"' in control
     assert 'label = "仅主键"' in control
     assert "hud.compact = false" in control
     assert 'burstStyle.show = hud.queueMode ~= "primary"' in control

@@ -1119,6 +1119,10 @@ local function showTooltip(card)
     local item, visual = card.item or {}, card.visual or {}
     GameTooltip:SetOwner(card, "ANCHOR_CURSOR")
     GameTooltip:SetText(safeText(item.spellName or visual.label, "战术图标"), 0.80, 0.92, 1)
+    if item.autoInjectionGroupName or item.autoInjectionGroupId then
+        GameTooltip:AddLine("自动注入组：" .. safeText(item.autoInjectionGroupName or item.autoInjectionGroupId, "-"),
+            0.72, 0.88, 1.00, true)
+    end
     for _, line in ipairs(tooltipLines(item, visual, card)) do GameTooltip:AddLine(line, 1, 1, 1, true) end
     GameTooltip:Show()
 end
@@ -1473,7 +1477,9 @@ function TacticalIconButton:Apply(card, item, hud, moduleKey)
     -- labels no longer hides safety state, and state text never replaces a CD.
     -- Cast-lock states, including visual.visualState == "empowering" or visual.visualState == "empowering_lock",
     -- remain state-layer context rather than source-label text.
-    card.label:SetText(card.hud.showSourceTags ~= false and safeText(visual.sourceLabel or visual.label, "") or "")
+    local groupLabel = safeText(item.autoInjectionGroupName or item.autoInjectionGroupId, "")
+    card.label:SetText(groupLabel ~= "" and groupLabel
+        or (card.hud.showSourceTags ~= false and safeText(visual.sourceLabel or visual.label, "") or ""))
     local keyHidden = card.hud.showKeyLabels == false or not card.resolvedKeyStyle or card.resolvedKeyStyle.enabled == false
     card.hotkey:SetText(keyHidden and "" or formatBinding(item.binding))
     self:RefreshDynamic(card, item)

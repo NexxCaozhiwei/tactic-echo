@@ -204,7 +204,7 @@ end
 
 local function printAutoBurstStatus()
     if not (TE.AutoBurst and type(TE.AutoBurst.GetDiagnostics) == "function") then
-        safePrint("自动爆发：模块未加载。请确认当前加载的插件目录为 !TacticEcho。")
+        safePrint("自动注入：模块未加载。请确认当前加载的插件目录为 !TacticEcho。")
         return
     end
     local data = TE.AutoBurst:GetDiagnostics() or {}
@@ -221,11 +221,12 @@ local function printAutoBurstStatus()
             labels[#labels + 1] = "注入" .. tostring(step.spellID or "?")
         end
     end
-    safePrint("自动爆发：构建=" .. tostring(data.build or "未知")
+    safePrint("自动注入：构建=" .. tostring(data.build or "未知")
         .. " 启用=" .. tostring(data.enabled == true)
         .. " 模式=" .. tostring(data.mode or "-")
         .. " 宏=" .. tostring(data.macroPolicy or "-"))
-    safePrint("自动爆发规则：专精=" .. tostring(rule.profileKey or "无")
+    safePrint("自动注入规则：组=" .. tostring(rule.groupName or rule.groupId or "无")
+        .. " 专精=" .. tostring(rule.profileKey or "无")
         .. " 窗口=" .. tostring(rule.windowSpellID or "-")
         .. " 顺序=" .. (#labels > 0 and table.concat(labels, "→") or "无")
         .. " 原因=" .. tostring(data.ruleReason or "无"))
@@ -233,14 +234,14 @@ local function printAutoBurstStatus()
         and ("饰品槽=" .. tostring(plan.pendingConfirmationInventorySlot or "-")
             .. " 物品=" .. tostring(plan.pendingConfirmationItemID or "-"))
         or tostring(plan.pendingConfirmationSpellID or "-")
-    safePrint("自动爆发最近：阶段=" .. tostring(decision.phase or "-")
+    safePrint("自动注入最近：阶段=" .. tostring(decision.phase or "-")
         .. " 原因=" .. tostring(decision.reason or "-")
         .. " 官方=" .. tostring(decision.officialSpellID or "-")
         .. " 计划=" .. tostring(plan.state or "IDLE")
         .. " 等待确认=" .. pendingLabel
         .. " 候选帧=" .. tostring(plan.candidateOfferCount or 0))
     if data.lastFault and data.lastFault.reason then
-        safePrint("自动爆发错误：" .. tostring(data.lastFault.reason))
+        safePrint("自动注入错误：" .. tostring(data.lastFault.reason))
     end
 end
 
@@ -251,15 +252,17 @@ SlashCmdList.TACTICECHOAUTOBURST = function(message)
     if command == "" or command == "status" then
         printAutoBurstStatus()
     elseif command == "on" then
+        tactics.autoInjectionEnabled = true
         tactics.autoBurstEnabled = true
-        safePrint("自动爆发已开启；仍需 /tesignal armed，且仅当前专精的爆发顺序通过预检后才会建立计划。")
+        safePrint("自动注入已开启；仍需 /tesignal armed，且仅官方推荐精确命中的有效技能组会建立计划。")
         printAutoBurstStatus()
     elseif command == "off" then
+        tactics.autoInjectionEnabled = false
         tactics.autoBurstEnabled = false
         if TE.AutoBurst and type(TE.AutoBurst.Abort) == "function" then TE.AutoBurst:Abort("slash_disabled", false) end
-        safePrint("自动爆发已关闭。")
+        safePrint("自动注入已关闭。")
     else
-        safePrint("用法：/teab status|on|off。爆发窗口、注入技能、饰品和顺序请在 TE 设置 → 爆发设置中按当前专精配置。")
+        safePrint("用法：/teab status|on|off。窗口、注入技能、饰品和顺序请在 TE 设置 → 自动注入中按当前专精配置。")
     end
 end
 
@@ -415,7 +418,7 @@ SLASH_TACTICECHO1 = "/te"
 SlashCmdList.TACTICECHO = function(message)
     local command = string.lower(message or "")
     if command == "" or command == "help" then
-        safePrint("命令：/te context；/te current；/te cache；/te mapping；/te policy；/te tactics；/teab status|on|off；/te once；/te armed；/te pause；/te off；/te status；/te ui。爆发顺序、窗口、注入与饰品请在 /teui burst 按当前专精配置。")
+        safePrint("命令：/te context；/te current；/te cache；/te mapping；/te policy；/te tactics；/teab status|on|off；/te once；/te armed；/te pause；/te off；/te status；/te ui。自动注入技能组、窗口、注入与饰品请在 /teui burst 按当前专精配置。")
     elseif command == "context" then
         SlashCmdList.TACTICECHOCONTEXT("")
     elseif command == "current" then

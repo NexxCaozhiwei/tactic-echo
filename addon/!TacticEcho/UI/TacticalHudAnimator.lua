@@ -26,6 +26,13 @@ end
 
 function TacticalHudAnimator:ShouldCommit(slot, fingerprint, urgent)
     if not slot then return true end
+    -- A newly materialized slot has no prior identity to protect. Commit its
+    -- first real card immediately; debouncing here made configured Burst cards
+    -- stay hidden until a second identical advisor snapshot happened to arrive.
+    if slot.fingerprint == nil then
+        slot.fingerprint, slot.pendingFingerprint, slot.appliedAt = fingerprint, nil, now()
+        return true
+    end
     -- An urgent card must commit immediately when its identity/state changes,
     -- but it must not re-run the full Apply path on every repeated snapshot.
     -- Re-applying a native Cooldown frame restarts its presentation and caused

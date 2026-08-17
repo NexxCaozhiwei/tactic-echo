@@ -7,8 +7,8 @@ local TE = _G.TacticEcho
 TE.Config = TE.Config or {}
 
 local Defaults = {
-    schema = 8,
-    hudSchema = 11,
+    schema = 9,
+    hudSchema = 12,
     settings = {
         sessionPolicy = "pause_out_of_combat",
         protocolMode = "v3_dynamic",
@@ -112,6 +112,9 @@ local Defaults = {
         -- independent automatic-run gate; this setting only enables burst
         -- takeover when a configured window recommendation is observed.
         autoBurstEnabled = false,
+        -- 1.4.0 user-facing name. The legacy field remains a synchronized
+        -- compatibility alias for older SavedVariables and external status readers.
+        autoInjectionEnabled = false,
         -- Sequence order and optional-step enablement are specialization-local
         -- and live in tactics.burstProfiles[specKey].autoBurstSequence.
         -- The old legacy manual-rule hand-entered SpellID test rule is intentionally
