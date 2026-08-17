@@ -320,18 +320,47 @@ local function groupHasInjection(group, spellID)
     return false
 end
 
+local function enabledOptionalCount(group)
+    local count = 0
+    for _, entry in ipairs(group and group.sequence and group.sequence.entries or {}) do
+        if entry.category ~= "window" and entry.enabled == true then count = count + 1 end
+    end
+    return count
+end
+
+local function groupReadinessReason(container, group)
+    if type(group) ~= "table" then return "group_not_found" end
+    local windowSpellID = positiveInteger(group.windowSpellID)
+    if not windowSpellID then return "group_window_missing" end
+    if groupHasInjection(group, windowSpellID) then
+        return "window_used_as_same_group_injection"
+    end
+    if enabledOptionalCount(group) <= 0 then return "group_has_no_optional_steps" end
+    for _, other in ipairs(enabledOtherGroups(container, group.groupId)) do
+        if positiveInteger(other.windowSpellID) == windowSpellID then
+            return "duplicate_group_window_spell"
+        end
+        if groupHasInjection(other, windowSpellID)
+            or groupHasInjection(group, positiveInteger(other.windowSpellID)) then
+            return "window_used_as_other_group_injection"
+        end
+    end
+    return nil
+end
+
+function AutoInjectionGroups:GetGroupReadiness(context, groupId)
+    local group, _, reason, container = self:GetGroup(context, groupId)
+    if not group then return false, reason or "group_not_found" end
+    local readinessReason = groupReadinessReason(container, group)
+    return readinessReason == nil, readinessReason
+end
+
 function AutoInjectionGroups:SetGroupEnabled(context, groupId, enabled)
     local group, _, reason, container = self:GetGroup(context, groupId)
     if not group then return false, reason or "group_not_found" end
     if enabled == true then
-        local windowSpellID = positiveInteger(group.windowSpellID)
-        if not windowSpellID then return false, "group_window_missing" end
-        for _, other in ipairs(enabledOtherGroups(container, group.groupId)) do
-            if positiveInteger(other.windowSpellID) == windowSpellID then return false, "duplicate_group_window_spell" end
-            if groupHasInjection(other, windowSpellID) or groupHasInjection(group, positiveInteger(other.windowSpellID)) then
-                return false, "window_used_as_other_group_injection"
-            end
-        end
+        local readinessReason = groupReadinessReason(container, group)
+        if readinessReason then return false, readinessReason end
     end
     group.enabled = enabled == true
     touch(container)
@@ -361,13 +390,15 @@ function AutoInjectionGroups:SetGroupWindow(context, groupId, spellID)
     if not group then return false, reason or "group_not_found" end
     spellID = positiveInteger(spellID)
     if not spellID then return false, "group_window_missing" end
+    if groupHasInjection(group, spellID) then return false, "window_used_as_same_group_injection" end
     for _, other in ipairs(enabledOtherGroups(container, group.groupId)) do
         if positiveInteger(other.windowSpellID) == spellID then return false, "duplicate_group_window_spell" end
         if groupHasInjection(other, spellID) then return false, "window_used_as_other_group_injection" end
     end
     for _, other in ipairs(container.order or {}) do
         local candidate = container.groups[other]
-        if candidate and candidate.groupId ~= group.groupId and positiveInteger(candidate.windowSpellID)
+        if candidate and candidate.enabled == true and candidate.groupId ~= group.groupId
+            and positiveInteger(candidate.windowSpellID)
             and groupHasInjection(group, positiveInteger(candidate.windowSpellID)) then
             return false, "window_used_as_other_group_injection"
         end
@@ -383,6 +414,9 @@ function AutoInjectionGroups:AddInjection(context, groupId, spellID)
     if not group then return false, reason or "group_not_found" end
     spellID = positiveInteger(spellID)
     if not spellID then return false, "injection_spell_missing" end
+    if positiveInteger(group.windowSpellID) == spellID then
+        return false, "window_used_as_same_group_injection"
+    end
     local count = 0
     for _, entry in ipairs(group.sequence.entries or {}) do
         if entry.category == "injection" then
@@ -488,6 +522,8 @@ function AutoInjectionGroups:Validate(context)
         local conflict
         if not windowSpellID then
             conflict = "group_window_missing"
+        elseif groupHasInjection(group, windowSpellID) then
+            conflict = "window_used_as_same_group_injection"
         elseif claimedWindows[windowSpellID] then
             conflict = "duplicate_group_window_spell"
         else
@@ -503,10 +539,7 @@ function AutoInjectionGroups:Validate(context)
                 end
             end
         end
-        local optionalCount = 0
-        for _, entry in ipairs(group.sequence and group.sequence.entries or {}) do
-            if entry.category ~= "window" and entry.enabled == true then optionalCount = optionalCount + 1 end
-        end
+        local optionalCount = enabledOptionalCount(group)
         if not conflict and optionalCount <= 0 then conflict = "group_has_no_optional_steps" end
         if conflict then
             validation.byGroup[groupId] = conflict

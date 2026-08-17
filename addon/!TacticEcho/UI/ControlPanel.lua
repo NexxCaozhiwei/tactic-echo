@@ -1219,7 +1219,17 @@ local function buildHUD(pane)
     end
 end
 
--- 1.4.0 Auto Injection editor; this is the sole page mounted in TEUI.
+local AUTO_INJECTION_REASON_LABELS = {
+    group_window_missing = "请先填写并应用窗口 SpellID",
+    group_has_no_optional_steps = "请至少加入并启用一个注入技能或饰品步骤",
+    duplicate_group_window_spell = "该窗口技能已被另一个启用组使用",
+    window_used_as_same_group_injection = "窗口技能不能再次作为本组注入技能",
+    window_used_as_other_group_injection = "启用组之间不能把窗口技能放入对方注入链",
+    injection_spell_duplicate = "该注入技能已存在于当前组",
+    injection_limit_reached = "当前组已达到六个注入技能上限",
+}
+
+-- Auto Injection editor; this is the sole page mounted in TEUI.
 local function buildAutoInjectionSettings(pane)
     local y = -12
     local tactics = select(1, ensureTactics())
@@ -1244,8 +1254,9 @@ local function buildAutoInjectionSettings(pane)
         return (name or "SpellID") .. " " .. tostring(spellID or "-")
     end
     local function report(ok, reason, success)
+        local visibleReason = AUTO_INJECTION_REASON_LABELS[reason] or reason
         panelStatus(ok and (success or "自动注入设置已更新。")
-            or ("自动注入设置未更新：" .. tostring(reason or "unknown")))
+            or ("自动注入设置未更新：" .. tostring(visibleReason or "unknown")))
         refreshControls("burst")
         ControlPanel:ApplyVisuals(false)
     end
@@ -1297,6 +1308,26 @@ local function buildAutoInjectionSettings(pane)
     refreshGroupButtons()
     y = y - 48
 
+    local readinessText = createText(pane, "GameFontDisableSmall", 14, y, 700, "")
+    local function refreshReadiness()
+        local group = selected()
+        if not group then
+            readinessText:SetText("请先新建或选择技能组。")
+            return
+        end
+        local ready, reason = groups:GetGroupReadiness(context(), group.groupId)
+        if ready then
+            readinessText:SetText(group.enabled == true and "当前组已启用并可参与窗口匹配。"
+                or "当前组配置完整；确认顺序后可勾选“启用当前组”。")
+        else
+            readinessText:SetText("当前组保持关闭，可继续编辑。待完成："
+                .. tostring(AUTO_INJECTION_REASON_LABELS[reason] or reason or "配置尚未完成"))
+        end
+    end
+    registerControl(refreshReadiness)
+    refreshReadiness()
+    y = y - 36
+
     createCheckbox(pane, "启用当前组", 14, y, function()
         local group = selected(); return group and group.enabled == true or false
     end, function(value)
@@ -1304,7 +1335,7 @@ local function buildAutoInjectionSettings(pane)
         if not group then return end
         local ok, reason = groups:SetGroupEnabled(context(), group.groupId, value)
         report(ok, reason)
-    end, "启用前会检查窗口重复和跨组窗口/注入冲突。")
+    end, "请先设置窗口 SpellID、加入至少一个可选步骤并完成排序；启用时会检查全部组冲突。")
     createChoice(pane, "执行模式", RIGHT_X, y, 210, {
         { value = "simple", label = "简易：跳过确认失效步骤" },
         { value = "focused", label = "严格：任一步骤失效则终止" },
@@ -1346,9 +1377,10 @@ local function buildAutoInjectionSettings(pane)
     local conflictText = createText(pane, "GameFontDisableSmall", 448, y - 4, 268, "")
     local function refreshConflict()
         local group = selected()
-        local validation = groups and select(1, groups:Validate(context())) or nil
-        local reason = group and validation and validation.byGroup[group.groupId] or nil
-        conflictText:SetText(reason and ("阻止：" .. reason) or "组配置校验通过")
+        local ready, reason = false, "group_not_found"
+        if group then ready, reason = groups:GetGroupReadiness(context(), group.groupId) end
+        conflictText:SetText(ready and "组配置校验通过"
+            or ("待完成：" .. tostring(AUTO_INJECTION_REASON_LABELS[reason] or reason)))
     end
     registerControl(refreshConflict)
     refreshConflict()

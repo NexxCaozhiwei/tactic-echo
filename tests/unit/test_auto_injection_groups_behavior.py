@@ -112,6 +112,41 @@ assert(ok == false and reason == "group_limit_reached")
 ''')
 
 
+def test_new_group_is_configured_while_disabled_then_enabled_last() -> None:
+    run_lua(r'''
+local ok, second = Groups:AddGroup(context)
+assert(ok)
+local secondGroup = group(second)
+assert(secondGroup.enabled == false and secondGroup.windowSpellID == nil)
+local ready, reason = Groups:GetGroupReadiness(context, second)
+assert(ready == false and reason == "group_window_missing")
+assert(Groups:SetGroupWindow(context, second, 300))
+ready, reason = Groups:GetGroupReadiness(context, second)
+assert(ready == false and reason == "group_has_no_optional_steps")
+assert(Groups:AddInjection(context, second, 301))
+assert(Groups:MoveStep(context, second, "injection:301", -1))
+assert(Groups:SetGroupMode(context, second, "focused"))
+ready, reason = Groups:GetGroupReadiness(context, second)
+assert(ready == true and reason == nil)
+assert(group(second).enabled == false, "editing must not implicitly enable the group")
+assert(Groups:SetGroupEnabled(context, second, true))
+assert(group(second).enabled == true)
+''')
+
+
+def test_enable_rejects_missing_window_and_missing_optional_step() -> None:
+    run_lua(r'''
+local ok, second = Groups:AddGroup(context)
+assert(ok)
+local enabled, reason = Groups:SetGroupEnabled(context, second, true)
+assert(enabled == false and reason == "group_window_missing")
+assert(Groups:SetGroupWindow(context, second, 300))
+enabled, reason = Groups:SetGroupEnabled(context, second, true)
+assert(enabled == false and reason == "group_has_no_optional_steps")
+assert(group(second).enabled == false)
+''')
+
+
 def test_three_distinct_windows_match_their_stable_group_ids() -> None:
     run_lua(r'''
 local second = addConfigured(300, 301)
@@ -187,6 +222,33 @@ for _, entry in ipairs(secondGroup.sequence.entries) do
     if entry.category == "injection" and entry.spellID == 200 then found = true end
 end
 assert(found)
+''')
+
+
+def test_window_cannot_repeat_as_an_injection_inside_the_same_group() -> None:
+    run_lua(r'''
+local ok, reason = Groups:AddInjection(context, "group-1", 100)
+assert(ok == false and reason == "window_used_as_same_group_injection")
+local first = group("group-1")
+first.sequence.entries[#first.sequence.entries + 1] = {
+    key = "injection:777", role = "injection", category = "injection",
+    kind = "spell", spellID = 777, enabled = true,
+}
+ok, reason = Groups:SetGroupWindow(context, "group-1", 777)
+assert(ok == false and reason == "window_used_as_same_group_injection")
+''')
+
+
+def test_corrupt_same_group_window_injection_is_fail_closed() -> None:
+    run_lua(r'''
+local first = group("group-1")
+first.sequence.entries[#first.sequence.entries + 1] = {
+    key = "injection:100", role = "injection", category = "injection",
+    kind = "spell", spellID = 100, enabled = true,
+}
+local validation = assert(Groups:Validate(context))
+assert(validation.valid["group-1"] ~= true)
+assert(validation.byGroup["group-1"] == "window_used_as_same_group_injection")
 ''')
 
 
@@ -315,6 +377,18 @@ def test_ui_and_hud_capacity_share_the_nine_step_contract() -> None:
     assert "local HUD_SEQUENCE_MAX_CARDS = 9" in auto
     assert "MAX_SEQUENCE_STEPS = 9" in groups
     assert "for rowIndex = 1, 6 do" not in control
+
+
+def test_ui_guides_disabled_group_configuration_before_enablement() -> None:
+    control = (ADDON / "UI" / "ControlPanel.lua").read_text(encoding="utf-8")
+    for marker in (
+        "当前组保持关闭，可继续编辑",
+        "请先填写并应用窗口 SpellID",
+        "当前组配置完整；确认顺序后可勾选“启用当前组”",
+        "窗口技能不能再次作为本组注入技能",
+        "GetGroupReadiness",
+    ):
+        assert marker in control
 
 
 def test_hud_first_materialized_card_commits_immediately() -> None:
