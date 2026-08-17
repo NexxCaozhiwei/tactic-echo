@@ -1308,35 +1308,8 @@ local function buildAutoInjectionSettings(pane)
     refreshGroupButtons()
     y = y - 48
 
-    local readinessText = createText(pane, "GameFontDisableSmall", 14, y, 700, "")
-    local function refreshReadiness()
-        local group = selected()
-        if not group then
-            readinessText:SetText("请先新建或选择技能组。")
-            return
-        end
-        local ready, reason = groups:GetGroupReadiness(context(), group.groupId)
-        if ready then
-            readinessText:SetText(group.enabled == true and "当前组已启用并可参与窗口匹配。"
-                or "当前组配置完整；确认顺序后可勾选“启用当前组”。")
-        else
-            readinessText:SetText("当前组保持关闭，可继续编辑。待完成："
-                .. tostring(AUTO_INJECTION_REASON_LABELS[reason] or reason or "配置尚未完成"))
-        end
-    end
-    registerControl(refreshReadiness)
-    refreshReadiness()
-    y = y - 36
-
-    createCheckbox(pane, "启用当前组", 14, y, function()
-        local group = selected(); return group and group.enabled == true or false
-    end, function(value)
-        local group = selected()
-        if not group then return end
-        local ok, reason = groups:SetGroupEnabled(context(), group.groupId, value)
-        report(ok, reason)
-    end, "请先设置窗口 SpellID、加入至少一个可选步骤并完成排序；启用时会检查全部组冲突。")
-    createChoice(pane, "执行模式", RIGHT_X, y, 210, {
+    y = createSection(pane, "当前组基本设置", y)
+    createChoice(pane, "执行模式", 14, y, 210, {
         { value = "simple", label = "简易：跳过确认失效步骤" },
         { value = "focused", label = "严格：任一步骤失效则终止" },
     }, function()
@@ -1352,28 +1325,51 @@ local function buildAutoInjectionSettings(pane)
         local ok, reason = groups:SetGroupName(context(), group.groupId, nameBox:GetText())
         report(ok, reason)
     end)
-    local windowBox = createEditBox(pane, "窗口 SpellID", RIGHT_X, y, 118, "")
-    createActionButton(pane, "应用", 636, y, 58, function()
+    y = y - 54
+
+    y = createSection(pane, "第一步：设置窗口技能（必填）", y)
+    createText(pane, "GameFontHighlightSmall", 14, y, 700,
+        "填写要触发此技能组的窗口技能 SpellID（只填数字，不填技能名称或按键）。只有官方推荐精确出现该技能时，才会启动本组注入链。")
+    createText(pane, "GameFontDisableSmall", 14, y - 24, 700,
+        "例如：技能 SpellID 为 365350，就在下方输入 365350，再点击“保存窗口技能”。运行时该技能仍必须位于可解析的默认动作条并具有有效绑定。")
+    y = y - 64
+    local windowBox = createEditBox(pane, "窗口技能 SpellID", 14, y, 180, "")
+    if type(windowBox.SetNumeric) == "function" then windowBox:SetNumeric(true) end
+    local function applyWindowSpellID()
         local group = selected(); if not group then return end
         local ok, reason = groups:SetGroupWindow(context(), group.groupId, windowBox:GetText())
         report(ok, reason)
-    end)
+    end
+    createActionButton(pane, "保存窗口技能", 340, y, 122, applyWindowSpellID)
+    windowBox:SetScript("OnEnterPressed", function(self) applyWindowSpellID(); self:ClearFocus() end)
+    local identityContainer, identityGroupId
     local function refreshIdentityBoxes()
-        local group = selected()
+        local group, value = selected()
+        local currentGroupId = group and group.groupId or nil
+        if value == identityContainer and currentGroupId == identityGroupId then return end
+        identityContainer = value
+        identityGroupId = currentGroupId
         nameBox:SetText(group and group.name or "")
         windowBox:SetText(group and tostring(group.windowSpellID or "") or "")
     end
     registerControl(refreshIdentityBoxes)
     refreshIdentityBoxes()
-    y = y - 42
+    y = y - 54
 
+    y = createSection(pane, "第二步：添加注入技能", y)
+    createText(pane, "GameFontDisableSmall", 14, y, 700,
+        "填写窗口出现后要按顺序联动执行的技能 SpellID。每组最多六个；普通注入技能可在多个组复用。")
+    y = y - 42
     local injectionBox = createEditBox(pane, "新增注入 SpellID", 14, y, 160, "")
-    createActionButton(pane, "加入当前组", 320, y, 112, function()
+    if type(injectionBox.SetNumeric) == "function" then injectionBox:SetNumeric(true) end
+    local function addInjectionSpellID()
         local group = selected(); if not group then return end
         local ok, reason = groups:AddInjection(context(), group.groupId, injectionBox:GetText())
         if ok then injectionBox:SetText("") end
         report(ok, reason)
-    end)
+    end
+    createActionButton(pane, "加入当前组", 320, y, 112, addInjectionSpellID)
+    injectionBox:SetScript("OnEnterPressed", function(self) addInjectionSpellID(); self:ClearFocus() end)
     local conflictText = createText(pane, "GameFontDisableSmall", 448, y - 4, 268, "")
     local function refreshConflict()
         local group = selected()
@@ -1386,7 +1382,7 @@ local function buildAutoInjectionSettings(pane)
     refreshConflict()
     y = y - 50
 
-    y = createSection(pane, "当前组顺序（最多九步）", y)
+    y = createSection(pane, "第三步：调整当前组顺序（最多九步）", y)
     createText(pane, "GameFontDisableSmall", 14, y, 720,
         "窗口步骤固定存在但可以排序；最多六个注入技能，加饰品 13 / 14 共九步。")
     y = y - 34
@@ -1465,6 +1461,36 @@ local function buildAutoInjectionSettings(pane)
     end, function(value)
         local group = selected(); if group then groups:SetTrinketOffGCD(context(), group.groupId, "trinket:14", value) end
     end, "只在实测确认该饰品不触发公共冷却时勾选。")
+    y = y - 54
+
+    y = createSection(pane, "第四步：启用当前组", y)
+    local readinessText = createText(pane, "GameFontHighlightSmall", 14, y, 700, "")
+    local function refreshReadiness()
+        local group = selected()
+        if not group then
+            readinessText:SetText("请先新建或选择技能组。")
+            return
+        end
+        local ready, reason = groups:GetGroupReadiness(context(), group.groupId)
+        if ready then
+            readinessText:SetText(group.enabled == true and "当前组已启用并可参与窗口匹配。"
+                or "当前组配置完整；确认顺序后可勾选“启用当前组”。")
+        else
+            readinessText:SetText("当前组保持关闭，可继续编辑。待完成："
+                .. tostring(AUTO_INJECTION_REASON_LABELS[reason] or reason or "配置尚未完成"))
+        end
+    end
+    registerControl(refreshReadiness)
+    refreshReadiness()
+    y = y - 40
+    createCheckbox(pane, "启用当前组", 14, y, function()
+        local group = selected(); return group and group.enabled == true or false
+    end, function(value)
+        local group = selected()
+        if not group then return end
+        local ok, reason = groups:SetGroupEnabled(context(), group.groupId, value)
+        report(ok, reason)
+    end, "请先设置窗口 SpellID、加入至少一个可选步骤并完成排序；启用时会检查全部组冲突。")
 end
 
 local function buildBurst(pane)

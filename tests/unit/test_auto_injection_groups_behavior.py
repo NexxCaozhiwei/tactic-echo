@@ -391,6 +391,25 @@ def test_ui_guides_disabled_group_configuration_before_enablement() -> None:
         assert marker in control
 
 
+def test_window_spellid_editor_is_explicit_and_not_overwritten_by_periodic_refresh() -> None:
+    control = (ADDON / "UI" / "ControlPanel.lua").read_text(encoding="utf-8")
+    for marker in (
+        "第一步：设置窗口技能（必填）",
+        "窗口技能 SpellID",
+        "只填数字，不填技能名称或按键",
+        "保存窗口技能",
+        "第二步：添加注入技能",
+        "第三步：调整当前组顺序（最多九步）",
+        "第四步：启用当前组",
+        "local identityContainer, identityGroupId",
+        "if value == identityContainer and currentGroupId == identityGroupId then return end",
+        'windowBox:SetScript("OnEnterPressed"',
+    ):
+        assert marker in control
+    identity_refresh = control.split("local function refreshIdentityBoxes()", 1)[1].split("registerControl(refreshIdentityBoxes)", 1)[0]
+    assert identity_refresh.index("if value == identityContainer and currentGroupId == identityGroupId then return end") < identity_refresh.index("windowBox:SetText")
+
+
 def test_hud_first_materialized_card_commits_immediately() -> None:
     animator = (ADDON / "UI" / "TacticalHudAnimator.lua").read_text(encoding="utf-8")
     assert "if slot.fingerprint == nil then" in animator
