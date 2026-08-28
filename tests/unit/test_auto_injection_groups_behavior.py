@@ -264,6 +264,41 @@ assert(Coordinator.lastIgnoredEvent == "group_window_ignored_while_owner_active"
 ''')
 
 
+def test_matched_group_without_executor_ownership_does_not_claim_or_poison_next_group() -> None:
+    run_lua(r'''
+local second = addConfigured(300, 301)
+local firstRule, firstReason = Coordinator:Observe(context, 100, {})
+assert(firstRule and firstReason == nil)
+assert(Coordinator.activeGroupId == nil, "matching alone must not claim ownership")
+local secondRule, secondReason, secondId = Coordinator:Observe(context, 300, {})
+assert(secondRule and secondReason == nil and secondId == second)
+assert(Coordinator.lastIgnoredGroupId ~= second, "an unowned prior match must not poison the next group")
+''')
+
+
+def test_stale_active_identity_is_released_before_another_group_is_matched() -> None:
+    run_lua(r'''
+local second = addConfigured(300, 301)
+Coordinator:Claim("group-1")
+local selected, reason, matched = Coordinator:Observe(context, 300, {})
+assert(selected and reason == nil and matched == second)
+assert(Coordinator.activeGroupId == nil, "stale identity without plan/capture/departure lock must be released")
+assert(Coordinator.lastIgnoredGroupId ~= second)
+''')
+
+
+def test_departure_lock_is_real_ownership_and_still_marks_other_window_missed() -> None:
+    run_lua(r'''
+local second = addConfigured(300, 301)
+local firstRule = assert(Groups:BuildRule(context, "group-1"))
+local executor = { requireWindowDeparture = true, runtimeGroupId = "group-1" }
+local selected, reason, owner = Coordinator:Observe(context, 300, executor)
+assert(selected == firstRule and reason == nil and owner == "group-1")
+assert(Coordinator.activeGroupId == "group-1")
+assert(Coordinator.lastIgnoredGroupId == second)
+''')
+
+
 def test_missed_window_is_not_replayed_after_owner_releases() -> None:
     run_lua(r'''
 local second = addConfigured(300, 301)
@@ -367,6 +402,15 @@ def test_new_modules_register_no_events_or_onupdate_loops() -> None:
     assert "RegisterEvent" not in combined
     assert 'SetScript("OnUpdate"' not in combined
     assert "BindingToken" not in coordinator
+
+
+def test_runtime_namespace_and_hud_validation_contracts_are_explicit() -> None:
+    auto = (ADDON / "Tactics" / "AutoBurst.lua").read_text(encoding="utf-8")
+    assert 'tostring(profileKey or "unknown")' not in auto
+    assert 'return false, "group_runtime_identity_incomplete"' in auto
+    assert "AutoInjectionGroups:Validate(context)" in auto
+    assert 'or "INVALID"' in auto
+    assert "item.bindingToken = 0" in auto
 
 
 def test_ui_and_hud_capacity_share_the_nine_step_contract() -> None:

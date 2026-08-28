@@ -50,13 +50,13 @@ function Coordinator:Observe(context, officialSpellID, executor)
     officialSpellID = positiveInteger(officialSpellID)
     local groups = TE.AutoInjectionGroups
     if not groups then return nil, "auto_injection_groups_unavailable" end
-    local revision, container, _, revisionReason = groups:GetRevision(context)
-    if not container then return nil, revisionReason end
+    local revision, container, profileKey, revisionReason = groups:GetRevision(context)
+    if not container then return nil, revisionReason, nil, profileKey end
     local validation = self.validation
     if self.indexContainer ~= container or self.indexRevision ~= revision or type(validation) ~= "table" then
         local reason
         validation, _, reason, container = groups:Validate(context)
-        if not validation then return nil, reason end
+        if not validation then return nil, reason, nil, profileKey end
         local index = {}
         for _, id in ipairs(container.order or {}) do
             local group = container.groups[id]
@@ -83,43 +83,44 @@ function Coordinator:Observe(context, officialSpellID, executor)
     local matched = officialSpellID and self.windowIndex[officialSpellID] or nil
     self.matchedGroupId = matched
 
-    -- A different group's window that first appears on the exact frame the
-    -- prior owner releases its departure lock is still a missed window. It
-    -- was observed while ownership belonged to the prior group and may only
-    -- become eligible after leaving and entering again.
-    if self.activeGroupId and matched and matched ~= self.activeGroupId then
-        markIgnored(self, matched, "group_window_ignored_while_owner_active")
-    end
-
     local owns = executor and (executor.plan ~= nil or executor.preWindowCapture ~= nil
         or executor.requireWindowDeparture == true)
+    local ownerGroupId = executor and (executor.plan and executor.plan.groupId
+        or executor.preWindowCapture and executor.preWindowCapture.rule
+            and executor.preWindowCapture.rule.groupId
+        or executor.requireWindowDeparture == true and executor.runtimeGroupId) or nil
+    if owns and ownerGroupId then
+        self:Claim(ownerGroupId)
+    elseif not owns and self.activeGroupId then
+        self:Release(self.activeGroupId, "stale_group_identity_released")
+    end
+
     if owns and self.activeGroupId then
         if matched and matched ~= self.activeGroupId then
             markIgnored(self, matched, "group_window_ignored_while_owner_active")
         end
         local activeRule, activeReason = groups:BuildRule(context, self.activeGroupId)
-        if not activeRule then return nil, activeReason or "active_group_invalid", self.activeGroupId end
+        if not activeRule then return nil, activeReason or "active_group_invalid", self.activeGroupId, profileKey end
         local frozenRule = executor.plan and executor.plan.rule
             or executor.preWindowCapture and executor.preWindowCapture.rule
         if frozenRule and frozenRule.id ~= activeRule.id then
-            return nil, "active_group_changed", self.activeGroupId
+            return nil, "active_group_changed", self.activeGroupId, profileKey
         end
-        return frozenRule or activeRule, nil, self.activeGroupId
+        return frozenRule or activeRule, nil, self.activeGroupId, profileKey
     end
 
-    if self.activeGroupId and not owns then self.activeGroupId = nil end
     if not matched then
         self.lastOfficialSpellID = officialSpellID
-        return nil, "official_not_group_window"
+        return nil, "official_not_group_window", nil, profileKey
     end
     if self.ignoredUntilDeparture[matched] == true then
         self.lastOfficialSpellID = officialSpellID
-        return nil, "group_window_missed_while_busy", matched
+        return nil, "group_window_missed_while_busy", matched, profileKey
     end
     local rule, buildReason = groups:BuildRule(context, matched)
-    if not rule then return nil, buildReason, matched end
+    if not rule then return nil, buildReason, matched, profileKey end
     self.lastOfficialSpellID = officialSpellID
-    return rule, nil, matched
+    return rule, nil, matched, profileKey
 end
 
 function Coordinator:Claim(groupId)

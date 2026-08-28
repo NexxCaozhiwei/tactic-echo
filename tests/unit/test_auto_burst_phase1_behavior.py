@@ -59,7 +59,8 @@ settings = {
     burstProfiles = {},
 }
 TacticEchoDB = { tactics = settings }
-function TE.Config.Normalize:All() return {}, settings end
+normalizeCalls = 0
+function TE.Config.Normalize:All() normalizeCalls = normalizeCalls + 1; return {}, settings end
 function TE.Context:GetPlayer() return { class = "PALADIN", classFile = "PALADIN", specIndex = 3 } end
 
 -- Ordered sequence helpers: these exercise the real specialization profile
@@ -457,6 +458,10 @@ local snap = AutoBurst:GetSnapshot()
 assert(snap.inventoryRecoveryEligible == true, "paused trinket step must expose recovery eligibility")
 inventoryCooldown = "cooldown"
 nowValue = 6.05
+local provisional = eval("armed")
+assert(not (provisional.kind == "candidate" and provisional.dispatchSpellID == 343527),
+    "first trinket own-CD sample must remain provisional")
+nowValue = 6.21
 local window = eval("armed")
 assert(window.kind == "candidate" and window.dispatchSpellID == 343527, "later exact trinket own-CD proof must continue to the window")
 """)
@@ -474,6 +479,10 @@ local snap = AutoBurst:GetSnapshot()
 assert(snap.inventoryRecoveryActive == true and snap.inventoryRecoveryPersistent == true, "trinket grace must enter persistent recovery")
 inventoryCooldown = "cooldown"
 nowValue = 2.30
+local provisional = eval()
+assert(not (provisional.kind == "candidate" and provisional.dispatchSpellID == 343527),
+    "persistent recovery must not advance on one predicted cooldown sample")
+nowValue = 2.46
 local window = eval()
 assert(window.kind == "candidate" and window.dispatchSpellID == 343527, "manual or delayed exact own-CD evidence must continue to window")
 """)
@@ -1429,6 +1438,9 @@ assert(stillRetrying.kind == "candidate" and stillRetrying.dispatchActionKind ==
 assert(stillRetrying.dispatchAttempt == firstAttempt, "retries share one logical confirmation step while fresh TEAP frames provide physical attempts")
 inventoryCooldown = "cooldown"
 nowValue = 20.05
+local provisional = eval()
+assert(not (provisional.kind == "candidate" and provisional.dispatchSpellID == 343527))
+nowValue = 20.21
 local window = eval()
 assert(window.kind == "candidate" and window.dispatchSpellID == 343527, "manual/delayed exact trinket CD must continue to the window after repeated interruptions")
 """)
@@ -1441,6 +1453,9 @@ local injection = eval()
 assert(injection.kind == "candidate" and injection.dispatchActionKind == "inventory")
 inventoryCooldown = "cooldown"
 nowValue = 0.10
+local provisional = eval()
+assert(not (provisional.kind == "candidate" and provisional.dispatchSpellID == 343527))
+nowValue = 0.26
 local window = eval()
 assert(window.kind == "candidate" and window.dispatchSpellID == 343527, "confirmed pre step must move to window")
 -- The assisted recommendation rotates during the burst. The created plan must
@@ -1957,6 +1972,33 @@ for index = 1, 6 do
     assert(blocked.kind == "none", "no legacy authorization may reopen out-of-combat burst")
 end
 """)
+
+
+def test_evaluate_normalizes_once_then_reads_live_settings_table() -> None:
+    run_lua(AUTO_BURST_HARNESS + r"""
+for index = 1, 8 do eval() end
+assert(normalizeCalls == 1, "high-frequency Evaluate must not run full Normalize every frame")
+settings.autoInjectionEnabled = false
+local disabled = eval()
+assert(disabled.kind == "none", "live setting mutation must be visible on the next Evaluate")
+assert(normalizeCalls == 1)
+""")
+
+
+def test_source_contracts_for_epoch_recovery_inventory_stability_and_diagnostics() -> None:
+    source = (ROOT / "addon" / "!TacticEcho" / "Tactics" / "AutoBurst.lua").read_text(encoding="utf-8")
+    assert "firstHealthyFramePending == true and self.recoveredArmedEpoch ~= self.armedEpoch" in source
+    assert 'if success then\n            success = confirmStableFallback(self, plan, step, source)' in source
+    for field in (
+        "persistentRecoveryActive",
+        "persistentRecoveryElapsed",
+        "persistentRecoveryStepKey",
+        "persistentRecoveryActionKind",
+        "persistentRecoveryCandidateOffers",
+        "persistentRecoveryConfirmationAvailable",
+        "persistentRecoveryLastReason",
+    ):
+        assert field in source
 
 
 def test_real_combat_clears_world_transition_fence_without_replaying_old_precombat_plan() -> None:

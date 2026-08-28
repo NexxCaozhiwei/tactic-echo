@@ -35,6 +35,7 @@ local AutoBurst = {
     lastIntentState = nil,
     armedEpoch = 0,
     firstHealthyFramePending = false,
+    recoveredArmedEpoch = nil,
     windowGeneration = 0,
     consumedWindowGeneration = 0,
     activePlanGeneration = nil,
@@ -292,9 +293,11 @@ local function ensureStore()
     return TacticEchoDB.autoBurst
 end
 
+local tacticsNormalized = false
 local function tactics()
-    if TE.Config and TE.Config.Normalize and type(TE.Config.Normalize.All) == "function" then
+    if not tacticsNormalized and TE.Config and TE.Config.Normalize and type(TE.Config.Normalize.All) == "function" then
         local _, value = TE.Config.Normalize:All()
+        tacticsNormalized = true
         if type(value) == "table" then return value end
     end
     TacticEchoDB = TacticEchoDB or {}
@@ -582,16 +585,31 @@ local function saveGroupRuntime(self)
     }
 end
 
+function AutoBurst:ClaimGroupOwnership(groupId)
+    local coordinator = TE.AutoInjectionCoordinator
+    if groupId and coordinator and type(coordinator.Claim) == "function" then
+        coordinator:Claim(groupId)
+    end
+end
+
+function AutoBurst:ReleaseGroupOwnershipIfUnowned(reason)
+    if self.plan or self.preWindowCapture or self.requireWindowDeparture == true then return end
+    local coordinator = TE.AutoInjectionCoordinator
+    if coordinator and coordinator.activeGroupId and type(coordinator.Release) == "function" then
+        coordinator:Release(coordinator.activeGroupId, reason or "executor_ownership_released")
+    end
+end
+
 local function loadGroupRuntime(self, groupId, profileKey)
-    if not groupId then return end
-    local groupKey = tostring(profileKey or "unknown") .. ":" .. tostring(groupId)
+    if not groupId or not profileKey then return false, "group_runtime_identity_incomplete" end
+    local groupKey = tostring(profileKey) .. ":" .. tostring(groupId)
     -- Preserve an already materialized legacy/test runtime on its first
     -- namespacing pass. Normal production selection starts with no group id.
     if self.runtimeGroupKey == nil and self.runtimeGroupId == groupId then
         self.runtimeGroupKey = groupKey
-        return
+        return true
     end
-    if self.runtimeGroupKey == groupKey then return end
+    if self.runtimeGroupKey == groupKey then return true end
     saveGroupRuntime(self)
     local state = self.groupRuntime[groupKey] or {}
     self.runtimeGroupId = groupId
@@ -605,6 +623,7 @@ local function loadGroupRuntime(self, groupId, profileKey)
     self.currentWindowSpellID = positiveSpellID(state.currentWindowSpellID)
     self.lastConfirmedWindowReceipt = type(state.lastConfirmedWindowReceipt) == "table"
         and shallowCopy(state.lastConfirmedWindowReceipt) or nil
+    return true
 end
 
 -- Standalone test and emergency-load compatibility. The production TOC always
@@ -671,9 +690,8 @@ local function profileRule(self, context, officialSpellID)
     if not coordinator or type(coordinator.Observe) ~= "function" then
         return legacyProfileRule(context)
     end
-    local rule, reason, groupId = coordinator:Observe(context, officialSpellID, self)
-    if groupId then loadGroupRuntime(self, groupId, rule and rule.profileKey) end
-    if rule and groupId then coordinator:Claim(groupId) end
+    local rule, reason, groupId, profileKey = coordinator:Observe(context, officialSpellID, self)
+    if groupId and profileKey then loadGroupRuntime(self, groupId, profileKey) end
     return rule, reason
 end
 
@@ -1492,6 +1510,7 @@ local function beginPreWindowCapture(self, rule, officialSpellID, windowGenerati
     }
     self.nextPreWindowCaptureId = capture.id + 1
     self.preWindowCapture = capture
+    self:ClaimGroupOwnership(rule.groupId)
     log(self, "pre_window_capture_started", {
         captureId = capture.id,
         ruleId = rule.id,
@@ -1573,6 +1592,7 @@ local function releasePreWindowCapture(self, reason, fields)
         detail = fields.detail,
     })
     self.preWindowCapture = nil
+    self:ReleaseGroupOwnershipIfUnowned(reason)
 end
 
 local function continuePreWindowCapture(self, capture, reason, fields, runtime)
@@ -1631,6 +1651,7 @@ local function lockWindowDeparture(self, plan)
     self.departureLockGeneration = generation
     if generation then self.consumedWindowGeneration = generation end
     self.activePlanGeneration = nil
+    self:ClaimGroupOwnership(plan.groupId or plan.rule.groupId)
 end
 
 -- A pre-window capture has no plan yet, but it still owns the official window
@@ -1646,6 +1667,7 @@ local function lockPreWindowCaptureDeparture(self, capture)
     self.departureLockGeneration = generation
     if generation then self.consumedWindowGeneration = generation end
     self.activePlanGeneration = nil
+    self:ClaimGroupOwnership(capture.rule.groupId)
     log(self, "pre_window_capture_departure_locked", {
         captureId = capture.id,
         ruleId = capture.rule.id,
@@ -2012,6 +2034,7 @@ function AutoBurst:Abort(reason, hard)
         lockWindowDeparture(self, self.plan)
     end
     self.plan = nil
+    self:ReleaseGroupOwnershipIfUnowned("abort:" .. tostring(reason or "unknown"))
 end
 
 -- A world transition is not a combat transition.  Any official recommendation
@@ -2489,6 +2512,7 @@ local function releasePlanForInjectionUnavailable(self, plan, step, sample, reas
     if windowAlreadyDispatched then lockWindowDeparture(self, plan) end
     self.activePlanGeneration = nil
     self.plan = nil
+    self:ReleaseGroupOwnershipIfUnowned("focused_optional_step_unavailable")
     return terminalResult(self, "focused_optional_step_unavailable", {
         windowSpellID = plan.rule and plan.rule.windowSpellID or nil,
         ruleSource = plan.rule and plan.rule.source or nil,
@@ -2579,6 +2603,7 @@ local function createPlan(self, rule, officialSpellID, creation, resolveContext,
     self.nextPlanId = self.nextPlanId + 1
     self.plan = plan
     self.activePlanGeneration = plan.windowGeneration
+    self:ClaimGroupOwnership(plan.groupId)
     self.lastAbortReason = nil
     self.lastConfirmationSource = nil
     self.lastWindowRejectReason = nil
@@ -3066,13 +3091,16 @@ function AutoBurst:Evaluate(official, runtime)
             -- pull). Preserve the verified recovery behavior: claim only an
             -- observation-only capture here; real optional-step eligibility is
             -- still decided by preflight below before any plan is created.
-            self.windowGeneration = (self.windowGeneration or 0) + 1
-            capture = beginPreWindowCapture(
-                self, rule, officialSpellID, self.windowGeneration,
-                "pre_window_capture_recover:window_edge_missing", rearmedFromNonArmed
-            )
-            windowEntry = true
-            windowReason = "pre_window_capture_recover:window_edge_missing"
+            if firstHealthyFramePending == true and self.recoveredArmedEpoch ~= self.armedEpoch then
+                self.recoveredArmedEpoch = self.armedEpoch
+                self.windowGeneration = (self.windowGeneration or 0) + 1
+                capture = beginPreWindowCapture(
+                    self, rule, officialSpellID, self.windowGeneration,
+                    "pre_window_capture_recover:window_edge_missing", rearmedFromNonArmed
+                )
+                windowEntry = true
+                windowReason = "pre_window_capture_recover:window_edge_missing"
+            end
         end
         if not windowEntry then
             self.lastWindowRejectReason = windowReason or "window_edge_missing"
@@ -3311,7 +3339,7 @@ function AutoBurst:Evaluate(official, runtime)
         local sample = stepSample(step, cycle, { allowSpecialResourceUnusableCompat = true })
         rememberStepObservation(self, plan, step, sample, "wait_confirm")
         local success, source = confirmed(sample, plan.wait.baseline)
-        if success and stepKind(step) == "spell" then
+        if success then
             success = confirmStableFallback(self, plan, step, source)
         else
             clearProvisionalFallback(self, plan, step, "evidence_not_persistent")
@@ -3347,6 +3375,7 @@ function AutoBurst:Evaluate(official, runtime)
             self.requireWindowDeparture = false
             self.lockedWindowSpellID = nil
             self.departureLockGeneration = nil
+            self:ReleaseGroupOwnershipIfUnowned("window_repeated_failure_released")
             return noneResult()
         end
         if observeWindowQueueDelivery(plan, step, sample)
@@ -3688,7 +3717,8 @@ function AutoBurst:GetRuntimeState()
         schema = 1,
         active = plan ~= nil,
         planId = plan and plan.id or nil,
-        activeGroupId = plan and plan.groupId or self.runtimeGroupId,
+        activeGroupId = plan and plan.groupId or (TE.AutoInjectionCoordinator
+            and TE.AutoInjectionCoordinator.activeGroupId or nil),
         activeGroupName = plan and plan.groupName or nil,
         matchedGroupId = TE.AutoInjectionCoordinator and TE.AutoInjectionCoordinator.matchedGroupId or nil,
         state = plan and plan.state or nil,
@@ -3723,7 +3753,8 @@ function AutoBurst:GetSnapshot()
         return {
             schema = 1,
             active = false,
-            activeGroupId = self.runtimeGroupId,
+            activeGroupId = TE.AutoInjectionCoordinator
+                and TE.AutoInjectionCoordinator.activeGroupId or nil,
             matchedGroupId = TE.AutoInjectionCoordinator and TE.AutoInjectionCoordinator.matchedGroupId or nil,
             requireWindowDeparture = self.requireWindowDeparture == true,
             lockedWindowSpellID = self.lockedWindowSpellID,
@@ -3759,6 +3790,13 @@ function AutoBurst:GetSnapshot()
             stepState = nil,
             stepStatusReason = self.lastStepObservation and self.lastStepObservation.reason or nil,
             candidateOfferCount = 0,
+            persistentRecoveryActive = false,
+            persistentRecoveryElapsed = 0,
+            persistentRecoveryStepKey = nil,
+            persistentRecoveryActionKind = nil,
+            persistentRecoveryCandidateOffers = 0,
+            persistentRecoveryConfirmationAvailable = false,
+            persistentRecoveryLastReason = nil,
             preInjectionSkipAllowed = false,
             preInjectionRequired = false,
             preInjectionSkipStatus = nil,
@@ -3839,6 +3877,21 @@ function AutoBurst:GetSnapshot()
         windowAvailabilityConflictReason = plan.windowAvailabilityConflictReason,
         windowAvailabilityConflictResolvedAt = number(plan.windowAvailabilityConflictResolvedAt),
         candidateOfferCount = plan.candidateOfferCount or 0,
+        persistentRecoveryActive = plan.wait and plan.wait.inventoryRecoveryActive == true,
+        persistentRecoveryElapsed = plan.wait and plan.wait.inventoryRecoveryActive == true
+            and math.max(0, now() - (number(plan.wait.inventoryRecoveryStartedAt) or now())) or 0,
+        persistentRecoveryStepKey = plan.wait and plan.wait.inventoryRecoveryActive == true
+            and step and step.key or nil,
+        persistentRecoveryActionKind = plan.wait and plan.wait.inventoryRecoveryActive == true
+            and stepKind(step) or nil,
+        persistentRecoveryCandidateOffers = plan.wait and plan.wait.inventoryRecoveryActive == true
+            and (number(plan.candidateOfferCount) or 0) or 0,
+        persistentRecoveryConfirmationAvailable = plan.wait and plan.wait.inventoryRecoveryActive == true
+            and (positiveSpellID(plan.wait.spellcastSucceededSpellID) ~= nil
+                or type(plan.wait.provisionalConfirmation) == "table") or false,
+        persistentRecoveryLastReason = plan.wait and plan.wait.inventoryRecoveryActive == true
+            and (plan.wait.inventoryRecoveryReason
+                or (self.lastStepObservation and self.lastStepObservation.reason)) or nil,
         handoffBarrierPending = plan.handoffBarrierPending == true,
         handoffBarrierRequiredFrames = number(plan.handoffBarrierRequiredFrames) or 0,
         handoffBarrierRemainingFrames = handoffBarrierRemaining(plan),
@@ -4233,8 +4286,10 @@ local function hudUnboundSequenceItem(slot, reason)
 end
 
 local function hudConfiguredGroups(snapshot, context, activeGroupId)
-    local container
-    if TE.AutoInjectionGroups then container = select(1, TE.AutoInjectionGroups:Get(context)) end
+    local container, validation
+    if TE.AutoInjectionGroups then
+        validation, _, _, container = TE.AutoInjectionGroups:Validate(context)
+    end
     if type(container) ~= "table" then return {}, nil, { "自动注入组不可用" }, {} end
 
     local items, diagnostics, displayedGroups = {}, {}, {}
@@ -4242,15 +4297,24 @@ local function hudConfiguredGroups(snapshot, context, activeGroupId)
     for groupOrder, groupId in ipairs(container.order or {}) do
         local group = container.groups and container.groups[groupId] or nil
         if type(group) == "table" and group.enabled == true and #items < HUD_TOTAL_MAX_CARDS then
+            local valid = type(validation) == "table" and validation.valid[groupId] == true
+            local invalidReason = not valid and type(validation) == "table" and validation.byGroup[groupId]
+                or (not valid and "group_invalid" or nil)
             displayedGroups[#displayedGroups + 1] = {
                 groupId = group.groupId,
                 groupName = group.name,
                 groupOrder = groupOrder,
                 windowSpellID = group.windowSpellID,
+                state = valid and (activeGroupId and tostring(activeGroupId) == tostring(group.groupId)
+                    and "ACTIVE" or "READY") or "INVALID",
+                invalidReason = invalidReason,
             }
             local groupItemCount = 0
             local groupState = {
-                state = activeGroupId and tostring(activeGroupId) == tostring(group.groupId) and "ACTIVE" or "READY",
+                state = valid and (activeGroupId and tostring(activeGroupId) == tostring(group.groupId)
+                    and "ACTIVE" or "READY") or "INVALID",
+                label = valid and nil or "配置冲突，不会执行",
+                reason = invalidReason,
             }
             for _, entry in ipairs(group.sequence and group.sequence.entries or {}) do
                 if entry.enabled == true and groupItemCount < HUD_GROUP_MAX_CARDS
@@ -4292,6 +4356,12 @@ local function hudConfiguredGroups(snapshot, context, activeGroupId)
                         item.burstStepKey = entry.key
                         item.burstSequenceConfigured = true
                         item.burstSequenceEnabled = true
+                        if not valid then
+                            item.bindingToken = 0
+                            item.burstReady = false
+                            item.dispatchAllowed = false
+                            item.unusableReason = invalidReason or "group_invalid"
+                        end
                         hudMarkRole(item, entry.category == "window" and "window" or entry.category,
                             groupState, groupItemCount)
                         items[#items + 1] = item
@@ -4439,6 +4509,13 @@ function AutoBurst:GetDiagnostics()
         } or nil,
         ruleReason = ruleReason,
         plan = snapshot,
+        persistentRecoveryActive = snapshot.persistentRecoveryActive == true,
+        persistentRecoveryElapsed = number(snapshot.persistentRecoveryElapsed) or 0,
+        persistentRecoveryStepKey = snapshot.persistentRecoveryStepKey,
+        persistentRecoveryActionKind = snapshot.persistentRecoveryActionKind,
+        persistentRecoveryCandidateOffers = number(snapshot.persistentRecoveryCandidateOffers) or 0,
+        persistentRecoveryConfirmationAvailable = snapshot.persistentRecoveryConfirmationAvailable == true,
+        persistentRecoveryLastReason = snapshot.persistentRecoveryLastReason,
         lastInjectionPreflight = shallowCopy(self.lastInjectionPreflight),
         lastSequencePreflight = shallowCopy(self.lastSequencePreflight),
         armedEpoch = self.armedEpoch or 0,

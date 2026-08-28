@@ -1,3 +1,14 @@
+# 1.4.5 — 自动注入状态机所有权与确认修复
+
+- **真实所有权 Claim**：Coordinator 只有在唯一执行器已建立 plan、pre-window capture 或 departure lock 后才 Claim；单纯窗口匹配、预检或绑定验证不再污染 `activeGroupId`，残留身份会在判断其他组前安全释放。
+- **窗口代次一次性恢复**：`pre_window_capture_recover` 只允许在每个 armed epoch 的首次健康观察使用一次；预检失败并放行普通官方推荐后，同一仍可见窗口不能再次创建代次，必须先离开再进入。
+- **专精组 runtime 隔离**：group runtime 仅在同时取得明确 `profileKey` 与 `groupId` 时切换，不再创建 `unknown:<groupId>`；活动组失效时的收据与 departure lock 留在原专精命名空间。
+- **饰品稳定确认**：所有仅依赖自身非 GCD 冷却开始或充能减少的回退确认，包括饰品 13/14，均要求至少两个不同观察样本并持续 0.15 秒；预测性冷却回滚或精确失败不会推进步骤。
+- **HUD 校验一致**：HUD 复用 `AutoInjectionGroups:Validate()` 的 revision 缓存；合法组显示 READY/ACTIVE，非法启用组显示 INVALID、配置冲突与不会执行，卡片固定 `bindingToken=0` 且不暗示派发。
+- **高频 Normalize 收口**：AutoBurst 仅在首次读取尚未初始化的设置时执行一次完整 Normalize，后续 Evaluate 直接读取当前 `TacticEchoDB.tactics`；组 revision 与共享表更新仍在下一帧立即生效。
+- **恢复诊断补强**：新增 persistent recovery 的活动状态、持续时间、步骤、动作类型、候选次数、确认可用性和最近原因纯标量；永久 fail-closed 重试策略本次未改变。
+- **协议与架构不变**：未修改 BindingToken、TEAP v3 20 字节、flags `0x20`、`dispatchOrigin="burst"` 或 TEK；未新增状态机、事件、OnUpdate、轮询器或输入路径。
+
 # 1.4.4 — HUD 冷却与充能真实性修复
 
 - **冷却单位明确化**：`GetSpellBaseCooldown()` 的毫秒值只在 API 边界转换为秒；`C_Spell`、动作条、Tooltip 与 tracker 的秒制数值不再按大小猜测单位，修复奥术弹幕 `500ms` 被显示为 `500s`，并避免合法长 CD 被错误缩短。
