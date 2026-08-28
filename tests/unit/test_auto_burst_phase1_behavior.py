@@ -654,21 +654,40 @@ assert(preflight.status == "none_ready" and preflight.firstExcludedPhase == "COO
 """)
 
 
-def test_preflight_excludes_direct_actionbar_own_cooldown_without_retrying_injection() -> None:
+def test_preflight_holds_direct_actionbar_cooldown_edge_until_explicit_ready() -> None:
     run_lua(AUTO_BURST_HARNESS + r"""
+nowValue = 100
 cooldowns[31884] = "actionbar_cooldown"
 local result = eval()
-assert(result.kind == "none", "trusted action-bar own CD must exclude injection before plan creation")
-assert(AutoBurst:GetSnapshot().active == false, "no candidate may be retained for action-bar CD")
+assert(result.kind == "hold" and result.observationOnly == true,
+    "trusted direct action-bar own CD at the window edge must retain only an observation capture")
+local pending = AutoBurst:GetSnapshot()
+assert(pending.active == false and pending.preWindowCaptureActive == true,
+    "cooldown-edge settling must not create a plan or candidate")
+assert(pending.preWindowCaptureCooldownEdgePending == true
+    and pending.preWindowCaptureCooldownEdgeSpellID == 31884,
+    "the bounded direct-action edge must be auditable without raw cooldown values")
+cooldowns[31884] = "ready"
+nowValue = 100.90
+local ready = eval()
+assert(ready.kind == "candidate" and ready.dispatchSpellID == 31884,
+    "the original ordered injection must survive the observed late-ready jitter and dispatch only once explicitly ready")
 """)
 
 
-def test_preflight_excludes_direct_actionbar_duration_own_cooldown_without_retrying_injection() -> None:
+def test_preflight_direct_actionbar_cooldown_edge_expires_to_original_simple_behavior() -> None:
     run_lua(AUTO_BURST_HARNESS + r"""
+nowValue = 200
 cooldowns[31884] = "actionbar_duration_cooldown"
 local result = eval()
-assert(result.kind == "none", "duration-based own CD must exclude injection before plan creation")
-assert(AutoBurst:GetSnapshot().active == false, "no plan may exist for duration-CD injection")
+assert(result.kind == "hold" and result.observationOnly == true,
+    "trusted duration evidence may only open the bounded no-token edge capture")
+nowValue = 201.30
+local expired = eval()
+assert(expired.kind == "none", "a still-cooling action must return to the original simple exclusion after the edge budget")
+local snapshot = AutoBurst:GetSnapshot()
+assert(snapshot.active == false and snapshot.preWindowCaptureActive == false,
+    "an expired edge must not retain a plan, capture, or dispatch authority")
 """)
 
 
@@ -1916,6 +1935,70 @@ assert(state.cooldownKnown == true and state.cooldownActive == false,
     "a zero-duration exact direct button must clear stale SpellID own CD")
 assert(state.cooldownActionBarNumericReady == true and state.cooldownDirectActionBarReadyEvidence == true,
     "numeric direct-button ready evidence must remain auditable")
+""")
+
+
+def test_cooldown_only_trusted_numeric_ready_wins_over_contradictory_active_boolean() -> None:
+    run_lua(r"""
+function GetTime() return 150 end
+_G.TacticEcho = {}
+C_Spell = {
+    GetSpellCooldown = function(spellID)
+        -- The declared/base SpellID still exposes its old 120s cooldown after
+        -- the actual talented action has recovered at roughly 60s.
+        return { startTime = 90, duration = 120, isEnabled = true, isActive = true, isOnGCD = false }
+    end,
+    GetSpellCharges = function(spellID) return nil end,
+}
+C_ActionBar = {
+    GetActionCooldown = function(slot)
+        -- Retail field disagreement observed in the Retribution test: the
+        -- exact current button is numerically ready while `isActive` lags.
+        return { startTime = 0, duration = 0, isActive = true, isOnGCD = false }
+    end,
+}
+dofile(ROOT .. "/addon/!TacticEcho/Tactics/IconState.lua")
+local state = _G.TacticEcho.IconState:CollectCooldownOnly(31884, {
+    liveCooldown = true, actionSlot = 8, directActionSlot = true,
+    actionBarStateTrusted = true,
+    gcdSnapshot = { known = true, active = false, activeKnown = true },
+})
+assert(state.cooldownKnown == true and state.cooldownActive == false,
+    "trusted exact-button 0/0 must correct the stale base SpellID cooldown")
+assert(state.cooldownDirectActionBarReadyEvidence == true,
+    "the correction must remain limited to explicit direct-button ready evidence")
+assert(state.cooldownActionBarReadyConflict == true
+    and state.cooldownActionBarReadyConflictReason == "trusted_numeric_ready_overrode_active",
+    "the contradictory public scalars must be exported as a bounded audit reason")
+""")
+
+
+def test_cooldown_only_untrusted_numeric_ready_cannot_override_spell_cooldown() -> None:
+    run_lua(r"""
+function GetTime() return 150 end
+_G.TacticEcho = {}
+C_Spell = {
+    GetSpellCooldown = function(spellID)
+        return { startTime = 90, duration = 120, isEnabled = true, isActive = true, isOnGCD = false }
+    end,
+    GetSpellCharges = function(spellID) return nil end,
+}
+C_ActionBar = {
+    GetActionCooldown = function(slot)
+        return { startTime = 0, duration = 0, isActive = true, isOnGCD = false }
+    end,
+}
+dofile(ROOT .. "/addon/!TacticEcho/Tactics/IconState.lua")
+local state = _G.TacticEcho.IconState:CollectCooldownOnly(31884, {
+    liveCooldown = true, actionSlot = 8, directActionSlot = false,
+    actionBarStateTrusted = true,
+    gcdSnapshot = { known = true, active = false, activeKnown = true },
+})
+assert(state.cooldownKnown == true and state.cooldownActive == true,
+    "macro/indirect action slots must not inherit the direct-button ready correction")
+assert(state.cooldownDirectActionBarReadyEvidence ~= true
+    and state.cooldownActionBarReadyConflict ~= true,
+    "an untrusted 0/0 observation must not authorize or claim a correction")
 """)
 
 

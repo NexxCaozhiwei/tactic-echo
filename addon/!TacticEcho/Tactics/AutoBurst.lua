@@ -110,6 +110,21 @@ local STEP_CONFIRM_SECONDS = 2.20
 -- immediate, but cooldown-only fallback evidence must survive this short
 -- rollback window before it can advance the ordered plan.
 local FALLBACK_CONFIRM_STABILITY_SECONDS = 0.15
+-- A trusted direct action can remain publicly `active` for the last transport
+-- sample before its cooldown expires.  The official pre-window recommendation
+-- may arrive in that same sample. Keep the already-authenticated capture for a
+-- tightly bounded observation interval instead of permanently deleting the
+-- first ordered step. No BindingToken is emitted during this interval.
+local PRE_WINDOW_COOLDOWN_EDGE_FALLBACK_SECONDS = 0.85
+-- The public recommendation can precede the exact direct-action ready edge by
+-- almost a full second. Retail evidence from a 60-second Paladin cooldown
+-- showed the edge capture starting at 59.126 seconds; the old queue+0.25 cap
+-- expired at 59.824 seconds, one sampling phase before explicit ready. This is
+-- observation jitter allowance, not a cooldown guess: the step still cannot
+-- enter a plan until the same trusted action slot reports ready.
+local PRE_WINDOW_COOLDOWN_EDGE_SETTLE_SECONDS = 0.75
+local PRE_WINDOW_COOLDOWN_EDGE_MIN_SECONDS = 0.85
+local PRE_WINDOW_COOLDOWN_EDGE_MAX_SECONDS = 1.20
 -- Optional runtime unavailability must persist across two distinct shared
 -- business snapshots before it may remove a step. A single predictive
 -- cooldown/usability frame is never enough to advance the ordered sequence.
@@ -1321,6 +1336,8 @@ rememberStepObservation = function(self, plan, step, sample, stage)
         cooldownActionBarDurationKnown = icon.cooldownActionBarDurationKnown == true,
         cooldownActionBarDurationOwnEvidence = icon.cooldownActionBarDurationOwnEvidence == true,
         cooldownActionBarNumericReady = icon.cooldownActionBarNumericReady == true,
+        cooldownActionBarReadyConflict = icon.cooldownActionBarReadyConflict == true,
+        cooldownActionBarReadyConflictReason = icon.cooldownActionBarReadyConflictReason,
         cooldownIdentityKey = icon.cooldownIdentityKey,
         cooldownConfirmationPending = icon.cooldownConfirmationPending == true,
         cooldownUnknownReason = icon.cooldownUnknownReason,
@@ -2680,9 +2697,11 @@ local function selectedRuleForSequence(rule, selectedSteps)
     return selected
 end
 
-local function preflightSequence(self, rule, cycle)
+local function preflightSequence(self, rule, cycle, options)
+    options = type(options) == "table" and options or {}
     local selected, excluded, deferredResource = {}, {}, {}
     local configuredOptional, selectedOptional = 0, 0
+    local cooldownEdgeEntry
     local windowSeen = false
     for index, step in ipairs(sequenceFor(rule)) do
         if isWindowStep(step) then
@@ -2715,14 +2734,43 @@ local function preflightSequence(self, rule, cycle)
                     }
                 end
             else
-                excluded[#excluded + 1] = {
+                local binding = sample and sample.bindingInfo or nil
+                local icon = sample and sample.iconState or nil
+                local ownCooldownEvidence = explicitOwnCooldownEvidence(step, sample)
+                local directCooldownEdgeEligible = options.ignoreCooldownEdge ~= true
+                    and index == 1
+                    and windowSeen ~= true
+                    and stepKind(step) == "spell"
+                    and ownCooldownEvidence == true
+                    and binding and binding.directActionSlot == true
+                    and binding.actionBarStateTrusted == true
+                    and icon and (icon.cooldownSource == "actionbar_api"
+                        or icon.cooldownSource == "actionbar_numeric"
+                        or icon.cooldownSource == "actionbar_duration")
+                local excludedEntry = {
                     index = index, key = step.key, role = step.role, category = step.category,
                     phase = phase, reason = sample and sample.reason or "sample_missing",
                     cooldownUncertain = sample and sample.cooldownUncertain == true or false,
                     resourceBlocked = sample and sample.resourceBlocked == true or false,
                     spellID = stepKind(step) == "spell" and positiveSpellID(step.spellID) or nil,
                     inventorySlot = stepKind(step) == "inventory" and inventorySlot(step.inventorySlot) or nil,
+                    cooldownSource = sample and sample.iconState and sample.iconState.cooldownSource or nil,
+                    cooldownRequestedActionSlot = sample and sample.iconState
+                        and number(sample.iconState.cooldownRequestedActionSlot) or nil,
+                    cooldownActionBarStateTrusted = sample and sample.iconState
+                        and sample.iconState.cooldownActionBarStateTrusted == true or false,
+                    cooldownActionBarNumericReady = sample and sample.iconState
+                        and sample.iconState.cooldownActionBarNumericReady == true or false,
+                    cooldownDirectActionBarReadyEvidence = sample and sample.iconState
+                        and sample.iconState.cooldownDirectActionBarReadyEvidence == true or false,
+                    cooldownActionBarReadyConflict = sample and sample.iconState
+                        and sample.iconState.cooldownActionBarReadyConflict == true or false,
+                    cooldownActionBarReadyConflictReason = sample and sample.iconState
+                        and sample.iconState.cooldownActionBarReadyConflictReason or nil,
+                    directCooldownEdgeEligible = directCooldownEdgeEligible == true,
                 }
+                excluded[#excluded + 1] = excludedEntry
+                if directCooldownEdgeEligible == true then cooldownEdgeEntry = excludedEntry end
             end
         end
     end
@@ -2737,6 +2785,9 @@ local function preflightSequence(self, rule, cycle)
     elseif rule.mode == "focused" and #excluded > 0 then
         status, reason = "none_ready", "focused_optional_step_unavailable"
     end
+    if cooldownEdgeEntry then
+        status, reason = "cooldown_edge_pending", "pre_window_direct_action_cooldown_edge"
+    end
     local diagnostic = {
         status = status, reason = reason, ruleId = rule and rule.id or nil, elapsed = now(),
         configuredOptionalCount = configuredOptional, selectedOptionalCount = selectedOptional,
@@ -2745,6 +2796,17 @@ local function preflightSequence(self, rule, cycle)
         firstExcludedCooldownUncertain = firstExcluded.cooldownUncertain == true,
         firstExcludedResourceBlocked = firstExcluded.resourceBlocked == true,
         firstExcludedSpellID = firstExcluded.spellID, firstExcludedInventorySlot = firstExcluded.inventorySlot,
+        firstExcludedCooldownSource = firstExcluded.cooldownSource,
+        firstExcludedActionSlot = firstExcluded.cooldownRequestedActionSlot,
+        firstExcludedActionBarStateTrusted = firstExcluded.cooldownActionBarStateTrusted == true,
+        firstExcludedActionBarNumericReady = firstExcluded.cooldownActionBarNumericReady == true,
+        firstExcludedDirectActionBarReadyEvidence = firstExcluded.cooldownDirectActionBarReadyEvidence == true,
+        firstExcludedActionBarReadyConflict = firstExcluded.cooldownActionBarReadyConflict == true,
+        firstExcludedActionBarReadyConflictReason = firstExcluded.cooldownActionBarReadyConflictReason,
+        cooldownEdgePending = cooldownEdgeEntry ~= nil,
+        cooldownEdgeStepKey = cooldownEdgeEntry and cooldownEdgeEntry.key or nil,
+        cooldownEdgeSpellID = cooldownEdgeEntry and cooldownEdgeEntry.spellID or nil,
+        cooldownEdgeActionSlot = cooldownEdgeEntry and cooldownEdgeEntry.cooldownRequestedActionSlot or nil,
         resourceCheckDeferred = #deferredResource > 0,
         deferredResourceCount = #deferredResource,
         firstDeferredResourceSpellID = deferredResource[1] and deferredResource[1].spellID or nil,
@@ -2765,7 +2827,7 @@ local function preflightSequence(self, rule, cycle)
     self.lastSequencePreflight = diagnostic
     self.lastInjectionPreflight = diagnostic
 
-    if status ~= "selected" then
+    if status ~= "selected" and status ~= "cooldown_edge_pending" then
         log(self, "sequence_preflight_no_eligible", {
             ruleId = rule and rule.id or nil, reason = reason,
             configuredOptionalCount = configuredOptional, selectedOptionalCount = selectedOptional,
@@ -2775,6 +2837,13 @@ local function preflightSequence(self, rule, cycle)
             firstExcludedResourceBlocked = firstExcluded.resourceBlocked == true,
             firstExcludedSpellID = firstExcluded.spellID,
             firstExcludedInventorySlot = firstExcluded.inventorySlot,
+            firstExcludedCooldownSource = firstExcluded.cooldownSource,
+            firstExcludedActionSlot = firstExcluded.cooldownRequestedActionSlot,
+            firstExcludedActionBarStateTrusted = firstExcluded.cooldownActionBarStateTrusted == true,
+            firstExcludedActionBarNumericReady = firstExcluded.cooldownActionBarNumericReady == true,
+            firstExcludedDirectActionBarReadyEvidence = firstExcluded.cooldownDirectActionBarReadyEvidence == true,
+            firstExcludedActionBarReadyConflict = firstExcluded.cooldownActionBarReadyConflict == true,
+            firstExcludedActionBarReadyConflictReason = firstExcluded.cooldownActionBarReadyConflictReason,
             selectedOrder = diagnostic.selectedOrder, excludedOrder = diagnostic.excludedOrder,
         })
         -- Keep the legacy event name in diagnostics for existing importers.
@@ -2782,10 +2851,19 @@ local function preflightSequence(self, rule, cycle)
             ruleId = rule and rule.id or nil, excludedCount = #excluded,
             firstExcludedPhase = firstExcluded.phase, firstExcludedKey = firstExcluded.key,
             firstExcludedReason = firstExcluded.reason, reason = reason,
+            firstExcludedCooldownSource = firstExcluded.cooldownSource,
+            firstExcludedActionSlot = firstExcluded.cooldownRequestedActionSlot,
+            firstExcludedActionBarStateTrusted = firstExcluded.cooldownActionBarStateTrusted == true,
+            firstExcludedActionBarNumericReady = firstExcluded.cooldownActionBarNumericReady == true,
+            firstExcludedDirectActionBarReadyEvidence = firstExcluded.cooldownDirectActionBarReadyEvidence == true,
+            firstExcludedActionBarReadyConflict = firstExcluded.cooldownActionBarReadyConflict == true,
+            firstExcludedActionBarReadyConflictReason = firstExcluded.cooldownActionBarReadyConflictReason,
             selectedOrder = diagnostic.selectedOrder, excludedOrder = diagnostic.excludedOrder,
         })
         return nil, diagnostic
     end
+
+    if status == "cooldown_edge_pending" then return nil, diagnostic end
 
     local selectedRule = selectedRuleForSequence(rule, selected)
     diagnostic.ruleId = selectedRule.id
@@ -2805,6 +2883,15 @@ local function preflightSequence(self, rule, cycle)
         excludedOrder = diagnostic.excludedOrder,
     })
     return selectedRule, diagnostic
+end
+
+local function preWindowCooldownEdgeBudget(cycle)
+    local queueSeconds = number(type(cycle) == "table" and cycle.queueSeconds)
+        or PRE_WINDOW_COOLDOWN_EDGE_FALLBACK_SECONDS
+    queueSeconds = math.max(0.05, math.min(0.40, queueSeconds))
+    return math.max(PRE_WINDOW_COOLDOWN_EDGE_MIN_SECONDS,
+        math.min(PRE_WINDOW_COOLDOWN_EDGE_MAX_SECONDS,
+            queueSeconds + PRE_WINDOW_COOLDOWN_EDGE_SETTLE_SECONDS))
 end
 
 local function publicGCDPhase(cycle)
@@ -3158,6 +3245,83 @@ function AutoBurst:Evaluate(official, runtime)
         -- already on own CD, unknown, unbound or equipment-mismatched never enter
         -- the plan, so no later retry loop can trap the window behind them.
         local selectedRule, sequencePreflight = preflightSequence(self, rule, cycle)
+        if sequencePreflight and sequencePreflight.cooldownEdgePending == true then
+            if not capture then
+                capture = beginPreWindowCapture(
+                    self, rule, officialSpellID, self.windowGeneration,
+                    windowReason or "pre_window_direct_action_cooldown_edge", rearmedFromNonArmed
+                )
+            end
+            if capture then
+                local observedAt = now()
+                if number(capture.cooldownEdgeStartedAt) == nil then
+                    local budget = preWindowCooldownEdgeBudget(cycle)
+                    capture.cooldownEdgeStartedAt = observedAt
+                    capture.cooldownEdgeDeadline = observedAt + budget
+                    capture.cooldownEdgeBudgetSeconds = budget
+                    capture.cooldownEdgeStepKey = sequencePreflight.cooldownEdgeStepKey
+                    capture.cooldownEdgeSpellID = positiveSpellID(sequencePreflight.cooldownEdgeSpellID)
+                    capture.cooldownEdgeActionSlot = number(sequencePreflight.cooldownEdgeActionSlot)
+                    log(self, "pre_window_cooldown_edge_started", {
+                        captureId = capture.id,
+                        ruleId = rule.id,
+                        windowGeneration = capture.windowGeneration,
+                        stepKey = capture.cooldownEdgeStepKey,
+                        spellID = capture.cooldownEdgeSpellID,
+                        actionSlot = capture.cooldownEdgeActionSlot,
+                        budgetSeconds = capture.cooldownEdgeBudgetSeconds,
+                    })
+                end
+                if observedAt < (number(capture.cooldownEdgeDeadline) or observedAt) then
+                    self.lastWindowRejectReason = "pre_window_cooldown_edge_pending"
+                    recordDecision(self, "hold", "pre_window_cooldown_edge_pending", {
+                        officialSpellID = officialSpellID,
+                        windowSpellID = rule.windowSpellID,
+                        injectionSpellID = capture.cooldownEdgeSpellID,
+                        ruleSource = rule.source,
+                        ruleId = rule.id,
+                    })
+                    return continuePreWindowCapture(self, capture,
+                        "pre_window_cooldown_edge_pending", {
+                            detail = sequencePreflight.firstExcludedReason,
+                        }, runtime)
+                end
+                log(self, "pre_window_cooldown_edge_expired", {
+                    captureId = capture.id,
+                    ruleId = rule.id,
+                    windowGeneration = capture.windowGeneration,
+                    stepKey = capture.cooldownEdgeStepKey,
+                    spellID = capture.cooldownEdgeSpellID,
+                    actionSlot = capture.cooldownEdgeActionSlot,
+                    budgetSeconds = capture.cooldownEdgeBudgetSeconds,
+                })
+                capture.cooldownEdgeStartedAt = nil
+                capture.cooldownEdgeDeadline = nil
+                capture.cooldownEdgeBudgetSeconds = nil
+                capture.cooldownEdgeStepKey = nil
+                capture.cooldownEdgeSpellID = nil
+                capture.cooldownEdgeActionSlot = nil
+                selectedRule, sequencePreflight = preflightSequence(self, rule, cycle, {
+                    ignoreCooldownEdge = true,
+                })
+            end
+        elseif capture and number(capture.cooldownEdgeStartedAt) ~= nil then
+            log(self, "pre_window_cooldown_edge_resolved", {
+                captureId = capture.id,
+                ruleId = rule.id,
+                windowGeneration = capture.windowGeneration,
+                stepKey = capture.cooldownEdgeStepKey,
+                spellID = capture.cooldownEdgeSpellID,
+                actionSlot = capture.cooldownEdgeActionSlot,
+                resolution = "trusted_action_ready",
+            })
+            capture.cooldownEdgeStartedAt = nil
+            capture.cooldownEdgeDeadline = nil
+            capture.cooldownEdgeBudgetSeconds = nil
+            capture.cooldownEdgeStepKey = nil
+            capture.cooldownEdgeSpellID = nil
+            capture.cooldownEdgeActionSlot = nil
+        end
         if not selectedRule then
             self.lastWindowRejectReason = "burst_sequence_preflight_unavailable"
             recordDecision(self, "armed", "burst_sequence_preflight_unavailable", {
@@ -3828,6 +3992,11 @@ function AutoBurst:GetSnapshot()
             preWindowCaptureHandoffBarrierPublishedFrames = captureActive and number(capture.handoffBarrierPublishedFrames) or 0,
             preWindowCaptureRetryCount = captureActive and number(capture.retryCount) or 0,
             preWindowCaptureLastReason = captureActive and capture.lastRetryReason or nil,
+            preWindowCaptureCooldownEdgePending = captureActive and number(capture.cooldownEdgeStartedAt) ~= nil,
+            preWindowCaptureCooldownEdgeStepKey = captureActive and capture.cooldownEdgeStepKey or nil,
+            preWindowCaptureCooldownEdgeSpellID = captureActive and positiveSpellID(capture.cooldownEdgeSpellID) or nil,
+            preWindowCaptureCooldownEdgeActionSlot = captureActive and number(capture.cooldownEdgeActionSlot) or nil,
+            preWindowCaptureCooldownEdgeBudgetSeconds = captureActive and number(capture.cooldownEdgeBudgetSeconds) or nil,
             preWindowCaptureBridge = captureActive and capture.preCombatBridge == true,
             planState = nil,
             stepState = nil,
@@ -3999,6 +4168,11 @@ function AutoBurst:GetSnapshot()
         preWindowCaptureHandoffBarrierPublishedFrames = captureActive and number(capture.handoffBarrierPublishedFrames) or 0,
         preWindowCaptureRetryCount = captureActive and number(capture.retryCount) or 0,
         preWindowCaptureLastReason = captureActive and capture.lastRetryReason or nil,
+        preWindowCaptureCooldownEdgePending = captureActive and number(capture.cooldownEdgeStartedAt) ~= nil,
+        preWindowCaptureCooldownEdgeStepKey = captureActive and capture.cooldownEdgeStepKey or nil,
+        preWindowCaptureCooldownEdgeSpellID = captureActive and positiveSpellID(capture.cooldownEdgeSpellID) or nil,
+        preWindowCaptureCooldownEdgeActionSlot = captureActive and number(capture.cooldownEdgeActionSlot) or nil,
+        preWindowCaptureCooldownEdgeBudgetSeconds = captureActive and number(capture.cooldownEdgeBudgetSeconds) or nil,
         preWindowCaptureBridge = captureActive and capture.preCombatBridge == true,
         planWindowGeneration = plan.windowGeneration,
         planArmedEpoch = plan.armedEpoch,

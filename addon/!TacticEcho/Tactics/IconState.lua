@@ -447,6 +447,7 @@ local SHARED_COOLDOWN_FIELDS = {
     "cooldownActionBarDurationOwnEvidence", "cooldownActionBarNumericOwnEvidence",
     "cooldownActionBarNumericReady", "cooldownDirectActionBarEvidence",
     "cooldownDirectActionBarReadyEvidence", "cooldownExactActionVetoEvidence",
+    "cooldownActionBarReadyConflict", "cooldownActionBarReadyConflictReason",
     "cooldownLiveRead", "charges", "maxCharges", "chargeCooldownRemaining",
     "chargeCooldownDuration", "chargeCooldownStart", "chargeCooldownKnown",
 }
@@ -519,6 +520,12 @@ function IconState:CollectCooldownOnly(spellID, options)
         -- explicitly reports ready can correct a stale/base SpellID cooldown,
         -- but it never authorizes a cooldown skip by itself.
         cooldownDirectActionBarReadyEvidence = false,
+        -- Retail can transiently expose contradictory public scalars for a
+        -- transformed action: the exact button has a sanitized 0/0 snapshot
+        -- while its boolean remains `isActive=true`. Keep that contradiction
+        -- auditable without exporting either raw protected timing value.
+        cooldownActionBarReadyConflict = false,
+        cooldownActionBarReadyConflictReason = nil,
         cooldownActionBarDurationKnown = false,
         cooldownActionBarDurationOwnEvidence = false,
         cooldownActionBarNumericOwnEvidence = false,
@@ -654,9 +661,12 @@ function IconState:CollectCooldownOnly(spellID, options)
     -- not a speculative UI signal: it is the exact trusted default-action-bar
     -- action TEK would press.  Let GCDGate decide any shared queue/GCD phase;
     -- only clear the false *own cooldown* classification here.
-    if (actionActive == false or actionNumericReady == true) and actionActive ~= true and actionOnGCD ~= true
-        and options.directActionSlot == true
-        and options.actionBarStateTrusted == true then
+    local trustedDirectAction = options.directActionSlot == true
+        and options.actionBarStateTrusted == true
+    local explicitActionReady = actionActive == false
+    local numericActionReady = actionNumericReady == true
+    if (explicitActionReady or numericActionReady) and actionOnGCD ~= true
+        and trustedDirectAction then
         state.cooldownRemaining = 0
         state.cooldownDuration = 0
         state.cooldownStart = 0
@@ -673,6 +683,10 @@ function IconState:CollectCooldownOnly(spellID, options)
         state.cooldownIdentityKey = "spell:" .. tostring(spellID)
         state.cooldownUnknownReason = nil
         state.cooldownDirectActionBarReadyEvidence = true
+        if numericActionReady and actionActive == true then
+            state.cooldownActionBarReadyConflict = true
+            state.cooldownActionBarReadyConflictReason = "trusted_numeric_ready_overrode_active"
+        end
     elseif actionActive == true and actionOnGCD == false
         and options.directActionSlot == true
         and (options.actionBarStateTrusted == true or options.exactActionCooldownVeto == true) then
