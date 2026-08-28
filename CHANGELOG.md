@@ -1,3 +1,12 @@
+# 1.4.6 — 自动注入所有权交接边沿修复
+
+- **Departure-lock 同帧交接**：官方推荐从活动组离开锁直接切到另一组窗口时，Coordinator 先观察旧所有权并记录该窗口为活动期间错过，再释放旧锁；不会在同一过渡帧错误启动第二组。
+- **Capture 终止 fail-closed**：任何 Abort 原因都会在释放已拥有的 pre-window capture 前建立必要 departure lock；活动组关闭、模式变化或配置损坏不再让仍可见窗口直接回落到普通路径。
+- **不同样本稳定确认**：技能与饰品的冷却/充能 provisional confirmation 在 runtime cycleId 可用时必须观察到不同共享业务样本；重复读取同一快照即使超过 0.15 秒也不能确认。
+- **所有权写入统一**：已确认窗口冷却重入手工建锁会同步 Claim；未确认且已离开的窗口释放 plan/lock 时同步 Release；所有权诊断不再用仅表示 runtime namespace 的 groupId 冒充活动组。
+- **诊断字段分离**：Coordinator 的 `lastIgnoredEvent` 只保留忽略事件，普通释放与重置原因分别写入 `lastReleaseReason`、`lastResetReason`，避免 ignoredGroupId 与其他生命周期事件组成矛盾审计记录。
+- **安全边界不变**：未修改 BindingToken、TEAP v3 20 字节、flags `0x20`、`dispatchOrigin="burst"`、TEK、persistent recovery 策略或输入路径；未新增事件、OnUpdate、轮询器或并行状态机。
+
 # 1.4.5 — 自动注入状态机所有权与确认修复
 
 - **真实所有权 Claim**：Coordinator 只有在唯一执行器已建立 plan、pre-window capture 或 departure lock 后才 Claim；单纯窗口匹配、预检或绑定验证不再污染 `activeGroupId`，残留身份会在判断其他组前安全释放。

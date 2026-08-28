@@ -385,7 +385,8 @@ local function recordDecision(self, phase, reason, fields)
         consumedWindowGeneration = self.consumedWindowGeneration or 0,
         activePlanGeneration = self.activePlanGeneration,
         departureLockGeneration = self.departureLockGeneration,
-        activeGroupId = self.runtimeGroupId,
+        activeGroupId = self.plan and self.plan.groupId or (TE.AutoInjectionCoordinator
+            and TE.AutoInjectionCoordinator.activeGroupId or nil),
     }
     self.lastDecision = record
     if phase == "armed" and reason then
@@ -598,6 +599,24 @@ function AutoBurst:ReleaseGroupOwnershipIfUnowned(reason)
     if coordinator and coordinator.activeGroupId and type(coordinator.Release) == "function" then
         coordinator:Release(coordinator.activeGroupId, reason or "executor_ownership_released")
     end
+end
+
+function AutoBurst:ReleaseWindowDeparture(reason)
+    if self.requireWindowDeparture ~= true then
+        self:ReleaseGroupOwnershipIfUnowned(reason)
+        return false
+    end
+    local spellID = self.lockedWindowSpellID
+    self.requireWindowDeparture = false
+    self.lockedWindowSpellID = nil
+    self.preCombatBridgeDepartureLock = false
+    self.departureLockGeneration = nil
+    log(self, "window_departed", {
+        spellID = spellID,
+        reason = reason or "window_departed",
+    })
+    self:ReleaseGroupOwnershipIfUnowned(reason or "window_departed")
+    return true
 end
 
 local function loadGroupRuntime(self, groupId, profileKey)
@@ -1161,7 +1180,7 @@ local function confirmed(sample, baseline)
     return false, nil
 end
 
-local function confirmStableFallback(self, plan, step, source)
+local function confirmStableFallback(self, plan, step, source, cycle)
     local wait = plan and plan.wait
     if type(wait) ~= "table" then return false end
     local t = now()
@@ -1173,12 +1192,17 @@ local function confirmStableFallback(self, plan, step, source)
         return false
     end
     local provisional = wait.provisionalConfirmation
+    local runtimeSnapshot = type(cycle) == "table" and cycle.runtimeSnapshot or nil
+    local cycleId = type(runtimeSnapshot) == "table" and runtimeSnapshot.cycleId or nil
+    local cycleKey = (type(cycleId) == "number" or type(cycleId) == "string")
+        and tostring(cycleId) or nil
     if type(provisional) ~= "table" or provisional.source ~= source then
         provisional = {
             source = source,
             firstObservedAt = t,
             lastObservedAt = t,
             observationCount = 1,
+            lastCycleKey = cycleKey,
         }
         wait.provisionalConfirmation = provisional
         log(self, "step_confirmation_provisional", {
@@ -1192,7 +1216,11 @@ local function confirmStableFallback(self, plan, step, source)
         return false
     end
 
+    local differentSample = cycleKey and provisional.lastCycleKey ~= cycleKey
+        or cycleKey == nil and t > (number(provisional.lastObservedAt) or t)
     provisional.lastObservedAt = t
+    if not differentSample then return false end
+    provisional.lastCycleKey = cycleKey
     provisional.observationCount = (number(provisional.observationCount) or 1) + 1
     local stableSince = number(provisional.firstObservedAt) or t
     if number(wait.failedAt) and wait.failedAt > stableSince then stableSince = wait.failedAt end
@@ -1655,10 +1683,10 @@ local function lockWindowDeparture(self, plan)
 end
 
 -- A pre-window capture has no plan yet, but it still owns the official window
--- token. If evaluation faults during that ownership interval, fail closed until
--- the official recommendation leaves rather than exposing the captured window
+-- token. Any abort during that ownership interval must fail closed until the
+-- official recommendation leaves rather than exposing the captured window
 -- through the ordinary recommendation path on the next frame.
-local function lockPreWindowCaptureDeparture(self, capture)
+local function lockPreWindowCaptureDeparture(self, capture, reason)
     if not (self and type(capture) == "table" and type(capture.rule) == "table") then return end
     local generation = number(capture.windowGeneration) or number(self.windowGeneration)
     self.lockedWindowSpellID = capture.rule.windowSpellID or capture.officialSpellID
@@ -1674,7 +1702,7 @@ local function lockPreWindowCaptureDeparture(self, capture)
         officialSpellID = capture.officialSpellID,
         windowSpellID = capture.rule.windowSpellID,
         windowGeneration = generation,
-        reason = "capture_evaluator_fault",
+        reason = "capture_abort:" .. tostring(reason or "unknown"),
     })
 end
 
@@ -2018,11 +2046,11 @@ function AutoBurst:Abort(reason, hard)
     self.lastAbortReason = tostring(reason or "unknown")
     local capture = self.preWindowCapture
     -- A capture has not yet created a sequence, but it still owns the front
-    -- window against ordinary fallback. An evaluator fault is therefore a
-    -- fail-closed terminal event for the captured window: keep an explicit
+    -- window against ordinary fallback. Any abort is therefore a fail-closed
+    -- terminal event for the captured window: keep an explicit
     -- departure lock before releasing transient capture state.
-    if not self.plan and tostring(reason or "") == "evaluator_fault" and type(capture) == "table" then
-        lockPreWindowCaptureDeparture(self, capture)
+    if not self.plan and type(capture) == "table" then
+        lockPreWindowCaptureDeparture(self, capture, reason)
     end
     releasePreWindowCapture(self, "abort:" .. tostring(reason or "unknown"))
     if self.plan then
@@ -2464,6 +2492,7 @@ local function releaseUnconfirmedDepartedWindow(self, plan, step, sample)
     self.requireWindowDeparture = false
     self.lockedWindowSpellID = nil
     self.departureLockGeneration = nil
+    self:ReleaseGroupOwnershipIfUnowned("window_confirmation_unobserved_released")
     recordDecision(self, "released", "window_confirmation_unobserved_released", {
         officialSpellID = nil,
         windowSpellID = plan.rule and plan.rule.windowSpellID or nil,
@@ -2898,6 +2927,7 @@ function AutoBurst:Evaluate(official, runtime)
     local settings = tactics()
     local officialSpellID = official and positiveSpellID(official.spellID) or nil
     local previousOfficialSpellID = self.lastOfficialSpellID
+    local departedLockedWindowSpellID = nil
     local intentState = runtime.intentState
     local enteredArmed = intentState == "armed" and self.lastIntentState ~= "armed"
     -- A nil prior state is startup observation, not a paused -> armed restart.
@@ -2952,11 +2982,11 @@ function AutoBurst:Evaluate(official, runtime)
     if self.lastOfficialSpellID ~= officialSpellID then
         self.lastOfficialSpellID = officialSpellID
         if self.requireWindowDeparture and officialSpellID ~= self.lockedWindowSpellID then
-            log(self, "window_departed", { spellID = self.lockedWindowSpellID })
-            self.requireWindowDeparture = false
-            self.lockedWindowSpellID = nil
-            self.preCombatBridgeDepartureLock = false
-            self.departureLockGeneration = nil
+            -- Retain ownership through Coordinator:Observe on this exact
+            -- transition frame. A different group window first seen while the
+            -- prior departure lock still owns the executor must be latched as
+            -- missed before the lock is released.
+            departedLockedWindowSpellID = self.lockedWindowSpellID
         end
         if self.currentWindowSpellID and officialSpellID ~= self.currentWindowSpellID then
             self.currentWindowSpellID = nil
@@ -2971,6 +3001,7 @@ function AutoBurst:Evaluate(official, runtime)
     -- before it can influence any out-of-combat transport result.
     local inCombat = isInCombat(runtime)
     if not inCombat then
+        if departedLockedWindowSpellID then self:ReleaseWindowDeparture("window_departed_out_of_combat") end
         if self.plan or self.preWindowCapture then self:Abort("out_of_combat", true) end
         self.preCombatBridgeDepartureLock = false
         self.preCombatBridgeAuthorizationRequiresHandoff = false
@@ -2981,6 +3012,7 @@ function AutoBurst:Evaluate(official, runtime)
     local autoInjectionEnabled = settings.autoInjectionEnabled
     if autoInjectionEnabled == nil then autoInjectionEnabled = settings.autoBurstEnabled end
     if autoInjectionEnabled ~= true then
+        if departedLockedWindowSpellID then self:ReleaseWindowDeparture("window_departed_while_disabled") end
         if self.plan or self.preWindowCapture then self:Abort("auto_burst_disabled", false) end
         recordDecision(self, "idle", "auto_injection_disabled", { officialSpellID = officialSpellID })
         return noneResult()
@@ -2988,6 +3020,7 @@ function AutoBurst:Evaluate(official, runtime)
     -- The existing SignalFrame armed intent is the independent “自动运行”
     -- gate.  AutoBurst cannot start merely because its own checkbox is on.
     if runtime.intentState ~= "armed" then
+        if departedLockedWindowSpellID then self:ReleaseWindowDeparture("window_departed_while_not_armed") end
         if self.plan then self:SoftPause("auto_run_not_armed") end
         recordDecision(self, self.plan and "paused" or "idle", "auto_run_not_armed", { officialSpellID = officialSpellID })
         return self.plan and holdResult(self.plan, "auto_run_not_armed") or noneResult()
@@ -2995,6 +3028,15 @@ function AutoBurst:Evaluate(official, runtime)
 
     local context = runtime.context or (TE.Context and TE.Context:GetPlayer()) or {}
     local rule, ruleReason = profileRule(self, context, officialSpellID)
+    if departedLockedWindowSpellID then
+        self:ReleaseWindowDeparture("window_departed_after_owner_observation")
+        recordDecision(self, "released", "window_departed", {
+            officialSpellID = officialSpellID,
+            windowSpellID = departedLockedWindowSpellID,
+            ruleId = rule and rule.id or nil,
+        })
+        return noneResult()
+    end
     if not rule then
         if self.plan or self.preWindowCapture then self:Abort(ruleReason, false) end
         recordDecision(self, "idle", ruleReason or "rule_unavailable", { officialSpellID = officialSpellID })
@@ -3199,6 +3241,7 @@ function AutoBurst:Evaluate(official, runtime)
             self.consumedWindowGeneration = number(self.windowGeneration)
                 or self.consumedWindowGeneration
             self.activePlanGeneration = nil
+            self:ClaimGroupOwnership(rule.groupId)
             self.lastWindowRejectReason = "confirmed_window_reentry_on_cooldown"
             log(self, "confirmed_window_reentry_suppressed", {
                 officialSpellID = officialSpellID,
@@ -3340,7 +3383,7 @@ function AutoBurst:Evaluate(official, runtime)
         rememberStepObservation(self, plan, step, sample, "wait_confirm")
         local success, source = confirmed(sample, plan.wait.baseline)
         if success then
-            success = confirmStableFallback(self, plan, step, source)
+            success = confirmStableFallback(self, plan, step, source, cycle)
         else
             clearProvisionalFallback(self, plan, step, "evidence_not_persistent")
         end
@@ -4489,6 +4532,8 @@ function AutoBurst:GetDiagnostics()
         groupConflict = coordinatorSnapshot.groupConflict,
         ignoredGroupId = coordinatorSnapshot.lastIgnoredGroupId,
         ignoredGroupEvent = coordinatorSnapshot.lastIgnoredEvent,
+        groupReleaseReason = coordinatorSnapshot.lastReleaseReason,
+        groupResetReason = coordinatorSnapshot.lastResetReason,
         migration = TE.AutoInjectionGroups and shallowCopy(TE.AutoInjectionGroups.lastMigration) or nil,
         macroPolicy = "broad_visible_actionbar",
         resolvedRule = rule and {

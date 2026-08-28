@@ -380,7 +380,8 @@ def test_pre_window_capture_owns_front_window_before_teap_binding_and_faults_fai
     assert "pre_window_capture_binding_pending" in auto
     assert "pre_window_capture_window_pending" in auto
     assert "lockPreWindowCaptureDeparture" in auto
-    assert 'tostring(reason or "") == "evaluator_fault"' in auto
+    assert 'if not self.plan and type(capture) == "table" then' in auto
+    assert 'reason = "capture_abort:" .. tostring(reason or "unknown")' in auto
     assert "preWindowCaptureActive == true" in signal
     assert "heldBeforeAbort" in signal
     assert 'reason = "burst_evaluator_fault_hold"' in signal

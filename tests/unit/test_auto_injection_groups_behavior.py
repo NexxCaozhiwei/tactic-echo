@@ -299,6 +299,19 @@ assert(Coordinator.lastIgnoredGroupId == second)
 ''')
 
 
+def test_release_reason_does_not_overwrite_last_ignored_event() -> None:
+    run_lua(r'''
+local second = addConfigured(300, 301)
+local firstRule = assert(Groups:BuildRule(context, "group-1"))
+Coordinator:Observe(context, 300, { plan = { groupId = "group-1", rule = firstRule } })
+assert(Coordinator.lastIgnoredGroupId == second)
+assert(Coordinator.lastIgnoredEvent == "group_window_ignored_while_owner_active")
+Coordinator:Release("group-1", "test_release")
+assert(Coordinator.lastIgnoredEvent == "group_window_ignored_while_owner_active")
+assert(Coordinator.lastReleaseReason == "test_release")
+''')
+
+
 def test_missed_window_is_not_replayed_after_owner_releases() -> None:
     run_lua(r'''
 local second = addConfigured(300, 301)

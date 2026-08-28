@@ -11,6 +11,8 @@ local Coordinator = {
     ignoredUntilDeparture = {},
     lastIgnoredGroupId = nil,
     lastIgnoredEvent = nil,
+    lastReleaseReason = nil,
+    lastResetReason = nil,
     lastConflict = nil,
     windowIndex = {},
     indexRevision = nil,
@@ -38,7 +40,9 @@ function Coordinator:Reset(reason)
     self.lastOfficialSpellID = nil
     self.ignoredUntilDeparture = {}
     self.lastIgnoredGroupId = nil
-    self.lastIgnoredEvent = reason
+    self.lastIgnoredEvent = nil
+    self.lastReleaseReason = nil
+    self.lastResetReason = reason
     self.lastConflict = nil
     self.windowIndex = {}
     self.indexRevision = nil
@@ -129,7 +133,7 @@ end
 
 function Coordinator:Release(groupId, reason)
     if groupId and self.activeGroupId == tostring(groupId) then self.activeGroupId = nil end
-    self.lastIgnoredEvent = reason or self.lastIgnoredEvent
+    self.lastReleaseReason = reason or self.lastReleaseReason
 end
 
 function Coordinator:GetDisplayGroupId()
@@ -149,6 +153,8 @@ function Coordinator:GetSnapshot(context)
         groupWindowSpellID = group and positiveInteger(group.windowSpellID) or nil,
         lastIgnoredGroupId = self.lastIgnoredGroupId,
         lastIgnoredEvent = self.lastIgnoredEvent,
+        lastReleaseReason = self.lastReleaseReason,
+        lastResetReason = self.lastResetReason,
         groupConflict = self.lastConflict,
     }
 end

@@ -467,6 +467,84 @@ assert(window.kind == "candidate" and window.dispatchSpellID == 343527, "later e
 """)
 
 
+def test_inventory_fallback_requires_a_distinct_runtime_sample() -> None:
+    run_lua(AUTO_BURST_HARNESS + r"""
+use_trinket_pre_sequence()
+local first = eval()
+assert(first.kind == "candidate" and first.dispatchActionKind == "inventory")
+inventoryCooldown = "cooldown"
+nowValue = 0.05
+local provisional = eval("armed", nil, 77)
+assert(not (provisional.kind == "candidate" and provisional.dispatchSpellID == 343527))
+nowValue = 0.30
+local repeated = eval("armed", nil, 77)
+assert(not (repeated.kind == "candidate" and repeated.dispatchSpellID == 343527),
+    "elapsed time plus a repeated runtime snapshot must not confirm the trinket")
+nowValue = 0.31
+local distinct = eval("armed", nil, 78)
+assert(distinct.kind == "candidate" and distinct.dispatchSpellID == 343527,
+    "a second distinct runtime sample may complete the stable confirmation")
+""")
+
+
+def test_departure_lock_observes_direct_second_group_window_before_release() -> None:
+    run_lua(AUTO_BURST_HARNESS + r"""
+local Groups = TE.AutoInjectionGroups
+local Coordinator = TE.AutoInjectionCoordinator
+local ok, second = Groups:AddGroup(testContext)
+assert(ok and Groups:SetGroupWindow(testContext, second, 400))
+assert(Groups:AddInjection(testContext, second, 31884))
+assert(Groups:SetGroupEnabled(testContext, second, true))
+cooldowns[400] = "ready"
+bindings[400] = "ready"
+bindingTokens[400] = 8
+
+local injection = eval()
+assert(injection.kind == "candidate" and injection.dispatchSpellID == 31884)
+AutoBurst:RecordSpellcastSucceeded(31884)
+local window = eval()
+assert(window.kind == "candidate" and window.dispatchSpellID == 343527)
+AutoBurst:RecordSpellcastSucceeded(343527)
+local locked = eval()
+assert(locked.kind == "hold" and AutoBurst:GetSnapshot().requireWindowDeparture == true)
+
+officialSpellID = 400
+local transition = eval()
+assert(transition.kind == "none", "departure transition remains observation-only")
+assert(Coordinator.lastIgnoredGroupId == second)
+assert(Coordinator.lastIgnoredEvent == "group_window_ignored_while_owner_active")
+assert(AutoBurst:GetSnapshot().requireWindowDeparture == false)
+local stillVisible = eval()
+assert(stillVisible.kind == "none" and AutoBurst:GetSnapshot().active == false,
+    "the directly observed second group window must not be supplemented")
+""")
+
+
+def test_active_capture_configuration_failure_establishes_departure_lock() -> None:
+    run_lua(AUTO_BURST_HARNESS + r"""
+local Groups = TE.AutoInjectionGroups
+local Coordinator = TE.AutoInjectionCoordinator
+local rule = assert(Groups:BuildRule(testContext, "group-1"))
+AutoBurst.runtimeGroupId = "group-1"
+AutoBurst.runtimeGroupKey = "PALADIN_3:group-1"
+AutoBurst.windowGeneration = 1
+AutoBurst.currentWindowSpellID = rule.windowSpellID
+AutoBurst.preWindowCapture = {
+    id = 99, active = true, rule = rule, officialSpellID = rule.windowSpellID,
+    windowGeneration = 1, armedEpoch = AutoBurst.armedEpoch,
+}
+Coordinator:Claim("group-1")
+assert(Groups:SetGroupEnabled(testContext, "group-1", false))
+local result = eval()
+assert(result.kind == "none")
+local snapshot = AutoBurst:GetSnapshot()
+assert(snapshot.preWindowCaptureActive == false)
+assert(snapshot.requireWindowDeparture == true,
+    "invalidating an owned capture must fail closed behind a departure lock")
+assert(Coordinator.activeGroupId == "group-1")
+""")
+
+
 def test_pre_inventory_confirmation_grace_enters_persistent_recovery_and_later_manual_cd_continues_window() -> None:
     run_lua(AUTO_BURST_HARNESS + r"""
 use_trinket_pre_sequence()
@@ -1988,7 +2066,7 @@ assert(normalizeCalls == 1)
 def test_source_contracts_for_epoch_recovery_inventory_stability_and_diagnostics() -> None:
     source = (ROOT / "addon" / "!TacticEcho" / "Tactics" / "AutoBurst.lua").read_text(encoding="utf-8")
     assert "firstHealthyFramePending == true and self.recoveredArmedEpoch ~= self.armedEpoch" in source
-    assert 'if success then\n            success = confirmStableFallback(self, plan, step, source)' in source
+    assert 'if success then\n            success = confirmStableFallback(self, plan, step, source, cycle)' in source
     for field in (
         "persistentRecoveryActive",
         "persistentRecoveryElapsed",
