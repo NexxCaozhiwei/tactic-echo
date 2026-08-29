@@ -36,7 +36,7 @@
 
 HUD 只消费普通标量快照，不拥有派发权限。主键和全部已启用组按配置顺序显示；只有真实 Burst 候选的活动组当前步骤显示派发状态。
 
-HUD 数字只读取 IconState/Tracker 已确认的秒数并向上取整。DurationObject 只绘制原生转盘，不能提供 HUD 数字。纯共享 GCD 隐藏；普通技能的 `1/1` 隐藏；只有 `maxCharges > 1` 的真实多充能技能显示充能。
+HUD 有安全动作槽秒数时由 IconState/Tracker 向上取整显示纯秒；已验证技能自身 CD 数值为 opaque 时，允许同一最终 DurationObject 显示客户端原生准确倒计时并清空 TE 徽标。纯共享 GCD 隐藏；普通技能的 `1/1` 隐藏；只有 `maxCharges > 1` 的真实多充能技能显示充能。
 
 HUD 卡、secure proxy、blocker、主容器和布局在战斗中不得直接执行受保护的显隐、透明度、缩放、位置或尺寸变化，必须延迟到脱战应用。
 

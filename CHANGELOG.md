@@ -1,3 +1,26 @@
+# 1.4.12 — opaque 冷却原生准确数字
+
+- **用户授权取消纯秒数独占规则**：可信技能自身 CD 的起止数值为 opaque 时，允许同一最终 DurationObject 显示 Blizzard 原生倒计时，优先保证数值准确；显示格式可能由客户端呈现为 `MM:SS`。
+- **所有直接技能真实动作槽优先**：任一可信直接动作槽已明确自身非 GCD 冷却时，都可直接使用 `C_ActionBar.GetActionCooldownDuration()` 的客户端对象，不再回退到声明 SpellID/基础技能的冲突旧对象；复仇之怒 120→60 只是已确认实例。
+- **单一文字权威**：原生倒计时可见时清空 TE 徽标及连续性缓存；动作槽恢复安全普通数值后重新隐藏原生数字并显示 TE 纯秒数，二者不得重叠。
+- **严格显示范围**：原生数字只用于已验证技能自身 CD 的 opaque 数值缺口；共享 GCD、饰品、药水、其他物品和未知来源继续隐藏原生数字。
+- **派发隔离**：原生文字与 DurationObject 仍只属于 HUD 展示，不进入 AutoBurst、BindingToken、TEAP、TEK 或任何步骤确认。
+
+# 1.4.11 — 复仇之怒调整后冷却数字纠正
+
+- **120 秒错误来源清除**：可信直接动作槽已确认技能处于非 GCD 自身冷却、但起止数值仍为 opaque 时，不再保留声明/基础 SpellID 或 Tracker 的旧 `120s` 数值。复仇之怒实际动作条为 `60s` 时，HUD 不会继续显示错误的 120 秒徽标。
+- **显式 false 保真**：完整 HUD 收集路径不再用 Lua `and/or` 读取动作槽 `isOnGCD`；明确的 `false` 会原样保留，使当前动作槽的非 GCD 自身冷却纠正规则真正执行。
+- **原生转盘继续工作**：该状态仍保持 `cooldownActive=true`，由客户端 DurationObject 绘制真实转盘；只有同一可信动作槽提供安全普通数值后，HUD 才恢复纯秒数徽标。
+- **派发资格不放宽**：opaque 动作槽仍是明确自身 CD veto，不会被误判为 ready；本次不改变 AutoBurst 顺序、确认、BindingToken、TEAP 或 TEK。
+- **行为回归**：新增 `31884` 声明 SpellID/Tracker 为 120 秒、动作槽仅公开 active/non-GCD 布尔值的用例，覆盖 cooldown-only 与完整 HUD 两条路径。
+
+# 1.4.10 — 多充能技能原生恢复转盘
+
+- **秘密值安全的充能转盘**：HUD 对真实 `maxCharges > 1` 技能优先使用 `C_ActionBar.GetActionChargeDuration()` / `C_Spell.GetSpellChargeDuration()` 返回的 `DurationObject`，直接交给 `Cooldown:SetCooldownFromDurationObject()` 绘制恢复环。
+- **可信来源优先**：已验证直接默认动作槽位优先，精确等效 SpellID 作为后备；普通技能 `1/1`、物品数量和非充能卡不会进入该路径。
+- **安全标量后备**：客户端未提供充能 DurationObject 时继续使用 `IconState` / `CooldownTracker` 已确认的普通数值；HUD 徽标仍只显示安全纯秒数，原生 CountdownNumbers 始终隐藏。
+- **派发边界不变**：DurationObject 不比较、不解包、不缓存、不写入模型或诊断，也不影响 AutoBurst、BindingToken、TEAP、TEK、步骤确认或冷却资格。
+
 # 1.4.9 — 前置注入冷却边沿抖动修复
 
 - **实机竞态修复**：惩戒骑日志确认 31884 的边沿捕获可在上次精确成功后 59.126 秒开始，旧 0.70 秒上限在 59.824 秒提前结束；新预算覆盖该实测抖动，不再把即将明确 ready 的第一注入永久移出本轮。

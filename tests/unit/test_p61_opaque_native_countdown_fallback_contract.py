@@ -11,24 +11,25 @@ MODEL = ADDON / "UI" / "TacticalHudModel.lua"
 
 
 class P61UnifiedHudCountdownContractTests(unittest.TestCase):
-    """1.0.38: DurationObject is swipe-only; HUD owns every visible digit."""
+    """1.4.12: verified opaque own CDs may use Blizzard's accurate digits."""
 
     def setUp(self) -> None:
         self.icon = ICON.read_text(encoding="utf-8")
         self.tracker = TRACKER.read_text(encoding="utf-8")
         self.model = MODEL.read_text(encoding="utf-8")
 
-    def test_native_duration_countdown_is_strictly_hidden(self) -> None:
-        self.assertIn("pcall(frame.SetHideCountdownNumbers, frame, true)", self.icon)
-        self.assertIn("card.nativeCountdownVisible = false", self.icon)
-        self.assertIn("card.nativeCountdownFallback = false", self.icon)
+    def test_native_duration_countdown_is_scoped_to_opaque_own_cd(self) -> None:
+        self.assertIn("pcall(frame.SetHideCountdownNumbers, frame, visible ~= true)", self.icon)
+        self.assertIn("local allowOpaqueNativeNumbers", self.icon)
+        self.assertIn("itemBackedCard ~= true", self.icon)
+        self.assertIn("card.nativeCountdownVisible = nativeNumbersVisible == true", self.icon)
+        self.assertIn("card.nativeCountdownFallback = nativeNumbersVisible == true", self.icon)
         self.assertNotIn("local nativeNumericFallback", self.icon)
-        self.assertNotIn("已临时使用同一原生 CD 对象倒计时", self.icon)
 
     def test_hud_digits_use_one_plain_seconds_formatter(self) -> None:
         self.assertIn("return tostring(math.max(1, math.ceil(remaining)))", self.icon)
-        self.assertIn("HUD 暂无安全数值；原生 DurationObject 仅用于转盘渲染", self.icon)
-        self.assertIn("DurationObject now renders only the swipe, never the digits", self.icon)
+        self.assertIn('card.cooldownLabelSource = "duration_object_native"', self.icon)
+        self.assertIn('card.badge:SetText("")', self.icon)
 
     def test_current_spec_defense_and_burst_skills_are_primed(self) -> None:
         for marker in (
@@ -46,8 +47,10 @@ class P61UnifiedHudCountdownContractTests(unittest.TestCase):
     def test_generic_actionbar_duration_requires_own_cd_certificate(self) -> None:
         for marker in (
             "local genericActionbarNumericCertified = item.cooldownActionBarNumericOwnEvidence == true",
+            "local opaqueTrustedActionOwnCooldown",
+            'item.cooldownSource == "actionbar_api"',
             "local allowGenericActionbarDuration = genericActionbarNumericCertified == true",
-            "local canUseActionSlot = actionSlot and genericActionbarNumericCertified == true",
+            "local canUseActionSlot = actionSlot and allowGenericActionbarDuration == true",
         ):
             self.assertIn(marker, self.icon)
 

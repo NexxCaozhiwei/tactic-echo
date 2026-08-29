@@ -50,7 +50,7 @@ HUD 按 `autoInjectionGroups.order` 展示全部已启用组，并把每组序�
 
 HUD 使用与运行路径相同的缓存后组校验。合法组可显示 READY/ACTIVE；损坏或冲突但已启用的组仍可显示用于诊断，但状态固定为 INVALID，并显示具体冲突原因及“不会执行”，不会获得 `burstReady`、BindingToken 或活动覆盖。
 
-HUD 冷却数字只读取 `IconState` / `CooldownTracker` 已确认的安全秒数，Blizzard `DurationObject` 只绘制转盘。没有安全数字时隐藏徽标；纯共享 GCD 不显示为技能自身 CD。只有当前 `maxCharges > 1` 的真实多充能技能才显示充能，普通技能的 `1/1` 不得显示。
+HUD 有安全动作槽秒数时只读取 `IconState` / `CooldownTracker` 已确认值并显示纯秒数；已验证技能自身 CD 数值为 opaque 时，允许同一最终 Blizzard `DurationObject` 显示客户端准确倒计时并清空 TE 徽标。纯共享 GCD 不显示为技能自身 CD。只有当前 `maxCharges > 1` 的真实多充能技能才显示充能，普通技能的 `1/1` 不得显示。
 
 TEAP v3 仍为 20 字节，`dispatchOrigin="burst"` 与 flags `0x20` 不变。groupId 只存在于 AddOn 配置、状态、HUD 和诊断中，不编码到协议。
 

@@ -14,7 +14,7 @@ AutoBurst 不是第二条输入通道。主键和 Burst 候选最终都必须经
 
 `GetSpellBaseCooldown()` 只在 API 边界由毫秒转换为秒；`C_Spell`、动作条、Tooltip、充能 recharge 和 tracker 内部值均按秒处理，不得再用数值大小猜测单位。转换后不超过 2.5 秒的静态基础时长不能启动 HUD 自身 CD 兜底，以避免奥术弹幕等无自身 CD 技能显示 500s。
 
-Blizzard `DurationObject` 只负责转盘，HUD 数字只读取 IconState/Tracker 已确认的安全标量并向上取整。只有 `maxCharges > 1` 的真实多充能技能显示充能；普通技能的 `1/1` 不得进入 HUD、Tooltip、充能边框或 AutoBurst 充能确认。
+Blizzard `DurationObject` 默认负责转盘；安全普通数值可读时，HUD 数字只读取 IconState/Tracker 已确认标量并向上取整。已验证技能自身 CD 的数值为 opaque 时，允许同一最终 DurationObject 显示 Blizzard 原生准确倒计时，且 TE 徽标必须清空。只有 `maxCharges > 1` 的真实多充能技能显示充能；普通技能的 `1/1` 不得进入 HUD、Tooltip、充能边框或 AutoBurst 充能确认。
 
 ## 历史记录边界
 

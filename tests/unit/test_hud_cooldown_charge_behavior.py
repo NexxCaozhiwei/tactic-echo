@@ -205,3 +205,64 @@ def test_hud_consumers_defensively_require_more_than_one_charge() -> None:
     source = (ADDON / "UI" / "TacticalIconButton.lua").read_text(encoding="utf-8")
     assert source.count("maxCharges > 1") >= 3
     assert '"充能：" .. tostring(charges)' in source
+
+
+def test_opaque_direct_action_clears_stale_120_second_hud_timer() -> None:
+    run_lua(r"""
+function GetTime() return 100 end
+_G.TacticEcho = {
+    CooldownTracker = {
+        IsConfirmationPending = function() return true end,
+        GetCooldown = function()
+            return {
+                remaining = 110,
+                duration = 120,
+                start = 90,
+                source = "local_tracker_cached",
+                fallback = true,
+                fallbackOrigin = "base_cache",
+            }
+        end,
+    },
+}
+C_Spell = {
+    GetSpellCooldown = function(spellID)
+        if spellID == 61304 then
+            return { startTime = 0, duration = 0, isActive = false, isOnGCD = false }
+        end
+        return { startTime = 90, duration = 120, isActive = true, isOnGCD = false }
+    end,
+    GetSpellCharges = function() return nil end,
+    IsSpellUsable = function() return true, false end,
+}
+C_ActionBar = {
+    GetActionCooldown = function()
+        -- Exact current button proves a non-GCD own cooldown, while protected
+        -- timing values are unavailable to addon code this frame.
+        return { isActive = true, isOnGCD = false }
+    end,
+}
+dofile(ROOT .. "/addon/!TacticEcho/Tactics/IconState.lua")
+local options = {
+    actionSlot = 8,
+    directActionSlot = true,
+    actionBarStateTrusted = true,
+    gcdSnapshot = { known = true, active = false, activeKnown = true },
+}
+local full = _G.TacticEcho.IconState:Collect(31884, options)
+assert(full.cooldownKnown == true and full.cooldownActive == true,
+    "HUD state must still permit the native cooldown swipe")
+assert(full.cooldownRemaining == nil and full.cooldownDuration == nil and full.cooldownStart == nil,
+        "HUD badge must stay hidden until the exact action exposes safe numeric timing: "
+        .. tostring(full.cooldownRemaining) .. "/" .. tostring(full.cooldownDuration) .. "/"
+        .. tostring(full.cooldownStart) .. " source=" .. tostring(full.cooldownSource)
+        .. " action=" .. tostring(full.cooldownActionBarPublicActive) .. "/"
+        .. tostring(full.cooldownActionBarPublicOnGCD))
+assert(full.cooldownSource == "actionbar_api", "opaque exact action must remain the semantic source")
+
+local cooldownOnly = _G.TacticEcho.IconState:CollectCooldownOnly(31884, options)
+assert(cooldownOnly.cooldownKnown == true and cooldownOnly.cooldownActive == true,
+    "opaque exact action must retain the semantic own-cooldown veto")
+assert(cooldownOnly.cooldownRemaining == nil and cooldownOnly.cooldownDuration == nil and cooldownOnly.cooldownStart == nil,
+    "cooldown-only state must not retain the stale 120 second requested-spell timer")
+""")

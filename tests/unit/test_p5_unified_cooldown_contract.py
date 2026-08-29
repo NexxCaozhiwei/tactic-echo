@@ -80,7 +80,7 @@ class P5UnifiedCooldownContractTests(unittest.TestCase):
         self.assertIn('displayOnly = true', self.auto)
         self.assertIn('return "unbound", "未在现实动作条白名单中找到绑定"', self.styles)
         self.assertIn("card.badge = card.cooldownText", self.icon)
-        self.assertIn("pcall(frame.SetHideCountdownNumbers, frame, true)", self.icon)
+        self.assertIn("pcall(frame.SetHideCountdownNumbers, frame, visible ~= true)", self.icon)
 
     def test_hud_has_independent_source_cooldown_and_state_text_layers(self) -> None:
         for marker in (

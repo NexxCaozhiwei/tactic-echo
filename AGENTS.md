@@ -103,9 +103,9 @@ trinket:13 / trinket:14   -- 固定装备栏身份，计划创建时锁定实际
 
 - `IconState`、`CooldownResolver` 与 `CooldownTracker` 负责 CD/GCD/充能的安全语义和标量状态；`TacticalHudModel` 只传递普通标量，绝不保存 `DurationObject`、受保护值、宏正文或任何派发权限。
 - `TacticalIconButton` 使用 1.0.31 已实测稳定的实时渲染路径：`showDurationObjectCooldown()` 可为**视觉展示**查询当前 `C_ActionBar`、`C_Spell` 与 `CooldownResolver`，顺序选择一个可用客户端 `DurationObject` 绘制转盘。此读取不得回写推荐、AutoBurst、BindingToken、TEAP、TEK 或任何输入条件。
-- 每次卡片绘制只允许附着一份最终选定的客户端转盘对象；`DurationObject` 的 CountdownNumbers 必须无条件隐藏，永远不能成为 HUD 数字来源。HUD 徽标是唯一数字层，只使用 `IconState`/Tracker 已确认的安全数值与连续性缓存，并统一以向上取整的纯秒数显示。
+- 每次卡片绘制只允许附着一份最终选定的客户端转盘对象。安全普通数值可读时隐藏 `DurationObject` CountdownNumbers，由 HUD 徽标使用 `IconState`/Tracker 已确认数值并向上取整显示纯秒数；已验证技能自身非 GCD 冷却但 start/duration 为 opaque 时，允许同一最终 DurationObject 显示 Blizzard 原生准确倒计时，并必须清空 HUD 徽标与连续性缓存。共享 GCD、物品和不可信来源不得启用原生数字。
 - 当前专精防御、爆发窗口与爆发注入技能必须在脱战时由 `CooldownTracker:PrimeCurrentSpec()` 预注册。预注册条目可缓存 Tooltip/Base 时长；后续直接动作条槽位建立时必须迁移同一条目而不丢失缓存。该缓存只用于已确认施放事件后的本地展示计时，并须由后续动作条/技能 API 观察自动校正。
-- HUD 暂无安全数值时只保留原生转盘、隐藏数字；不得以 Blizzard `MM:SS`、Tooltip/Base 静态值、宏猜测、图标灰度或不可信动作条伪造即时 HUD 数字。直接可信默认动作条的安全、可解释、非 GCD 自身 CD 数值仍可显示真实剩余时间与总时长。
+- HUD 暂无安全数值但同一可信动作槽已确认技能自身非 GCD 冷却时，允许客户端以同一最终 DurationObject 显示准确倒计时，格式可为 Blizzard `MM:SS`；不得以 Tooltip/Base 静态值、宏猜测、图标灰度或不可信动作条伪造即时 HUD 数字。直接可信默认动作条的安全、可解释数值仍优先作为纯秒数权威。
 - `BuildCooldownPresentation`、`TE.HudCooldownDurationObjects`、`cooldownPresentation` 侧车、`runtimeDurationObject` 与 `showSnapshotDurationObject` 不得恢复。该架构在目标 Retail 客户端上会导致普通技能 CD 转盘或数字失效，或 reload 后冷却来源随机切换。
 - 主键与 Burst-window 的纯共享 GCD 必须隐藏；13/14 槽饰品和其他物品卡不得显示泛 GCD。自身 CD 与共享 GCD 同时存在时，展示自身 CD。`cooldownGcdAlias` 可由 `IconState` 透传到 HUD，仅用于阻止 `61304` 别名误显示。
 - HUD CD 展示数据不得改变 AutoBurst 预检、步骤跳过、成功确认、TEAP、TEK 或任何输入派发权限。

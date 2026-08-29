@@ -14,7 +14,7 @@
 2. 转换后不超过 2.5 秒的基础时长不能启动 HUD 自身 CD 兜底，避免奥术弹幕的 500ms 公共时序显示成 500s。
 3. `SPELL_UPDATE_COOLDOWN` 作为全局失效事件重新校正所有活动 tracker 条目。
 4. 只有 `maxCharges > 1` 的真实多充能技能进入 IconState、HUD、Tooltip 和 AutoBurst 充能语义；普通技能不显示 `1/1`。
-5. HUD 数字继续只读取安全普通标量；Blizzard `DurationObject` 只绘制转盘并隐藏自身数字。
+5. HUD 有安全普通标量时显示 TE 纯秒数并隐藏原生数字；已验证技能自身 CD 数值为 opaque 时，允许同一最终 `DurationObject` 显示客户端准确倒计时，TE 徽标必须清空。
 
 ## 不可回归边界
 

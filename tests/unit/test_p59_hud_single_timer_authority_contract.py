@@ -20,14 +20,15 @@ class P59HudSingleTimerAuthorityContractTests(unittest.TestCase):
         self.board = BOARD.read_text(encoding="utf-8")
         self.signal = SIGNAL.read_text(encoding="utf-8")
 
-    def test_renderer_resolves_one_client_timer_while_native_digits_remain_hidden(self) -> None:
+    def test_renderer_resolves_one_client_timer_and_selects_one_text_authority(self) -> None:
         start = self.icon.index("local function showDurationObjectCooldown")
         end = self.icon.index("local function cooldownPresentationSignature", start)
         block = self.icon[start:end]
         self.assertIn("local duration, durationSource", block)
         self.assertIn("frame:SetCooldownFromDurationObject(duration, true)", block)
         self.assertIn("setNativeCountdownNumbers(frame, false)", block)
-        self.assertIn("return true, renderMode, false", block)
+        self.assertIn("setNativeCountdownNumbers(frame, showNativeNumbers)", block)
+        self.assertIn("return true, renderMode, showNativeNumbers", block)
         self.assertNotIn("runtimeDurationObject", block)
         self.assertNotIn("showSnapshotDurationObject", block)
 

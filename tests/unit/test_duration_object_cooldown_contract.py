@@ -33,6 +33,24 @@ class DurationObjectCooldownContractTests(unittest.TestCase):
         ):
             self.assertIn(marker, self.icon)
 
+    def test_multi_charge_recharge_sweep_uses_opaque_duration_object(self) -> None:
+        for marker in (
+            "local function showChargeDurationObject",
+            "C_ActionBar.GetActionChargeDuration",
+            "C_Spell.GetSpellChargeDuration",
+            "frame:SetCooldownFromDurationObject(duration, true)",
+            "local nativeCharge = showChargeDurationObject",
+            "maxCharges <= 1",
+            "duration == nil",
+        ):
+            self.assertIn(marker, self.icon)
+        charge_block = self.icon[
+            self.icon.index("local function showChargeDurationObject") :
+            self.icon.index("local function cooldownTextMode")
+        ]
+        for forbidden in ("duration:IsZero", "duration:Get", "GetRemainingDuration"):
+            self.assertNotIn(forbidden, charge_block)
+
     def test_removed_snapshot_sidecar_is_not_part_of_hud_data_flow(self) -> None:
         for forbidden in (
             "BuildCooldownPresentation",
@@ -46,13 +64,14 @@ class DurationObjectCooldownContractTests(unittest.TestCase):
             self.assertNotIn(forbidden, self.model)
             self.assertNotIn(forbidden, self.icon)
 
-    def test_hud_digits_are_strictly_badge_owned_while_duration_object_stays_swipe_only(self) -> None:
+    def test_hud_uses_native_digits_only_for_verified_opaque_own_cooldown(self) -> None:
         for marker in (
             'local function cooldownTextMode(_)',
             'return "custom"',
-            "pcall(frame.SetHideCountdownNumbers, frame, true)",
-            "card.nativeCountdownVisible = false",
-            "card.nativeCountdownFallback = false",
+            "pcall(frame.SetHideCountdownNumbers, frame, visible ~= true)",
+            "local allowOpaqueNativeNumbers",
+            "card.nativeCountdownVisible = nativeNumbersVisible == true",
+            'card.cooldownLabelSource = "duration_object_native"',
             "return tostring(math.max(1, math.ceil(remaining)))",
             "TacticalIconButton.badge",
         ):

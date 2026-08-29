@@ -302,7 +302,8 @@ def test_cooldown_text_is_unified_hud_badge_only_without_autoburst_dependency() 
     assert 'cooldownText.mode = "custom"' in normalize
     assert "cooldownTextMode" in button
     assert 'return "custom"' in button
-    assert "pcall(frame.SetHideCountdownNumbers, frame, true)" in button
+    assert "pcall(frame.SetHideCountdownNumbers, frame, visible ~= true)" in button
+    assert 'card.cooldownLabelSource = "duration_object_native"' in button
     assert "nativeNumericFallback" not in button
     assert 'preferExactDirectActionbarDigits' not in button
     assert "cooldownText(" not in auto

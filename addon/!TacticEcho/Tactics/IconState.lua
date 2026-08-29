@@ -691,6 +691,15 @@ function IconState:CollectCooldownOnly(spellID, options)
         and options.directActionSlot == true
         and (options.actionBarStateTrusted == true or options.exactActionCooldownVeto == true) then
         if applyDirectActionbarNumericCooldown(state, actionCooldown, spellID) ~= true then
+            -- The exact button proves an own cooldown, but its timing remains
+            -- opaque. Do not retain a requested/base SpellID timer here: talent
+            -- and override variants can expose a stale 120s value while the
+            -- action the player will actually press has a 60s cooldown. Keep
+            -- only the semantic cooldown veto and let the native DurationObject
+            -- render the swipe until a safe action-bar numeric sample arrives.
+            state.cooldownRemaining = nil
+            state.cooldownDuration = nil
+            state.cooldownStart = nil
             state.cooldownKnown = true
             state.cooldownActive = true
             state.cooldownOnGCD = false
@@ -1009,10 +1018,15 @@ function IconState:Collect(spellID, options)
         options.actionSlot or options.slot,
         options.directActionSlot == true or options.actionBarStateTrusted == true
     )
-    local displayActionActive = type(displayActionCooldown) == "table" and displayActionCooldown.active or nil
-    local displayActionOnGCD = type(displayActionCooldown) == "table" and displayActionCooldown.onGCD or nil
-    local displayActionReady = type(displayActionCooldown) == "table" and displayActionCooldown.numericReady == true
-    local displayActionLongOwn = type(displayActionCooldown) == "table" and displayActionCooldown.longOwnCooldown == true
+    -- Preserve explicit false. Lua's `table and value or nil` idiom would fold
+    -- `isOnGCD=false` into nil and skip the exact-button own-CD reconciliation.
+    local displayActionActive, displayActionOnGCD, displayActionReady, displayActionLongOwn
+    if type(displayActionCooldown) == "table" then
+        displayActionActive = displayActionCooldown.active
+        displayActionOnGCD = displayActionCooldown.onGCD
+        displayActionReady = displayActionCooldown.numericReady == true
+        displayActionLongOwn = displayActionCooldown.longOwnCooldown == true
+    end
     local displayActionTrusted = options.directActionSlot == true and options.actionBarStateTrusted == true
     -- Store only an already-sanitized exact action-bar numeric sample. If the
     -- client makes the next sample opaque, CooldownTracker can keep the HUD CD
@@ -1041,6 +1055,14 @@ function IconState:Collect(spellID, options)
         and numeric(state.cooldownRemaining) > 0
     if displayActionTrusted and ((displayActionActive == true and displayActionOnGCD == false) or displayActionLongOwn == true) then
         if applyDirectActionbarNumericCooldown(state, displayActionCooldown, spellID) ~= true then
+            -- Presentation follows the same exact-button authority as the
+            -- cooldown-only sampler. An opaque direct action must not inherit
+            -- a stale numeric timer from C_Spell or the local fallback tracker.
+            -- Preserve "cooling down" for the native swipe, but hide the HUD
+            -- badge until the button supplies ordinary start/duration values.
+            state.cooldownRemaining = nil
+            state.cooldownDuration = nil
+            state.cooldownStart = nil
             state.cooldownKnown = true
             state.cooldownActive = true
             state.cooldownOnGCD = false

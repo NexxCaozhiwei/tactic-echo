@@ -55,7 +55,7 @@ AutoBurst 不是第二条输入通道。它只能在官方推荐命中某个启�
 
 ## 6. HUD 冷却与充能
 
-`IconState`、`CooldownResolver` 和 `CooldownTracker` 负责安全标量；`TacticalHudModel` 不保存 `DurationObject` 或受保护值。`TacticalIconButton` 可只为视觉转盘选择一个客户端 `DurationObject`，但必须隐藏其 CountdownNumbers，且不得把它回写到推荐或派发链。
+`IconState`、`CooldownResolver` 和 `CooldownTracker` 负责安全标量；`TacticalHudModel` 不保存 `DurationObject` 或受保护值。`TacticalIconButton` 每卡只选择一个客户端 `DurationObject`：安全数值可读时仅画转盘并隐藏原生数字；已验证技能自身 CD 数值为 opaque 时可由客户端显示准确 CountdownNumbers。两种视觉结果都不得回写推荐或派发链。
 
 HUD 数字只显示已确认的安全剩余秒数并向上取整。没有安全数字时保留可用转盘并隐藏徽标；纯共享 GCD 不显示为自身 CD。只有 `maxCharges > 1` 的真实多充能技能显示充能，普通技能的 `1/1` 不显示。
 

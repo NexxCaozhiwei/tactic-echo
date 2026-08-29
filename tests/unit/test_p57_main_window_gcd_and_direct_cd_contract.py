@@ -47,8 +47,9 @@ class P57MainWindowGcdAndDirectCooldownContractTests(unittest.TestCase):
             self.assertIn(marker, self.state)
         for marker in (
             "local function showDurationObjectCooldown",
-            "pcall(frame.SetHideCountdownNumbers, frame, true)",
-            "card.nativeCountdownVisible = false",
+            "pcall(frame.SetHideCountdownNumbers, frame, visible ~= true)",
+            "safeNumber(item.cooldownRemaining) == nil",
+            "card.nativeCountdownVisible = nativeNumbersVisible == true",
             "return tostring(math.max(1, math.ceil(remaining)))",
         ):
             self.assertIn(marker, self.icon)

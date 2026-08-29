@@ -37,13 +37,14 @@ class P53ActionbarCooldownAuthorityContractTests(unittest.TestCase):
         ):
             self.assertIn(marker, self.icon)
 
-    def test_native_duration_never_owns_digits_while_custom_badge_is_universal(self) -> None:
+    def test_native_duration_owns_digits_only_during_verified_opaque_gap(self) -> None:
         for marker in (
             'local function cooldownTextMode(_)',
             'return "custom"',
-            "pcall(frame.SetHideCountdownNumbers, frame, true)",
-            "card.nativeCountdownVisible = false",
-            "card.nativeCountdownFallback = false",
+            "pcall(frame.SetHideCountdownNumbers, frame, visible ~= true)",
+            "local showNativeNumbers = allowNativeNumbers == true",
+            "card.nativeCountdownVisible = nativeNumbersVisible == true",
+            "card.nativeCountdownFallback = nativeNumbersVisible == true",
             "setNativeCountdownNumbers(card.cooldown, false)",
         ):
             self.assertIn(marker, self.icon)
