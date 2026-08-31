@@ -43,7 +43,8 @@ def test_autoburst_reads_only_cooldown_charge_and_normalized_gcd_states() -> Non
     assert "QUEUE_WINDOW" in source
     assert "step_dispatch_phase_wait" in source
     assert "step_wait_confirm_gcd_locked" in source
-    assert "public GCD" in source
+    assert "positive OWN_READY gate" in source
+    assert "UNKNOWN can never enter a plan or start a step" in source
     assert "STEP_REVALIDATE_SECONDS" in source
     assert "SendInput(" not in source
     assert "function IconState:CollectCooldownOnly" in icon_state
@@ -157,6 +158,8 @@ def test_optional_spell_temporary_usability_holds_without_releasing_or_leaking_a
         "temporaryUnavailable",
         "actionSlotUsable",
         "failureExcludedByTemporaryUnavailable",
+        "temporaryUnusableIgnoredForMovement",
+        "playerMoving",
     ):
         assert token in mapping
 
@@ -168,7 +171,12 @@ def test_ordered_plan_uses_one_way_tail_admission_and_locked_optional_retries() 
     assert "sequence_deferred_step_admitted" in auto
     assert "sequence_deferred_step_expired" in auto
     assert "function AutoBurst:RefreshDeferredTailSteps(plan, cycle" in auto
-    assert 'holdResult(plan, "burst_step_wait_movement")' in auto
+    assert "must not suspend the locked step" in auto
+    assert "movementRetryHold = false" in auto
+    assert "admittedOwnReady = true" in auto
+    assert "admittedOwnReady = plan.wait and plan.wait.admittedOwnReady == true" in auto
+    assert "ContinueAdmittedUnknownCooldown" in auto
+    assert "HoldUnconfirmedCooldown" in auto
     assert "not isOptionalStep(step)" in auto
     mapping = read(ADDON / "Diagnostics" / "MappingExport.lua")
     for token in (

@@ -695,7 +695,7 @@ assert(snapshot.active == false and snapshot.preWindowCaptureActive == false,
 """)
 
 
-def test_preflight_excludes_pending_own_cooldown_but_delivers_unknown_through_public_gcd() -> None:
+def test_preflight_excludes_pending_and_unknown_cooldown_until_positive_ready_evidence() -> None:
     run_lua(AUTO_BURST_HARNESS + r"""
 cooldowns[31884] = "cooldown_pending"
 local pending = eval()
@@ -705,16 +705,22 @@ assert(pending.kind == "none" and AutoBurst:GetSnapshot().active == false, "pend
 cooldowns[31884] = "unknown"
 gcdPhase = "GCD_LOCKED"
 local unknown = eval()
-assert(unknown.kind == "hold" and unknown.reason == "burst_step_wait_ready_now",
-    "unknown cooldown provenance must remain selected without dispatching the first step under GCD lock")
-assert(AutoBurst:GetSnapshot().active == true and AutoBurst:GetSnapshot().dispatchAttempt == 0)
+assert(unknown.kind == "none",
+    "unknown cooldown provenance must not create or dispatch a plan")
+assert(AutoBurst:GetSnapshot().active == false)
 local preflight = AutoBurst:GetDiagnostics().lastInjectionPreflight
-assert(preflight.status == "selected" and preflight.selectedOrder:find("injection:31884", 1, true),
-    "uncertain delivery must remain auditable in the selected sequence")
+assert(preflight.status == "none_ready" and preflight.excludedOrder:find("injection:31884", 1, true),
+    "uncertain admission must remain auditable without a BindingToken")
+cooldowns[31884] = "ready"
 gcdPhase = "READY_NOW"
-local ready = eval()
-assert(ready.kind == "candidate" and ready.dispatchSpellID == 31884,
-    "the retained first step must dispatch when the public gate becomes fully ready")
+assert(eval().kind == "none",
+    "a newly ready step behind the already observed window must not be inserted ahead of it")
+officialSpellID = 184575
+assert(eval().kind == "none")
+officialSpellID = 343527
+local nextWindow = eval()
+assert(nextWindow.kind == "candidate" and nextWindow.dispatchSpellID == 31884,
+    "the step may enter on a new window generation after a fresh positive own-ready sample")
 """)
 
 
@@ -794,6 +800,10 @@ local trinket = eval()
 assert(trinket.kind == "candidate" and trinket.dispatchActionKind == "inventory" and trinket.dispatchInventorySlot == 13,
     "configured trinket must be the first real ordered step")
 inventoryCooldown = "cooldown"
+local confirming = eval()
+assert(confirming.kind == "hold" and confirming.reason == "burst_step_revalidate",
+    "a newly observed item cooldown must stop re-dispatch while confirmation stabilizes")
+nowValue = 0.20
 local window = eval()
 assert(window.kind == "candidate" and window.dispatchSpellID == 343527,
     "confirmed trinket must advance to the configured middle window step")
@@ -1467,6 +1477,19 @@ assert(injection.dispatchAttempt == 1,
 """)
 
 
+def test_movement_does_not_veto_positive_own_ready_admission() -> None:
+    run_lua(AUTO_BURST_HARNESS + r"""
+playerSpeed = 7
+spellUsability[31884] = "ready"
+actionUsability[4] = "unusable"
+local injection = eval()
+assert(injection.kind == "candidate" and injection.dispatchSpellID == 31884,
+    "movement must not suppress an otherwise positively ready configured step")
+local observation = AutoBurst:GetDiagnostics().lastStepObservation
+assert(observation.temporaryUnusableIgnoredForMovement == true and observation.playerMoving == true)
+""")
+
+
 def test_failed_injection_becoming_temporarily_unusable_does_not_trip_release_breaker() -> None:
     run_lua(AUTO_BURST_HARNESS + r"""
 spellUsability[31884] = "ready"
@@ -1517,7 +1540,7 @@ assert(preflight.status == "selected" and preflight.resourceCheckDeferred == tru
 """)
 
 
-def test_locked_optional_step_waits_for_movement_then_retries_beyond_two_failures() -> None:
+def test_locked_optional_step_keeps_shared_retry_cadence_while_moving() -> None:
     run_lua(AUTO_BURST_HARNESS + r"""
 local injection = eval()
 assert(injection.kind == "candidate" and injection.dispatchSpellID == 31884)
@@ -1525,14 +1548,15 @@ assert(injection.kind == "candidate" and injection.dispatchSpellID == 31884)
 playerSpeed = 7
 assert(AutoBurst:RecordSpellcastFailed(31884, "UNIT_SPELLCAST_FAILED") == true)
 local moving = eval()
-assert(moving.kind == "hold" and moving.reason == "burst_step_wait_movement")
-assert(AutoBurst:GetSnapshot().movementRetryHold == true)
+assert(moving.kind == "hold" and moving.reason == "burst_failure_retry_barrier")
+local movingSnapshot = AutoBurst:GetSnapshot()
+assert(movingSnapshot.failureObservedMoving == true and movingSnapshot.movementRetryHold == false,
+    "movement is diagnostic and must not create a persistent no-token hold")
 
-playerSpeed = 0
-assert(eval().reason == "burst_failure_retry_barrier")
 assert(eval().reason == "burst_failure_retry_barrier")
 local retry2 = eval()
-assert(retry2.kind == "candidate" and retry2.dispatchAttempt == 2)
+assert(retry2.kind == "candidate" and retry2.dispatchAttempt == 2 and playerSpeed > 0,
+    "the admitted step must resume through the normal shared cadence even while moving")
 
 assert(AutoBurst:RecordSpellcastFailed(31884, "UNIT_SPELLCAST_FAILED") == true)
 assert(eval().reason == "burst_failure_retry_barrier")
@@ -1688,7 +1712,7 @@ assert(AutoBurst:GetSnapshot().active == true)
 """)
 
 
-def test_unknown_window_after_confirmed_injection_keeps_latched_candidate() -> None:
+def test_unknown_window_after_confirmed_injection_waits_for_positive_ready_evidence() -> None:
     run_lua(AUTO_BURST_HARNESS + r"""
 cooldowns[343527] = "unknown"
 local injection = eval()
@@ -1696,12 +1720,15 @@ assert(injection.kind == "candidate" and injection.dispatchSpellID == 31884, "of
 AutoBurst:RecordSpellcastSucceeded(31884)
 gcdPhase = "GCD_LOCKED"
 local locked = eval()
-assert(locked.kind == "hold" and locked.reason == "burst_step_wait_queue_window",
-    "the next latched window must not publish a token while GCD remains locked")
+assert(locked.kind == "hold" and locked.reason == "burst_step_revalidate",
+    "the next latched window must not publish a token from unknown cooldown evidence")
 gcdPhase = "QUEUE_WINDOW"
+assert(eval().kind == "hold", "public queue state alone must not authorize the unknown window")
+cooldowns[343527] = "ready"
 local window = eval()
-assert(window.kind == "candidate" and window.dispatchSpellID == 343527, "unknown window cooldown must continue the latched window candidate")
-assert(window.cooldownUncertain == true, "window candidate must mark uncertainty without treating it as success")
+assert(window.kind == "candidate" and window.dispatchSpellID == 343527,
+    "the latched window may dispatch after its own readiness becomes explicit")
+assert(window.cooldownUncertain ~= true)
 """)
 
 
@@ -1792,8 +1819,8 @@ assert(injection.kind == "candidate" and injection.dispatchSpellID == 31884)
 cooldowns[31884] = "cooldown"
 nowValue = 0.05
 local provisional = eval()
-assert(provisional.kind == "candidate" and provisional.dispatchSpellID == 31884,
-    "the first predicted own-cooldown frame must not skip an optional instant spell")
+assert(provisional.kind == "hold" and provisional.reason == "burst_step_revalidate",
+    "an observed own cooldown must immediately stop re-dispatch while success evidence stabilizes")
 assert(AutoBurst:RecordSpellcastFailed(31884, "UNIT_SPELLCAST_FAILED") == true)
 cooldowns[31884] = "ready"
 nowValue = 0.10
@@ -1900,7 +1927,7 @@ assert(retried.dispatchAttempt == 3 and retried.failureRetryObservedPhase == "RE
 """)
 
 
-def test_normal_cast_defers_devourer_generic_unusable_resource_compat() -> None:
+def test_normal_cast_pauses_plan_before_usability_or_sequence_mutation() -> None:
     run_lua(AUTO_BURST_HARNESS + r"""
 testContext = { class = "DEMONHUNTER", specIndex = 3, specID = 1480 }
 officialSpellID = 1225826
@@ -1925,10 +1952,31 @@ local retry = AutoBurst:Evaluate({ spellID = officialSpellID }, {
         castDisplay = { active = true, kind = "cast", spellID = 999999 },
     },
 })
-assert(retry.kind == "candidate" and retry.dispatchSpellID == 1217605,
-    "generic unusable during a normal cast must not be classified as special-resource loss")
-local observation = AutoBurst:GetDiagnostics().lastStepObservation
-assert(observation.resourceDecisionDeferred == true and observation.resourceDeferredByCast == true)
+assert(retry.kind == "hold" and retry.reason == "runtime_cast",
+    "an active cast must pause detection before any new candidate or usability decision")
+local snapshot = AutoBurst:GetSnapshot()
+assert(snapshot.active == true and snapshot.currentSpellID == 1217605 and snapshot.dispatchAttempt == 1,
+    "cast observation must preserve the exact admitted step and cursor")
+""")
+
+
+def test_active_cast_before_plan_does_not_consume_window_observation_or_create_plan() -> None:
+    run_lua(AUTO_BURST_HARNESS + r"""
+local paused = AutoBurst:Evaluate({ spellID = officialSpellID }, {
+    inCombat = true, intentState = "armed", effectiveState = "cast",
+    runtimeReason = "runtime_cast",
+    primary = { spellID = officialSpellID }, context = testContext,
+    runtimeSnapshot = {
+        cycleId = 9100,
+        castDisplay = { active = true, kind = "cast", spellID = 999999 },
+    },
+})
+assert(paused.kind == "none" and AutoBurst:GetSnapshot().active == false)
+assert(AutoBurst.lastOfficialSpellID == nil and AutoBurst.currentWindowSpellID == nil,
+    "cast protection must run before consuming the official window edge")
+local injection = eval()
+assert(injection.kind == "candidate" and injection.dispatchSpellID == 31884,
+    "the first healthy frame after the cast must still observe the untouched window")
 """)
 
 
@@ -2029,34 +2077,40 @@ assert(event and event.event == "window_confirmation_unobserved_released", "safe
 """)
 
 
-def test_post_mode_delivers_cooldown_uncertain_injection_through_public_gcd() -> None:
+def test_post_mode_defers_future_unknown_injection_until_positive_ready_evidence() -> None:
     run_lua(AUTO_BURST_HARNESS + r"""
 use_post_sequence()
 cooldowns[31884] = "unknown"
 gcdPhase = "GCD_LOCKED"
 local firstLocked = eval()
 assert(firstLocked.kind == "hold" and firstLocked.reason == "burst_step_wait_ready_now",
-    "the first window must remain locked without dispatching under shared GCD")
+    "the ready window may own the plan while the unknown future step stays deferred")
 gcdPhase = "READY_NOW"
 local result = eval()
 assert(result.kind == "candidate" and result.dispatchSpellID == 343527)
+cooldowns[31884] = "ready"
 AutoBurst:RecordSpellcastSucceeded(343527)
 gcdPhase = "GCD_LOCKED"
 local injectionLocked = eval()
 assert(injectionLocked.kind == "hold" and injectionLocked.reason == "burst_step_wait_queue_window",
-    "post mode must retain its uncertain bound injection without dispatching under GCD lock")
+    "the future step may join only after positive own-ready evidence and still observes the shared GCD")
 gcdPhase = "QUEUE_WINDOW"
 local injection = eval()
 assert(injection.kind == "candidate" and injection.dispatchSpellID == 31884)
 """)
 
 
-def test_post_mode_own_cooldown_omits_entire_burst_plan() -> None:
+def test_post_mode_never_dispatches_future_step_that_remains_on_own_cooldown() -> None:
     run_lua(AUTO_BURST_HARNESS + r"""
 use_post_sequence()
 cooldowns[31884] = "cooldown"
 local result = eval()
-assert(result.kind == "none" and AutoBurst:GetSnapshot().active == false, "post mode must omit a CD injection at window detection rather than build and skip later")
+assert(result.kind == "candidate" and result.dispatchSpellID == 343527,
+    "the ready window may proceed while the future CD step remains deferred")
+AutoBurst:RecordSpellcastSucceeded(343527)
+local completed = eval()
+assert(completed.kind ~= "candidate" and AutoBurst:GetSnapshot().active == false,
+    "a future step still on own cooldown when its position is reached must never be dispatched")
 """)
 
 

@@ -583,7 +583,11 @@ function AutoBurst:RecordSpellcastFailed(spellID, event)
     end
     plan.wait.provisionalConfirmation = nil
     plan.wait.failureObservedMoving = optionalLockedStep and self:IsPlayerMoving() or false
-    plan.wait.movementRetryHold = plan.wait.failureObservedMoving == true
+    -- Movement is diagnostic only after a step has already passed the positive
+    -- readiness gate.  The normal retry barrier still separates logical
+    -- attempts, but remaining in motion must not suspend the locked step or
+    -- allow a later sequence entry to overtake it.
+    plan.wait.movementRetryHold = false
     log(self, "step_spellcast_failed", {
         role = step.role,
         spellID = spellID,
@@ -973,21 +977,6 @@ end
 local sequenceFor
 local rememberStepObservation
 
--- A missing/opaque cooldown value is not a proven own cooldown. Once the
--- ActionRef has already passed the binding gate, keep the action eligible for
--- the normal shared-rate delivery path whenever GCDGate can still provide a
--- public phase. This makes AutoBurst match ordinary official recommendations:
--- an uncertain cooldown read never silently turns a valid queued action into
--- an observation-only stall. The uncertainty remains strictly non-confirming
--- and non-skip-eligible; only a later exact own-CD/charge/spellcast proof can
--- advance or rule-skip the logical step.
-local function mayDeliverWithUnknownCooldown(iconState)
-    if type(iconState) ~= "table" then return false end
-    if iconState.cooldownKnown == true then return false end
-    if iconState.inventoryEquipmentChanged == true then return false end
-    return true
-end
-
 local function classifyDispatchPhase(step, cycle, bindingInfo, iconState, reason, cooldownUncertain)
     -- Off-GCD is opt-in only and only exposed for the explicit configured
     -- trinket injection. It is never inferred from a cooldown, tooltip or
@@ -1130,13 +1119,20 @@ local function optionalInjectionUsabilityGate(step, cycle, bindingInfo, iconStat
         }
     end
 
-    -- Generic `false/false` is not proof that the step should be removed.  It
-    -- covers recoverable client conditions such as movement.  Once casts/GCD
-    -- no longer explain the value, retain the ordered step and publish a
-    -- no-token hold until the same verified action becomes usable again.
+    -- Generic `false/false` is not proof that the step should be removed.  When
+    -- the player is moving it is also not a dispatch veto: movement may reject
+    -- an otherwise ready cast after the physical keypress, and an already
+    -- ordered step is allowed to keep using the shared delivery cadence.  When
+    -- stationary, retain the no-token usability hold until the exact verified
+    -- action becomes usable again.
+    local movementIgnored = effectiveUsable == false
+        and resourceDecisionDeferred ~= true
+        and ownState ~= "COOLDOWN"
+        and AutoBurst:IsPlayerMoving()
     if effectiveUsable == false
         and resourceDecisionDeferred ~= true
-        and ownState ~= "COOLDOWN" then
+        and ownState ~= "COOLDOWN"
+        and movementIgnored ~= true then
         return {
             phase = "TEMPORARILY_UNUSABLE",
             reason = "optional_injection_temporarily_unusable",
@@ -1166,6 +1162,8 @@ local function optionalInjectionUsabilityGate(step, cycle, bindingInfo, iconStat
             resourceDecisionDeferred = resourceDecisionDeferred == true,
             resourceDeferredByCast = castActive,
             resourceDeferredByGCD = gcdPhase == "GCD_LOCKED" or gcdPhase == "QUEUE_WINDOW",
+            temporaryUnusableIgnoredForMovement = movementIgnored == true,
+            playerMoving = movementIgnored == true,
         }
     end
     return nil, {
@@ -1198,15 +1196,20 @@ local function stepSample(step, cycle, options)
             sample.resourceDecisionDeferred = resourceObservation.resourceDecisionDeferred == true
             sample.resourceDeferredByCast = resourceObservation.resourceDeferredByCast == true
             sample.resourceDeferredByGCD = resourceObservation.resourceDeferredByGCD == true
+            sample.temporaryUnusableIgnoredForMovement = resourceObservation.temporaryUnusableIgnoredForMovement == true
+            sample.playerMoving = resourceObservation.playerMoving == true
         end
         return sample
     end
     local ownState, ownReason = ownReadyState(iconState)
-    if ownState == "UNKNOWN" and mayDeliverWithUnknownCooldown(iconState) then
-        return withResourceObservation(classifyDispatchPhase(step, cycle, bindingInfo, iconState, ownReason or iconReason, true))
-    end
     if ownState ~= "OWN_READY" then
-        return withResourceObservation({ phase = ownState, reason = ownReason or iconReason, bindingInfo = bindingInfo, iconState = iconState })
+        return withResourceObservation({
+            phase = ownState,
+            reason = ownReason or iconReason,
+            bindingInfo = bindingInfo,
+            iconState = iconState,
+            cooldownUncertain = ownState == "UNKNOWN",
+        })
     end
 
     return withResourceObservation(classifyDispatchPhase(step, cycle, bindingInfo, iconState, nil, false))
@@ -1373,6 +1376,8 @@ rememberStepObservation = function(self, plan, step, sample, stage)
         resourceDecisionDeferred = sample.resourceDecisionDeferred == true,
         resourceDeferredByCast = sample.resourceDeferredByCast == true,
         resourceDeferredByGCD = sample.resourceDeferredByGCD == true,
+        temporaryUnusableIgnoredForMovement = sample.temporaryUnusableIgnoredForMovement == true,
+        playerMoving = sample.playerMoving == true,
         postWindowResourceSettling = sample.postWindowResourceSettling == true,
         postWindowResourceCycleId = sample.postWindowResourceCycleId,
         postWindowResourceGCDPhase = sample.postWindowResourceGCDPhase,
@@ -1522,6 +1527,7 @@ function AutoBurst:BeginFailureRetryAttempt(plan, step, sample)
         failureExcludedByTemporaryUnavailable = false,
         failureObservedMoving = false,
         movementRetryHold = false,
+        admittedOwnReady = previousWait.admittedOwnReady == true,
         retryOfDispatchAttempt = number(previousWait.dispatchAttempt) or nil,
         priorFailureObservedPhase = previousWait.failureObservedPhase,
         retryObservedPhase = sample.phase,
@@ -1949,32 +1955,50 @@ local function revalidateUnknownStep(self, plan, step, sample, reason)
     return holdResult(plan, "burst_step_revalidate")
 end
 
--- A cooldown flag that cannot yet pass the exact own-CD certificate is treated
--- as delivery uncertainty, not as a terminal stall. Reclassify it through the
--- same public GCD gate used by ordinary recommendations; when that gate exposes
--- READY, or QUEUE after a prior plan action, keep publishing the same armed
--- candidate at the shared TEK cadence. GCD_LOCKED never starts a new logical
--- attempt. A later exact two-sample certificate may still rule-skip the
--- optional simple injection or finish the window without dispatching it.
-local function reofferUnconfirmedCooldown(self, plan, step, cycle, sample, reason)
-    sample = type(sample) == "table" and sample or {}
+-- A pre-dispatch cooldown observation never authorizes input merely because its
+-- exact skip certificate still needs another business sample.  Keep ownership
+-- and revalidate without a BindingToken; a later positive ready sample may
+-- resume the same configured position, while a stable own-CD sample skips it.
+function AutoBurst:HoldUnconfirmedCooldown(plan, step, sample, reason)
+    return revalidateUnknownStep(self, plan, step, sample,
+        "cooldown_unconfirmed_" .. tostring(reason or (sample and sample.reason) or "unknown"))
+end
+
+-- Opaque cooldown data may continue delivery only for the exact WAIT_CONFIRM
+-- step that previously crossed the positive OWN_READY gate.  This separates
+-- admission from persistence: UNKNOWN can never enter a plan or start a step,
+-- but it also cannot make an already admitted cast disappear mid-attempt.
+function AutoBurst:ContinueAdmittedUnknownCooldown(plan, step, cycle, sample, reason)
+    local wait = plan and plan.wait
+    if not (type(wait) == "table" and wait.admittedOwnReady == true) then
+        return revalidateUnknownStep(self, plan, step, sample, reason)
+    end
     local offer = classifyDispatchPhase(
         step,
         cycle,
-        sample.bindingInfo,
-        sample.iconState,
-        reason or sample.reason or "cooldown_unconfirmed",
+        sample and sample.bindingInfo,
+        sample and sample.iconState,
+        reason or (sample and sample.reason) or "admitted_cooldown_unknown",
         true
     )
-    rememberStepObservation(self, plan, step, offer, "cooldown_unconfirmed_delivery")
-    if self:CanStartLogicalDispatch(plan, offer.phase) then
+    rememberStepObservation(self, plan, step, offer, "admitted_cooldown_unknown_delivery")
+    if wait.failureAcceptedForAttempt == true then
+        if self:IsFailureRetryReadyPhase(offer.phase) then
+            return self:BeginFailureRetryAttempt(plan, step, offer)
+        end
+        return holdResult(plan, offer.phase == "GCD_LOCKED"
+            and "burst_wait_confirm_gcd_locked" or "burst_failure_retry_wait_ready_now")
+    end
+    if offer.phase == "READY_NOW" or offer.phase == "QUEUE_WINDOW" then
+        wait.offerSample = offer
+        wait.phase = offer.phase
         return candidateResult(self, plan, step, offer)
     end
-    if offer.phase == "GCD_LOCKED" or offer.phase == "QUEUE_WINDOW" then
-        return holdResult(plan, self:PendingDispatchHoldReason(plan, offer.phase))
+    if offer.phase == "GCD_LOCKED" then
+        return holdResult(plan, "burst_wait_confirm_gcd_locked")
     end
     return revalidateUnknownStep(self, plan, step, offer,
-        "cooldown_unconfirmed_" .. tostring(offer.reason or reason or "unknown"))
+        "admitted_cooldown_unknown_" .. tostring(offer.reason or reason or "unknown"))
 end
 
 local function confirmPreInjectionOwnCooldown(self, plan, step, sample)
@@ -2365,6 +2389,11 @@ local function isRuntimePaused(self, runtime)
     local effective = runtime and runtime.effectiveState
     if effective and effective ~= "armed" then
         return true, runtime.runtimeReason or ("runtime_" .. tostring(effective))
+    end
+    local runtimeSnapshot = type(runtime) == "table" and runtime.runtimeSnapshot or nil
+    local castDisplay = type(runtimeSnapshot) == "table" and runtimeSnapshot.castDisplay or nil
+    if type(castDisplay) == "table" and castDisplay.active == true then
+        return true, "runtime_" .. tostring(castDisplay.kind or "cast")
     end
     return false, nil
 end
@@ -2816,11 +2845,13 @@ local function preflightSequence(self, rule, cycle, options)
     local configuredOptional, selectedOptional = 0, 0
     local cooldownEdgeEntry
     local windowSeen = false
+    local windowConfiguredIndex
     for index, step in ipairs(sequenceFor(rule)) do
         step.configuredIndex = index
         if isWindowStep(step) then
             selected[#selected + 1] = step
             windowSeen = true
+            windowConfiguredIndex = index
         elseif isOptionalStep(step) then
             configuredOptional = configuredOptional + 1
             local postWindowSpecialResource = windowSeen and isPostWindowResourceSettlementStep(step)
@@ -2892,7 +2923,7 @@ local function preflightSequence(self, rule, cycle, options)
                     directCooldownEdgeEligible = directCooldownEdgeEligible == true,
                 }
                 excluded[#excluded + 1] = excludedEntry
-                if phase == "COOLDOWN" and ownCooldownEvidence == true then
+                if (phase == "COOLDOWN" and ownCooldownEvidence == true) or phase == "UNKNOWN" then
                     if stepKind(step) == "inventory" then
                         step.expectedItemID = positiveItemID(binding and (binding.itemID or binding.expectedItemID))
                     end
@@ -2904,11 +2935,18 @@ local function preflightSequence(self, rule, cycle, options)
     end
 
     local firstExcluded = excluded[1] or {}
+    local deferredFutureOptional = 0
+    for _, deferredStep in ipairs(deferredCooldown) do
+        if (number(deferredStep.configuredIndex) or 0) > (number(windowConfiguredIndex) or math.huge) then
+            deferredFutureOptional = deferredFutureOptional + 1
+        end
+    end
     local status = "selected"
     local reason
     if configuredOptional <= 0 then
         status, reason = "none_ready", "sequence_no_optional_steps"
-    elseif selectedOptional <= 0 then
+    elseif selectedOptional <= 0
+        and not (rule.mode == "simple" and deferredFutureOptional > 0) then
         status, reason = "none_ready", "sequence_no_eligible_optional_steps"
     elseif rule.mode == "focused" and #excluded > 0 then
         status, reason = "none_ready", "focused_optional_step_unavailable"
@@ -2944,6 +2982,7 @@ local function preflightSequence(self, rule, cycle, options)
         firstDeferredTemporarySpellID = deferredTemporary[1] and deferredTemporary[1].spellID or nil,
         firstDeferredTemporaryReason = deferredTemporary[1] and deferredTemporary[1].reason or nil,
         deferredCooldownCount = #deferredCooldown,
+        deferredFutureOptionalCount = deferredFutureOptional,
         firstDeferredCooldownSpellID = deferredCooldown[1]
             and positiveSpellID(deferredCooldown[1].spellID) or nil,
         selectedKeys = {},
@@ -3071,8 +3110,6 @@ function AutoBurst:RefreshDeferredTailSteps(plan, cycle, stage)
             rememberStepObservation(self, plan, deferredStep, sample, "deferred_tail_recheck")
             local phase = sample and sample.phase or "UNKNOWN"
             local readyForAdmission = phase == "READY_NOW" or phase == "QUEUE_WINDOW" or phase == "GCD_LOCKED"
-                or (sample and sample.temporaryUnavailable == true)
-                or (sample and sample.resourceBlocked == true)
             if readyForAdmission then
                 if stepKind(deferredStep) == "inventory" and not positiveItemID(deferredStep.expectedItemID) then
                     local binding = sample and sample.bindingInfo or nil
@@ -3250,6 +3287,27 @@ function AutoBurst:Evaluate(official, runtime)
     runtime = type(runtime) == "table" and runtime or {}
     local settings = tactics()
     local officialSpellID = official and positiveSpellID(official.spellID) or nil
+    local earlyRuntimeSnapshot = type(runtime.runtimeSnapshot) == "table" and runtime.runtimeSnapshot or nil
+    local earlyCastDisplay = type(earlyRuntimeSnapshot) == "table" and earlyRuntimeSnapshot.castDisplay or nil
+    local earlyEffectiveState = runtime.effectiveState
+    local earlyCastActive = type(earlyCastDisplay) == "table" and earlyCastDisplay.active == true
+        or earlyEffectiveState == "cast"
+        or earlyEffectiveState == "channel"
+        or earlyEffectiveState == "empower"
+    local earlyAutoInjectionEnabled = settings.autoInjectionEnabled
+    if earlyAutoInjectionEnabled == nil then earlyAutoInjectionEnabled = settings.autoBurstEnabled end
+    if earlyCastActive and isInCombat(runtime) and runtime.intentState == "armed"
+        and earlyAutoInjectionEnabled == true then
+        local earlyPauseReason = runtime.runtimeReason
+            or (type(earlyCastDisplay) == "table"
+                and ("runtime_" .. tostring(earlyCastDisplay.kind or "cast")))
+            or ("runtime_" .. tostring(earlyEffectiveState or "cast"))
+        self:SoftPause(earlyPauseReason)
+        recordDecision(self, self.plan and "paused" or "idle", earlyPauseReason, {
+            officialSpellID = officialSpellID,
+        })
+        return self.plan and holdResult(self.plan, earlyPauseReason) or noneResult()
+    end
     local previousOfficialSpellID = self.lastOfficialSpellID
     local departedLockedWindowSpellID = nil
     local intentState = runtime.intentState
@@ -3350,6 +3408,17 @@ function AutoBurst:Evaluate(official, runtime)
         return self.plan and holdResult(self.plan, "auto_run_not_armed") or noneResult()
     end
 
+    -- Cast/channel/empower is an observation-only boundary. Check it before
+    -- profile selection, rule-change handling, capture recovery or deferred-tail
+    -- scanning so detection cannot mutate the ordered plan while another spell
+    -- is already in progress.
+    local paused, pauseReason = isRuntimePaused(self, runtime)
+    if paused then
+        self:SoftPause(pauseReason)
+        recordDecision(self, self.plan and "paused" or "idle", pauseReason or "runtime_paused", { officialSpellID = officialSpellID })
+        return self.plan and holdResult(self.plan, pauseReason) or noneResult()
+    end
+
     local context = runtime.context or (TE.Context and TE.Context:GetPlayer()) or {}
     local rule, ruleReason = profileRule(self, context, officialSpellID)
     if departedLockedWindowSpellID then
@@ -3370,13 +3439,6 @@ function AutoBurst:Evaluate(official, runtime)
     if self.plan and self.plan.rule.id ~= rule.id then
         self:Abort("rule_changed", false)
         return terminalResult(self, "rule_changed", { officialSpellID = officialSpellID, windowSpellID = rule.windowSpellID, injectionSpellID = rule.injectionSpellID, ruleSource = rule.source, ruleId = rule.id })
-    end
-
-    local paused, pauseReason = isRuntimePaused(self, runtime)
-    if paused then
-        self:SoftPause(pauseReason)
-        recordDecision(self, self.plan and "paused" or "idle", pauseReason or "runtime_paused", { officialSpellID = officialSpellID })
-        return self.plan and holdResult(self.plan, pauseReason) or noneResult()
     end
 
     local firstHealthyFramePending = self.firstHealthyFramePending == true
@@ -3805,29 +3867,6 @@ function AutoBurst:Evaluate(official, runtime)
             if result then return result end
             return self:Evaluate(official, runtime)
         end
-        if isOptionalStep(step) and plan.wait.failureAcceptedForAttempt == true
-            and plan.wait.movementRetryHold == true then
-            if self:IsPlayerMoving() then
-                if shouldLogProgress(self, "step_failure_movement_hold") then
-                    log(self, "step_failure_movement_hold", {
-                        role = step.role,
-                        spellID = positiveSpellID(step.spellID),
-                        currentStep = plan.stepIndex,
-                        dispatchAttempt = plan.wait.dispatchAttempt,
-                        failureCount = number(plan.failureAttempts) or 0,
-                    })
-                end
-                return holdResult(plan, "burst_step_wait_movement")
-            end
-            plan.wait.movementRetryHold = false
-            log(self, "step_failure_movement_released", {
-                role = step.role,
-                spellID = positiveSpellID(step.spellID),
-                currentStep = plan.stepIndex,
-                dispatchAttempt = plan.wait.dispatchAttempt,
-                failureCount = number(plan.failureAttempts) or 0,
-            })
-        end
         if isOptionalStep(step) and sample.temporaryUnavailable == true then
             return self:HoldTemporarilyUnavailable(plan, step, sample, "wait_confirm")
         end
@@ -3918,19 +3957,12 @@ function AutoBurst:Evaluate(official, runtime)
             return terminalResult(self, "burst_wait_confirmation_invalidated", { officialSpellID = officialSpellID, abortReason = sample.reason or sample.phase })
         end
         if isOptionalStep(step) and sample.phase == "COOLDOWN" then
-            return reofferUnconfirmedCooldown(self, plan, step, cycle, sample,
+            return self:HoldUnconfirmedCooldown(plan, step, sample,
                 "injection_cooldown_while_waiting:" .. tostring(sample.reason or sample.phase))
         end
-        if isOptionalStep(step) and sample.cooldownUncertain == true
-            and (sample.phase == "READY_NOW" or sample.phase == "QUEUE_WINDOW") then
-            plan.optionalUnavailableConfirmation = nil
-            plan.wait.offerSample = sample
-            plan.wait.phase = sample.phase
-            return candidateResult(self, plan, step, sample)
-        end
-        if isOptionalStep(step) and sample.phase == "UNKNOWN" then
-            return revalidateUnknownStep(self, plan, step, sample,
-                "injection_uncertain_while_waiting:" .. tostring(sample.reason or sample.phase))
+        if sample.phase == "UNKNOWN" then
+            return self:ContinueAdmittedUnknownCooldown(plan, step, cycle, sample,
+                "admitted_step_uncertain_while_waiting:" .. tostring(sample.reason or sample.phase))
         end
         -- Confirmation grace is diagnostic only. Once it elapses, a pre-window
         -- trinket enters persistent recovery; all other valid steps continue to
@@ -4068,10 +4100,10 @@ function AutoBurst:Evaluate(official, runtime)
             if disposition == "hold" then
                 return holdResult(plan, cooldownReason or "window_own_cooldown_confirming")
             end
-            return reofferUnconfirmedCooldown(self, plan, step, cycle, sample,
+            return self:HoldUnconfirmedCooldown(plan, step, sample,
                 "window_own_cooldown_unconfirmed:" .. tostring(cooldownReason or sample.reason or sample.phase))
         end
-        return reofferUnconfirmedCooldown(self, plan, step, cycle, sample,
+        return self:HoldUnconfirmedCooldown(plan, step, sample,
             "step_cooldown_unconfirmed:" .. tostring(sample.reason or sample.phase))
     end
     if sample.phase == "UNKNOWN" then
@@ -4145,6 +4177,7 @@ function AutoBurst:Evaluate(official, runtime)
         failureExcludedByTemporaryUnavailable = false,
         failureObservedMoving = false,
         movementRetryHold = false,
+        admittedOwnReady = true,
         failureObservedPhase = nil,
         failureRetryBarrierRequiredFrames = 0,
         failureRetryBarrierRemainingFrames = 0,
@@ -4208,6 +4241,7 @@ function AutoBurst:GetRuntimeState()
         deferredTailAdmittedCount = plan and number(plan.deferredTailAdmittedCount) or 0,
         deferredTailExpiredCount = plan and number(plan.deferredTailExpiredCount) or 0,
         waitingForConfirmation = plan and plan.state == "WAIT_CONFIRM" or false,
+        admittedOwnReady = plan and plan.wait and plan.wait.admittedOwnReady == true or false,
         postWindowResourceSettling = plan and plan.state == "POST_WINDOW_RESOURCE_SETTLING" or false,
         postWindowResourceFreshSamples = plan and plan.postWindowResourceSettlement
             and number(plan.postWindowResourceSettlement.unavailableFreshSamples) or 0,
@@ -4398,6 +4432,7 @@ function AutoBurst:GetSnapshot()
         confirmationEventSpellID = plan.wait and positiveSpellID(plan.wait.spellcastSucceededSpellID) or nil,
         confirmationEventMatchKind = plan.wait and plan.wait.spellcastSucceededMatchKind or nil,
         waitInputPhase = plan.wait and plan.wait.phase or nil,
+        admittedOwnReady = plan.wait and plan.wait.admittedOwnReady == true,
         inventoryRecoveryEligible = plan.wait and plan.wait.inventoryRecoveryEligible == true,
         inventoryRecoveryActive = plan.wait and plan.wait.inventoryRecoveryActive == true,
         inventoryRecoveryPersistent = plan.wait and plan.wait.inventoryRecoveryPersistent == true,

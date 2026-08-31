@@ -1,6 +1,6 @@
 # Tactic Echo 战术回响
 
-当前版本：`1.5.0`
+当前版本：`1.5.1`
 
 Tactic Echo 是一套 World of Warcraft Retail 辅助项目：游戏内 AddOn 只读观察官方主推荐和玩家既有动作条，Windows 端 TEK 通过 TEAP 协议在安全门控下执行单次按键派发。当前产品范围已经大幅收窄，只保留：首页/设置中心、HUD 主键、官方主推荐输入链路，以及内部复用 AutoBurst OrderedPlan 的“自动注入”设置页/运行链路。
 
@@ -78,6 +78,6 @@ python -m compileall -q tek/src tek/app tek/runtime
 ## 关键文档
 
 - `AGENTS.md`：当前最高优先级开发边界和安全约束。
-- `docs/baselines/BASELINE_1.5.0.md`：当前 1.5.0 基线。
+- `docs/baselines/BASELINE_1.5.1.md`：当前 1.5.1 基线。
 - `docs/patch-manifests/`：历史补丁清单归档。
 - `HANDOFF.md`：阶段交接和人工实机测试提示。
