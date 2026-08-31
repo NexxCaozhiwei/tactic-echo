@@ -201,10 +201,10 @@ assert(state.charges == 1 and state.maxCharges == 2,
 """)
 
 
-def test_hud_consumers_defensively_require_more_than_one_charge() -> None:
+def test_hud_visuals_require_more_than_one_charge_without_custom_tooltip_lines() -> None:
     source = (ADDON / "UI" / "TacticalIconButton.lua").read_text(encoding="utf-8")
-    assert source.count("maxCharges > 1") >= 3
-    assert '"充能：" .. tostring(charges)' in source
+    assert source.count("maxCharges > 1") >= 2
+    assert '"充能：" .. tostring(charges)' not in source
 
 
 def test_opaque_direct_action_clears_stale_120_second_hud_timer() -> None:

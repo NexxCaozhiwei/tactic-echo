@@ -4,7 +4,7 @@
 
 ## 版本治理
 
-- 当前唯一开发基线为 `1.4.4`。
+- 当前唯一开发基线为 `1.5.0`。
 - 每次版本化源码修改必须保持根目录 `VERSION`、AddOn TOC、`addon/!TacticEcho/Core/Bootstrap.lua` 一致，并同步 `CHANGELOG.md` 与 `docs/baselines/BASELINE_<VERSION>.md`。
 - 旧版本文档、patch manifest 和归档测试只能作为历史证据，不能恢复旧字段、旧模块或旧派发路径。
 - 当前文档应描述当前源码；发现版本、范围或安全边界漂移时，应先修正文档或明确记录待办。

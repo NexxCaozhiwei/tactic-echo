@@ -52,11 +52,11 @@ class P51TrinketCooldownContractTests(unittest.TestCase):
         ):
             self.assertIn(marker, self.resolver)
 
-    def test_hud_exposes_fallback_source_without_reintroducing_binding_dependency(self) -> None:
+    def test_hud_keeps_fallback_state_without_exposing_it_in_native_tooltip(self) -> None:
         self.assertIn("cooldownSlotSource = sample.cooldownSlotSource or sample.slotSource", self.auto)
         self.assertIn("cooldownItemFallbackActive", self.auto)
-        self.assertIn("inventory_item_fallback", self.icon)
-        self.assertIn("当前装备 ItemID 冷却 API（饰品槽位回退）", self.icon)
+        self.assertIn("GameTooltip.SetInventoryItem", self.icon)
+        self.assertNotIn("当前装备 ItemID 冷却 API（饰品槽位回退）", self.icon)
         self.assertIn("bindingMissing = not (binding and binding.binding)", self.auto)
 
 

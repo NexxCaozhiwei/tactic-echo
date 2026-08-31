@@ -1010,178 +1010,37 @@ local function cachedCooldownText(card, item, ownCooldown)
     return text, remaining ~= nil and "snapshot" or "unavailable"
 end
 
-local function tooltipLines(item, visual, card)
-    item, visual = item or {}, visual or {}
-    local state = item.iconState or {}
-    local stateLabel = safeText(visual.stateLabel, "")
-    if stateLabel == "" then
-        local stateNames = {
-            dispatchable = "可用", primary = "推荐", preview = "预览", advisory = "提示", cooldown = "冷却中",
-        }
-        stateLabel = stateNames[visual.visualState] or safeText(visual.visualState, "未知")
-    end
-    local lines = {
-        "类型：" .. safeText(item.kind, "提示"),
-        "状态：" .. stateLabel,
-        "原因：" .. safeText(visual.reason or item.unusableReason, "无"),
-        item.previewOnly and "仅预览/提示；不参与派发。" or "官方主推荐显示；仍需原有安全链路通过。",
-    }
-    local binding = safeText(item.binding, "")
-    lines[#lines + 1] = binding ~= "" and ("现实按键：" .. binding) or "现实按键：无绑定"
-    if visual.sourceLabel then lines[#lines + 1] = "来源：" .. safeText(visual.sourceLabel, "提示") end
-    if item.itemID then
-        lines[#lines + 1] = "物品 ID：" .. safeText(item.itemID, "未知")
-        if safeNumber(item.itemCount) then lines[#lines + 1] = "背包数量：" .. tostring(safeNumber(item.itemCount)) end
-        if item.inventorySlot then
-            lines[#lines + 1] = "装备槽位：" .. tostring(safeNumber(item.inventorySlot) or "未知")
-            lines[#lines + 1] = "饰品冷却由装备槽位 API 读取；仅 HUD 提示。"
-        else
-            lines[#lines + 1] = "物品冷却由 ItemID / 类别 API 读取；只读，不参与派发。"
-        end
-    end
-    if item.bindingSourceIndex == 2 then lines[#lines + 1] = "绑定来源：副绑定" end
-    if item.defensiveProfileKey then
-        lines[#lines + 1] = "防御配置：" .. safeText(item.defensiveProfileKey, "未知")
-        lines[#lines + 1] = "配置来源：" .. safeText(item.defensiveProfileSource, "未知")
-    end
-    if item.defensiveType then lines[#lines + 1] = "防御类型：" .. safeText(item.defensiveType, "未知") end
-    local defensivePriority = safeNumber(item.defensivePriority)
-    if defensivePriority then lines[#lines + 1] = "防御优先级：" .. tostring(math.floor(defensivePriority)) end
-    if item.defensiveConditionText then lines[#lines + 1] = "技能条件：" .. safeText(item.defensiveConditionText, "未知") end
-    local charges, maxCharges = safeNumber(item.charges), safeNumber(item.maxCharges)
-    if charges ~= nil and maxCharges ~= nil and maxCharges > 1 then
-        lines[#lines + 1] = "充能：" .. tostring(charges) .. "/" .. tostring(maxCharges)
-    end
-    if isItemBackedCard(item) and (item.cooldownOnGCD == true or item.cooldownGcdAlias == true) then
-        lines[#lines + 1] = isEquippedTrinketCard(item)
-            and "冷却：公共 GCD 已隐藏；饰品自身就绪"
-            or "冷却：公共 GCD 已隐藏；物品自身就绪"
-        if item.cooldownGcdAliasReason then
-            lines[#lines + 1] = "GCD 判定：" .. safeText(item.cooldownGcdAliasReason, "shared_gcd")
-        end
-    elseif item.cooldownKnown == true then
-        local text = cooldownText(item)
-        lines[#lines + 1] = "冷却：" .. (text ~= "" and (text .. " 秒") or "就绪")
-        if card and card.cooldownLabelSource == "continuity_cache" then
-            lines[#lines + 1] = "HUD 数字：沿用刚才确认的真实冷却快照（等待 API 重同步）"
-        end
-        if item.cooldownSource then
-            local sourceText = {
-                spell_api = "技能 API",
-                actionbar_numeric = "可信直接动作条数值（HUD 样式，数字与动作条一致）",
-                actionbar_numeric_observed = "可信直接动作条数值（已观测并由本地追踪保持连续）",
-                actionbar_api = "可信直接动作条状态（等待数值确认）",
-                spell_api_confirmation = "技能 API（施法后确认）",
-                spell_api_ooc_resync = "技能 API（脱战重同步）",
-                local_tracker_observed = "本地追踪（已观测技能 CD，原生 CD 不可渲染时兜底）",
-                local_tracker_cached = "本地追踪（脱战缓存，原生 CD 不可渲染时兜底）",
-                inventory_item_cooldown = "装备槽位冷却 API（饰品）",
-                inventory_item_fallback = "当前装备 ItemID 冷却 API（饰品槽位回退）",
-                item_cooldown = "物品类别冷却 API（药水/物品）",
-                container_item_cooldown = "容器物品冷却 API（兼容回退）",
-                legacy_item_cooldown = "旧版物品冷却 API（兼容回退）",
-            }
-            lines[#lines + 1] = "CD 数值来源：" .. (sourceText[item.cooldownSource] or safeText(item.cooldownSource, "未知"))
-        end
-        if item.cooldownFallback == true then
-            local origin = safeText(item.cooldownFallbackOrigin, "")
-            lines[#lines + 1] = "CD 兜底：原生 DurationObject 不可用时，已采用施法事件追踪；后续技能 API 会自动校正。"
-            if origin ~= "" then lines[#lines + 1] = "CD 兜底来源：" .. origin end
-        end
-        if item.cooldownConfirmationPending == true then
-            lines[#lines + 1] = "CD 校验：施法后正在等待动作条/技能 API 确认。"
-        end
-        if item.inventorySlot and item.cooldownSource == "inventory_item_fallback" then
-            lines[#lines + 1] = "饰品校验：槽位 API 暂未确认，已采用当前装备 ItemID 的活动冷却"
-        elseif item.inventorySlot and item.cooldownItemFallbackActive == true then
-            lines[#lines + 1] = "饰品校验：装备槽位与当前装备 ItemID 冷却均已确认"
-        end
-    elseif item.cooldownActive == true then
-        lines[#lines + 1] = "冷却：进行中（安全数值暂不可读；已验证自身 CD 可由客户端原生倒计时显示）"
-    elseif state.cooldownUnknownReason then
-        lines[#lines + 1] = "冷却：状态由游戏原生界面渲染"
-    end
-    local gcdRemaining = safeNumber(item.gcdRemaining)
-    if item.gcdKnown == true and gcdRemaining and gcdRemaining > 0 then
-        lines[#lines + 1] = "公共冷却：" .. string.format("%.1f", gcdRemaining) .. " 秒"
-    elseif item.gcdActive == true then
-        lines[#lines + 1] = "公共冷却：进行中（原生转盘）"
-    end
-    if card and card.cooldownRenderMode then
-        local modeText = {
-            duration_object_actionbar = "动作条 DurationObject CD 转盘（数字由 HUD 统一绘制）",
-            duration_object_spell = "技能 DurationObject CD 转盘（数字由 HUD 统一绘制）",
-            duration_object_item = "物品 DurationObject CD 转盘（数字由 HUD 统一绘制）",
-            duration_object = "DurationObject CD 转盘（数字由 HUD 统一绘制）",
-            duration_object_gcd = "DurationObject 原生共 CD",
-            numeric = "普通数值技能 CD",
-            numeric_gcd = "普通数值共 CD",
-            duration_api_unavailable = "客户端缺少 DurationObject 冷却 API",
-            duration_render_failed = "DurationObject 冷却渲染失败",
-        }
-        lines[#lines + 1] = "CD 转盘渲染：" .. (modeText[card.cooldownRenderMode] or "未激活")
-    end
-    if item.procHighlight == true then lines[#lines + 1] = "触发效果：已高亮" end
-    if item.reactionKind then
-        local kindLabels = { interrupt = "打断提示", single_control = "单体控制提示", aoe_control = "群控提示" }
-        lines[#lines + 1] = "P3 反应候选：" .. (kindLabels[item.reactionKind] or safeText(item.reactionKind, "候选"))
-        if item.reactionSourceLabel then lines[#lines + 1] = "读条来源：" .. safeText(item.reactionSourceLabel, "目标") end
-        if item.reactionAoe == true and item.reactionQualifyingCount then
-            lines[#lines + 1] = "可见有效钢条：" .. tostring(item.reactionQualifyingCount) .. " / 阈值 " .. tostring(item.reactionAoeThreshold or 4)
-        end
-        if item.reactionVerification == "unverified" then
-            lines[#lines + 1] = "钢条状态：未验证；P3 仅提示，不能自动打断"
-        end
-        if item.reactionRouteSafe == true then
-            lines[#lines + 1] = "动作条路由：已识别（P3 仅高亮，不自动按键）"
-        elseif item.reactionRouteAvailable == false then
-            lines[#lines + 1] = "动作条路由：尚未识别；P3 仅高亮，不自动按键"
-        else
-            lines[#lines + 1] = "动作条路由：已识别；后续自动化仍需路由校验"
-        end
-    end
-    if item.castingThisSpell == true then lines[#lines + 1] = item.channeling and "正在引导该技能" or "正在施放该技能" end
-    if item.burstState then lines[#lines + 1] = "爆发状态：" .. safeText(item.burstState, "未知") end
-    if item.advisoryCondition then lines[#lines + 1] = "触发依据：" .. safeText(item.advisoryCondition, "未知") end
-    if item.targetChecked == true then
-        if item.rangeBlocked == true then
-            lines[#lines + 1] = "距离：超出技能距离"
-        elseif item.targetInvalid == true then
-            lines[#lines + 1] = "目标：不可用"
-        else
-            lines[#lines + 1] = "距离：已检查"
-        end
-    end
-    if item.resourceBlocked == true then lines[#lines + 1] = "资源：当前不足" end
-    if item.burstRole then lines[#lines + 1] = "爆发队列位置：" .. safeText(item.burstRole, "后续") end
-    if card and card.tacticEchoEffectSummary and card.tacticEchoEffectSummary ~= "none" then
-        local labels = { primary = "暴雪风格跑马边框", proc = "Proc 光效", interrupt = "打断光效", burst = "爆发光效", mobility = "突进光效" }
-        lines[#lines + 1] = "视觉提示：" .. (labels[card.tacticEchoEffectSummary] or card.tacticEchoEffectSummary)
-    end
-    if card and card.hudInteractionRole == "main_toggle" then
-        lines[#lines + 1] = "HUD 单击：启动 / 暂停"
-    elseif card and card.hudInteractionRole == "manual_action" then
-        if card.manualClickReady == true then
-            local source = type(card.manualClickSource) == "table" and card.manualClickSource or {}
-            lines[#lines + 1] = "HUD 手动点击：可用（复用 " .. safeText(source.buttonName, "当前动作条") .. "）"
-        else
-            lines[#lines + 1] = "HUD 手动点击：不可用（" .. safeText(card.manualClickReasonText, "无可靠动作条来源") .. "）"
-        end
-    end
-    lines[#lines + 1] = "状态源：" .. safeText(state.source or item.source, "战术快照")
-    return lines
-end
-
 local function showTooltip(card)
     if not GameTooltip then return end
     local item, visual = card.item or {}, card.visual or {}
     GameTooltip:SetOwner(card, "ANCHOR_CURSOR")
-    GameTooltip:SetText(safeText(item.spellName or visual.label, "战术图标"), 0.80, 0.92, 1)
-    if item.autoInjectionGroupName or item.autoInjectionGroupId then
-        GameTooltip:AddLine("自动注入组：" .. safeText(item.autoInjectionGroupName or item.autoInjectionGroupId, "-"),
-            0.72, 0.88, 1.00, true)
+    if type(GameTooltip.ClearLines) == "function" then GameTooltip:ClearLines() end
+
+    -- HUD hover now delegates to the same Blizzard tooltip providers used by
+    -- ordinary spell and item buttons.  Runtime state, binding, cooldown
+    -- provenance and other Tactic Echo diagnostics stay out of the tooltip.
+    local populated = false
+    local inventorySlot = safeNumber(item.inventorySlot)
+    local itemID = safeNumber(item.itemID)
+    local spellID = safeNumber(item.spellID or item.matchedSpellID)
+
+    if inventorySlot and type(GameTooltip.SetInventoryItem) == "function" then
+        local ok, hasItem = pcall(GameTooltip.SetInventoryItem, GameTooltip, "player", inventorySlot)
+        populated = ok and hasItem ~= false
     end
-    for _, line in ipairs(tooltipLines(item, visual, card)) do GameTooltip:AddLine(line, 1, 1, 1, true) end
+    if not populated and itemID then
+        if type(GameTooltip.SetItemByID) == "function" then
+            populated = pcall(GameTooltip.SetItemByID, GameTooltip, itemID)
+        elseif type(GameTooltip.SetHyperlink) == "function" then
+            populated = pcall(GameTooltip.SetHyperlink, GameTooltip, "item:" .. tostring(itemID))
+        end
+    end
+    if not populated and spellID and type(GameTooltip.SetSpellByID) == "function" then
+        populated = pcall(GameTooltip.SetSpellByID, GameTooltip, spellID)
+    end
+    if not populated then
+        GameTooltip:SetText(safeText(item.spellName or visual.label, "战术图标"), 0.80, 0.92, 1)
+    end
     GameTooltip:Show()
 end
 

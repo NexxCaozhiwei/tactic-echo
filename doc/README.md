@@ -1,6 +1,6 @@
 # Tactic Echo 项目管理文档索引
 
-当前权威开发基线：`1.4.4`
+当前权威开发基线：`1.5.0`
 
 本目录收口当前项目管理、安全边界与交付验收规则。版本基线统一位于 `docs/baselines/`，补丁清单历史统一位于 `docs/patch-manifests/`；根目录不得保存重复 baseline 或 patch manifest。
 
@@ -12,7 +12,7 @@
 ## 权威顺序
 
 1. 用户当次明确指令与 `AGENTS.md`。
-2. 当前版本基线：`docs/baselines/BASELINE_1.4.4.md`。
+2. 当前版本基线：`docs/baselines/BASELINE_1.5.0.md`。
 3. 实时源码、测试及根目录当前文件：`VERSION`、`CHANGELOG.md`、`DECISIONS.md`、`HANDOFF.md`、`TASKS.md`、`PROJECT_CONTEXT.md`。
 4. 本目录的项目管理和交付规范。
 5. `docs/` 下当前架构、自动注入、测试与 TEK 专题。

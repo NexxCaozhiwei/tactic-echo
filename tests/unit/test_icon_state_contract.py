@@ -33,7 +33,7 @@ class IconStateContractTests(unittest.TestCase):
 
     def test_icon_component_renders_all_icon_state_markers(self):
         text = (ADDON / "UI" / "TacticalIconButton.lua").read_text(encoding="utf-8")
-        for marker in ("frame:SetCooldown", "card.gcdCooldown", "chargeText", "card.chargeEdge", "引导", "unknown", "触发效果：已高亮"):
+        for marker in ("frame:SetCooldown", "card.gcdCooldown", "chargeText", "card.chargeEdge", "item.castingThisSpell", "unknown", "item.procHighlight"):
             self.assertIn(marker, text)
         # Resource/range/target remain HUD states, but no longer have a second
         # icon-component greyscale path that duplicates the cooldown swipe.

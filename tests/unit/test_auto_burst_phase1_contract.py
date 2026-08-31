@@ -137,6 +137,50 @@ def test_spellcast_success_is_confirmation_only_for_current_waiting_step() -> No
     assert "window_queue_delivery_continues" in auto
 
 
+def test_optional_spell_temporary_usability_holds_without_releasing_or_leaking_a_token() -> None:
+    auto = read(ADDON / "Tactics" / "AutoBurst.lua")
+    mapping = read(ADDON / "Diagnostics" / "MappingExport.lua")
+    assert "optionalInjectionUsabilityGate" in auto
+    assert 'phase = "TEMPORARILY_UNUSABLE"' in auto
+    assert 'reason = "optional_injection_temporarily_unusable"' in auto
+    assert "actionObservation.usable ~= nil" in auto
+    assert "ownState ~= \"COOLDOWN\"" in auto
+    assert "function AutoBurst:HoldTemporarilyUnavailable" in auto
+    assert 'holdResult(plan, "burst_step_wait_usable")' in auto
+    assert "failureExcludedByTemporaryUnavailable" in auto
+    assert "step_failure_deferred_by_temporary_unusable" in auto
+    assert "temporaryUsabilityDeferred" in auto
+    assert "deferredTemporaryOrder" in auto
+    for token in (
+        "temporaryUsabilityDeferred",
+        "deferredTemporaryOrder",
+        "temporaryUnavailable",
+        "actionSlotUsable",
+        "failureExcludedByTemporaryUnavailable",
+    ):
+        assert token in mapping
+
+
+def test_ordered_plan_uses_one_way_tail_admission_and_locked_optional_retries() -> None:
+    auto = read(ADDON / "Tactics" / "AutoBurst.lua")
+    assert "deferredTailSteps" in auto
+    assert "configured_position_already_passed" in auto
+    assert "sequence_deferred_step_admitted" in auto
+    assert "sequence_deferred_step_expired" in auto
+    assert "function AutoBurst:RefreshDeferredTailSteps(plan, cycle" in auto
+    assert 'holdResult(plan, "burst_step_wait_movement")' in auto
+    assert "not isOptionalStep(step)" in auto
+    mapping = read(ADDON / "Diagnostics" / "MappingExport.lua")
+    for token in (
+        "deferredCooldownOrder",
+        "deferredTailAdmittedCount",
+        "deferredTailExpiredCount",
+        "failureObservedMoving",
+        "movementRetryHold",
+    ):
+        assert token in mapping
+
+
 def test_burst_internal_hold_and_evaluator_fault_are_armed_observation_not_global_pause() -> None:
     source = read(ADDON / "Tactics" / "AutoBurst.lua")
     signal_frame = read(ADDON / "Signal" / "SignalFrame.lua")

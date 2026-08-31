@@ -15,6 +15,7 @@ class AutoBurstHotkeyStatusContractTests(unittest.TestCase):
         self.panel = (ADDON / "UI" / "ControlPanel.lua").read_text(encoding="utf-8")
         self.board = (ADDON / "UI" / "TacticalBoard.lua").read_text(encoding="utf-8")
         self.icon = (ADDON / "UI" / "TacticalIconButton.lua").read_text(encoding="utf-8")
+        self.styles = (ADDON / "UI" / "TacticalHudStyles.lua").read_text(encoding="utf-8")
 
     def test_auto_burst_hotkey_is_persisted_and_normalized_independently(self) -> None:
         self.assertIn('autoBurstToggleHotkey = ""', self.defaults)
@@ -53,7 +54,8 @@ class AutoBurstHotkeyStatusContractTests(unittest.TestCase):
     def test_dispatchable_hud_line_uses_lcc_or_had_without_changing_icon_label(self) -> None:
         self.assertIn("tactics.autoInjectionEnabled", self.board)
         self.assertIn('dispatchable = autoInjectionEnabled == true and "HAD" or "LCC"', self.board)
-        self.assertIn('dispatchable = "可用"', self.icon)
+        self.assertIn('if visual == "dispatchable" then', self.styles)
+        self.assertNotIn('label = "HAD"', self.styles)
 
 
 if __name__ == "__main__":

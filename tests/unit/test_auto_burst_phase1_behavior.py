@@ -37,6 +37,8 @@ local ROOT = [[{ROOT.as_posix()}]]
 AUTO_BURST_HARNESS = r"""
 local nowValue = 0
 function GetTime() return nowValue end
+playerSpeed = 0
+function GetUnitSpeed(unit) assert(unit == "player"); return playerSpeed end
 function CreateFrame()
     return { SetScript = function(self, event, callback) self[event] = callback end }
 end
@@ -645,6 +647,8 @@ assert(back.kind == "candidate" and back.dispatchSpellID == 31884, "new window g
 def test_preflight_excludes_spell_injection_on_own_cooldown_and_does_not_create_plan() -> None:
     run_lua(AUTO_BURST_HARNESS + r"""
 cooldowns[31884] = "cooldown"
+spellUsability[31884] = "unusable"
+actionUsability[4] = "unusable"
 local result = eval()
 assert(result.kind == "none", "own-CD injection must not claim the official window or create a Burst plan")
 local snap = AutoBurst:GetSnapshot()
@@ -851,6 +855,96 @@ assert(preflight.status == "selected" and preflight.selectedOptionalCount == 1 a
     "the ready injection must remain eligible when the trinket alone is on CD")
 assert(preflight.selectedOrder == "window>injection:31884" and preflight.excludedOrder == "trinket:13",
     "preflight must preserve the configured window -> injection order after trinket exclusion")
+""")
+
+
+def test_cooling_tail_step_is_admitted_in_original_order_without_rebuilding_prefix() -> None:
+    run_lua(AUTO_BURST_HARNESS + r"""
+settings.burstProfiles.PALADIN_3 = {
+    customInjectionSpellIDs = { 55342, 642 },
+    injectionOrder = { 31884, 55342, 642 },
+    autoBurstSequence = {
+        order = { "injection:31884", "window", "injection:55342", "injection:642", "trinket:13", "trinket:14" },
+        enabled = {
+            ["injection:31884"] = true,
+            ["injection:55342"] = true,
+            ["injection:642"] = true,
+        },
+    },
+}
+bindings[55342] = "ready"
+bindings[642] = "ready"
+bindingTokens[55342] = 5
+bindingTokens[642] = 6
+cooldowns[55342] = "ready"
+cooldowns[642] = "cooldown"
+
+local a = eval()
+assert(a.kind == "candidate" and a.dispatchSpellID == 31884)
+AutoBurst:RecordSpellcastSucceeded(31884)
+local w = eval()
+assert(w.kind == "candidate" and w.dispatchSpellID == 343527)
+AutoBurst:RecordSpellcastSucceeded(343527)
+local b = eval()
+assert(b.kind == "candidate" and b.dispatchSpellID == 55342)
+
+cooldowns[642] = "ready"
+local stillB = eval()
+assert(stillB.kind == "candidate" and stillB.dispatchSpellID == 55342,
+    "tail admission must not replace or replay the current locked step")
+local admitted = AutoBurst:GetSnapshot()
+assert(admitted.sequenceKeys == "injection:31884>window>injection:55342>injection:642")
+assert(admitted.deferredTailAdmittedCount == 1 and admitted.deferredTailCount == 0)
+
+AutoBurst:RecordSpellcastSucceeded(55342)
+local c = eval()
+assert(c.kind == "candidate" and c.dispatchSpellID == 642,
+    "the newly ready tail step must dispatch after B in the original configured order")
+""")
+
+
+def test_deferred_step_behind_one_way_frontier_never_replays_but_future_tail_can_join() -> None:
+    run_lua(AUTO_BURST_HARNESS + r"""
+settings.burstProfiles.PALADIN_3 = {
+    customInjectionSpellIDs = { 55342, 642 },
+    injectionOrder = { 31884, 55342, 642 },
+    autoBurstSequence = {
+        order = { "injection:31884", "window", "injection:55342", "injection:642", "trinket:13", "trinket:14" },
+        enabled = {
+            ["injection:31884"] = true,
+            ["injection:55342"] = true,
+            ["injection:642"] = true,
+        },
+    },
+}
+bindings[55342] = "ready"
+bindings[642] = "ready"
+bindingTokens[55342] = 5
+bindingTokens[642] = 6
+cooldowns[31884] = "cooldown"
+cooldowns[55342] = "ready"
+cooldowns[642] = "cooldown"
+
+local w = eval()
+assert(w.kind == "candidate" and w.dispatchSpellID == 343527,
+    "initial plan must lock only W -> B while A and C cool")
+local initial = AutoBurst:GetSnapshot()
+assert(initial.sequenceKeys == "window>injection:55342" and initial.deferredTailCount == 1,
+    "A is already behind the first active frontier; only future C remains eligible")
+
+cooldowns[31884] = "ready"
+cooldowns[642] = "ready"
+local stillW = eval()
+assert(stillW.kind == "candidate" and stillW.dispatchSpellID == 343527)
+local appended = AutoBurst:GetSnapshot()
+assert(appended.sequenceKeys == "window>injection:55342>injection:642")
+assert(appended.deferredTailAdmittedCount == 1 and appended.deferredTailExpiredCount == 1,
+    "the one-way frontier must reject late A and append only future C")
+
+AutoBurst:RecordSpellcastSucceeded(343527)
+assert(eval().dispatchSpellID == 55342)
+AutoBurst:RecordSpellcastSucceeded(55342)
+assert(eval().dispatchSpellID == 642, "the plan must continue directly to C without rebuilding A-W-B-C")
 """)
 
 
@@ -1338,9 +1432,74 @@ def test_special_resource_unusable_compat_is_scoped_to_devourer_void_metamorphos
 spellUsability[31884] = "unusable"
 actionUsability[4] = "unusable"
 
+local waiting = eval()
+assert(waiting.kind == "hold" and waiting.reason == "burst_step_wait_usable",
+    "ordinary false/false usability must retain the step without publishing a token")
+assert(AutoBurst:GetSnapshot().active == true and AutoBurst:GetSnapshot().dispatchAttempt == 0)
+spellUsability[31884] = "ready"
+actionUsability[4] = "ready"
 local injection = eval()
 assert(injection.kind == "candidate" and injection.dispatchSpellID == 31884,
-    "ordinary optional injections must still require explicit insufficientPower=true")
+    "the retained optional injection must dispatch as soon as its verified action becomes usable")
+""")
+
+
+def test_action_slot_temporary_unusable_overrides_spell_ready_and_resumes_without_rebuilding() -> None:
+    run_lua(AUTO_BURST_HARNESS + r"""
+spellUsability[31884] = "ready"
+actionUsability[4] = "unusable"
+
+local waiting = eval()
+assert(waiting.kind == "hold" and waiting.reason == "burst_step_wait_usable")
+local preflight = AutoBurst:GetDiagnostics().lastSequencePreflight
+assert(preflight.status == "selected" and preflight.temporaryUsabilityDeferred == true,
+    "the actual action-slot false must remain selected even when the spell probe says ready")
+assert(preflight.deferredTemporaryOrder == "injection:31884")
+local held = AutoBurst:GetSnapshot()
+assert(held.active == true and held.currentSpellID == 31884 and held.dispatchAttempt == 0,
+    "temporary unavailability must retain the original plan and step identity")
+
+actionUsability[4] = "ready"
+local injection = eval()
+assert(injection.kind == "candidate" and injection.dispatchSpellID == 31884)
+assert(injection.dispatchAttempt == 1,
+    "recovery must use the original plan's first logical attempt rather than rebuilding the chain")
+""")
+
+
+def test_failed_injection_becoming_temporarily_unusable_does_not_trip_release_breaker() -> None:
+    run_lua(AUTO_BURST_HARNESS + r"""
+spellUsability[31884] = "ready"
+actionUsability[4] = "ready"
+local injection = eval()
+assert(injection.kind == "candidate" and injection.dispatchSpellID == 31884)
+assert(AutoBurst:RecordSpellcastFailed(31884, "UNIT_SPELLCAST_FAILED") == true)
+
+-- The next fresh client snapshot exposes the recoverable gate (for example,
+-- the player started moving between the ready sample and the physical press).
+spellUsability[31884] = "unusable"
+actionUsability[4] = "unusable"
+local waiting = eval()
+assert(waiting.kind == "hold" and waiting.reason == "burst_step_wait_usable")
+local held = AutoBurst:GetSnapshot()
+assert(held.active == true and held.currentSpellID == 31884)
+assert(held.matchingFailureCount == 0,
+    "a failure followed by temporary unavailability must be removed from the release certificate")
+assert(held.failureExcludedByTemporaryUnavailable == true)
+
+-- Remaining unavailable must not consume the retry barrier or leak a token.
+waiting = eval()
+assert(waiting.kind == "hold" and waiting.reason == "burst_step_wait_usable")
+
+spellUsability[31884] = "ready"
+actionUsability[4] = "ready"
+assert(eval().reason == "burst_failure_retry_barrier")
+assert(eval().reason == "burst_failure_retry_barrier")
+local retry = eval()
+assert(retry.kind == "candidate" and retry.dispatchSpellID == 31884)
+assert(retry.dispatchAttempt == 2,
+    "the same ordered step must resume through a fresh logical TEK attempt")
+assert(AutoBurst:GetSnapshot().active == true)
 """)
 
 
@@ -1355,6 +1514,34 @@ assert(result.kind == "candidate" and result.dispatchSpellID == 343527,
     "a single resource sample must not discard an ordinary post-window injection")
 local preflight = AutoBurst:GetDiagnostics().lastSequencePreflight
 assert(preflight.status == "selected" and preflight.resourceCheckDeferred == true)
+""")
+
+
+def test_locked_optional_step_waits_for_movement_then_retries_beyond_two_failures() -> None:
+    run_lua(AUTO_BURST_HARNESS + r"""
+local injection = eval()
+assert(injection.kind == "candidate" and injection.dispatchSpellID == 31884)
+
+playerSpeed = 7
+assert(AutoBurst:RecordSpellcastFailed(31884, "UNIT_SPELLCAST_FAILED") == true)
+local moving = eval()
+assert(moving.kind == "hold" and moving.reason == "burst_step_wait_movement")
+assert(AutoBurst:GetSnapshot().movementRetryHold == true)
+
+playerSpeed = 0
+assert(eval().reason == "burst_failure_retry_barrier")
+assert(eval().reason == "burst_failure_retry_barrier")
+local retry2 = eval()
+assert(retry2.kind == "candidate" and retry2.dispatchAttempt == 2)
+
+assert(AutoBurst:RecordSpellcastFailed(31884, "UNIT_SPELLCAST_FAILED") == true)
+assert(eval().reason == "burst_failure_retry_barrier")
+assert(eval().reason == "burst_failure_retry_barrier")
+local retry3 = eval()
+assert(retry3.kind == "candidate" and retry3.dispatchSpellID == 31884 and retry3.dispatchAttempt == 3,
+    "two exact failures must not remove a step already admitted to the locked chain")
+local snapshot = AutoBurst:GetSnapshot()
+assert(snapshot.active == true and snapshot.currentSpellID == 31884 and snapshot.matchingFailureCount == 2)
 """)
 
 
@@ -1494,9 +1681,10 @@ assert(window.kind == "candidate" and window.dispatchSpellID == 343527,
     run_lua(AUTO_BURST_HARNESS + r"""
 spellUsability[31884] = "unusable"
 actionUsability[4] = "unusable"
-local injection = eval()
-assert(injection.kind == "candidate" and injection.dispatchSpellID == 31884,
-    "usable=false without explicit notEnoughResource=true must not authorize an injection skip")
+local waiting = eval()
+assert(waiting.kind == "hold" and waiting.reason == "burst_step_wait_usable",
+    "usable=false without explicit notEnoughResource=true must wait rather than skip or dispatch")
+assert(AutoBurst:GetSnapshot().active == true)
 """)
 
 
@@ -1625,7 +1813,7 @@ assert(AutoBurst:GetSnapshot().dispatchAttempt == 2,
 """)
 
 
-def test_two_matching_failures_release_optional_step_without_unbounded_stall() -> None:
+def test_two_matching_failures_keep_locked_optional_step_and_never_advance_window() -> None:
     run_lua(AUTO_BURST_HARNESS + r"""
 local injection = eval()
 assert(injection.kind == "candidate" and injection.dispatchSpellID == 31884)
@@ -1640,11 +1828,15 @@ local retry = eval()
 assert(retry.kind == "candidate" and retry.dispatchSpellID == 31884)
 assert(AutoBurst:GetSnapshot().matchingFailureCount == 1)
 assert(AutoBurst:RecordSpellcastFailed(31884, "UNIT_SPELLCAST_FAILED_QUIET") == true)
-local released = eval()
-assert(released.kind == "hold" and released.reason == "burst_next_step_pending")
-local window = eval()
-assert(window.kind == "candidate" and window.dispatchSpellID == 343527,
-    "simple mode must continue after two exact rejection receipts")
+local secondBarrierOne = eval()
+assert(secondBarrierOne.kind == "hold" and secondBarrierOne.reason == "burst_failure_retry_barrier")
+local secondBarrierTwo = eval()
+assert(secondBarrierTwo.kind == "hold" and secondBarrierTwo.reason == "burst_failure_retry_barrier")
+local retryAgain = eval()
+assert(retryAgain.kind == "candidate" and retryAgain.dispatchSpellID == 31884,
+    "a locked optional step must retry itself rather than advancing to the window")
+assert(AutoBurst:GetSnapshot().dispatchAttempt == 3
+    and AutoBurst:GetSnapshot().matchingFailureCount == 2)
 """)
 
 

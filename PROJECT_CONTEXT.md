@@ -1,8 +1,8 @@
-# Tactic Echo 项目上下文 — 1.4.4
+# Tactic Echo 项目上下文 — 1.5.0
 
 ## 当前基线与范围
 
-当前唯一开发基线是 `1.4.4`。最高优先级规则位于 `AGENTS.md`；当前版本行为以 `docs/baselines/BASELINE_1.4.4.md`、实时源码和测试共同解释。
+当前唯一开发基线是 `1.5.0`。最高优先级规则位于 `AGENTS.md`；当前版本行为以 `docs/baselines/BASELINE_1.5.0.md`、实时源码和测试共同解释。
 
 产品范围只保留：首页/设置中心、HUD 主键、官方主推荐输入链路，以及最多三个自动注入组。打断、控制、防御、生存、TargetCastPrompt、姓名板群控扫描、反应高亮、监控/调试页、MappingExport 与 OfficialApiProbe 是历史功能，不得从旧配置或历史文档恢复。
 
@@ -26,9 +26,9 @@
 
 ## 计划与确认
 
-计划创建和每步派发前都使用共享 RuntimeSnapshot、IconState/CooldownResolver、GCDGate 和当前动作条绑定进行预检。共享 GCD 是时序，不是技能自身 CD。单帧通用不可用、资源不足、UNKNOWN 或普通施法期间的瞬态不得草率删除步骤。
+计划创建和每步派发前都使用共享 RuntimeSnapshot、IconState/CooldownResolver、GCDGate 和当前动作条绑定进行预检。共享 GCD 是时序，不是技能自身 CD。初始自身 CD 步骤不进入活动前缀，但位于单向游标之后的步骤保留为候补；在计划结束前恢复后只按原始位置向后补入，不重建或重放前缀。
 
-当前步骤只由精确 `UNIT_SPELLCAST_SUCCEEDED`、自身非 GCD CD 开始或真实多充能减少确认。两个不同共享快照的同类不可用证据，或两个精确匹配失败/中断收据，才允许按 `simple/focused` 规则有界释放。
+当前步骤只由精确 `UNIT_SPELLCAST_SUCCEEDED`、自身非 GCD CD 开始或真实多充能减少确认。明确资源不足仍需两个不同共享快照确认；通用 `usable=false/false` 只暂停当前步骤并输出无 Token hold。已进入活动链的可选步骤不会因两个匹配失败被删除；失败发生时若玩家正在移动，则持续无 Token 等待，停下后经隔离帧重试同一步。
 
 任何脱战帧都必须先清除 plan/capture，再返回无 Burst 候选。进战从干净 encounter epoch 开始。
 

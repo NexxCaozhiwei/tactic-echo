@@ -130,8 +130,10 @@ local PRE_WINDOW_COOLDOWN_EDGE_MAX_SECONDS = 1.20
 -- cooldown/usability frame is never enough to advance the ordered sequence.
 local OPTIONAL_UNAVAILABLE_CONFIRM_SAMPLES = 2
 -- Exact, matching failure receipts are stronger than a timeout or candidate
--- offer count. Only receipts separated by a fresh no-token retry barrier may
--- form the two-attempt bounded liveness release certificate.
+-- offer count. Optional steps that already entered the locked plan are never
+-- removed by these receipts; each receipt only opens a fresh no-token retry
+-- barrier. The bounded release certificate remains limited to the mandatory
+-- window step so a broken window binding cannot retain ownership forever.
 local MATCHED_FAILURE_RELEASE_COUNT = 2
 -- A client may emit more than one failure receipt for one queued keypress.
 -- Separate retry attempts with authenticated observation-only transport frames
@@ -203,7 +205,10 @@ local PRIORITY_LOG_EVENTS = {
     pre_injection_cooldown_confirmed = true,
     injection_skipped = true,
     sequence_optional_step_skipped = true,
+    sequence_deferred_step_admitted = true,
+    sequence_deferred_step_expired = true,
     step_dispatched = true,
+    step_failure_movement_hold = true,
     stale_step_confirmation_rejected = true,
     step_confirmed = true,
     inventory_recovery_started = true,
@@ -245,6 +250,12 @@ local function now()
     if type(GetTime) ~= "function" then return 0 end
     local ok, value = pcall(GetTime)
     return ok and (number(value) or 0) or 0
+end
+
+function AutoBurst:IsPlayerMoving()
+    if type(GetUnitSpeed) ~= "function" then return false end
+    local ok, speed = pcall(GetUnitSpeed, "player")
+    return ok and (number(speed) or 0) > 0 or false
 end
 
 local function positiveSpellID(value)
@@ -563,13 +574,16 @@ function AutoBurst:RecordSpellcastFailed(spellID, event)
     plan.wait.failureAcceptedForAttempt = true
     plan.failureAttempts = (number(plan.failureAttempts) or 0) + 1
     plan.wait.failureCount = plan.failureAttempts
-    if plan.failureAttempts < MATCHED_FAILURE_RELEASE_COUNT then
+    local optionalLockedStep = isOptionalStep(step)
+    if optionalLockedStep or plan.failureAttempts < MATCHED_FAILURE_RELEASE_COUNT then
         plan.wait.failureRetryBarrierRequiredFrames = FAILURE_RETRY_MIN_HOLD_FRAMES
         plan.wait.failureRetryBarrierRemainingFrames = FAILURE_RETRY_MIN_HOLD_FRAMES
         plan.wait.failureRetryBarrierPublishedFrames = 0
         plan.wait.failureRetryBarrierPending = true
     end
     plan.wait.provisionalConfirmation = nil
+    plan.wait.failureObservedMoving = optionalLockedStep and self:IsPlayerMoving() or false
+    plan.wait.movementRetryHold = plan.wait.failureObservedMoving == true
     log(self, "step_spellcast_failed", {
         role = step.role,
         spellID = spellID,
@@ -582,6 +596,7 @@ function AutoBurst:RecordSpellcastFailed(spellID, event)
         failureCount = plan.wait.failureCount,
         retryBarrierRequiredFrames = number(plan.wait.failureRetryBarrierRequiredFrames) or 0,
         failureObservedPhase = plan.wait.failureObservedPhase,
+        failureObservedMoving = plan.wait.failureObservedMoving == true,
     })
     return true
 end
@@ -1027,7 +1042,7 @@ function AutoBurst:PendingDispatchHoldReason(plan, phase)
     return "burst_step_wait_ready_now"
 end
 
-local function optionalInjectionResourceBlock(step, cycle, bindingInfo, iconState, allowSpecialResourceCompat)
+local function optionalInjectionUsabilityGate(step, cycle, bindingInfo, iconState, allowSpecialResourceCompat)
     if not (isOptionalStep(step) and stepKind(step) == "spell") then return nil end
 
     local runtime = TE.RuntimeSnapshot
@@ -1052,15 +1067,16 @@ local function optionalInjectionResourceBlock(step, cycle, bindingInfo, iconStat
         or gcdPhase == "GCD_LOCKED"
         or gcdPhase == "QUEUE_WINDOW"
 
-    -- Prefer the exact spell API: Retail exposes special class resources such
-    -- as Devourer Soul Fragments through the public insufficientPower boolean,
-    -- while the action-slot compatibility API can leave that second result
-    -- unset. Both probes remain boolean-only and are scoped to the already
-    -- verified action the existing BindingToken would dispatch.
+    -- Read both public probes before deciding.  The exact spell API is useful
+    -- for `insufficientPower`, while the verified action slot is the authority
+    -- for whether the physical action TEK would press is temporarily usable.
+    -- Returning after the first readable spell result used to hide an explicit
+    -- action-slot `false` while moving and allowed repeated failed dispatches.
     local probes = {
         { method = "GetSpellUsability", value = spellID, source = "spell" },
         { method = "GetActionUsability", value = actionSlot, source = "action" },
     }
+    local observations = {}
     for _, probe in ipairs(probes) do
         local fn = runtime[probe.method]
         if type(fn) == "function" then
@@ -1074,40 +1090,83 @@ local function optionalInjectionResourceBlock(step, cycle, bindingInfo, iconStat
                 usabilityReason = "resource_usability_read_failed:" .. tostring(usable)
                 usable, notEnoughResource = nil, nil
             end
-            local specialResourceUnusable = allowSpecialResourceCompat == true
-                and step.specialResourceUnusableCompat == true
-                and ownState ~= "COOLDOWN"
-                and usable == false
-            if usable == false and (notEnoughResource == true or specialResourceUnusable)
-                and resourceDecisionDeferred ~= true then
-                return {
-                    phase = "RESOURCE_BLOCKED",
-                    reason = "optional_injection_resource_insufficient",
-                    bindingInfo = bindingInfo,
-                    iconState = iconState,
-                    resourceBlocked = true,
-                    resourceUsabilityKnown = true,
-                    actionUsable = false,
-                    notEnoughResource = notEnoughResource == true,
-                    specialResourceUnusableCompat = specialResourceUnusable,
-                    resourceUsabilitySource = probe.source,
-                    resourceUsabilityReason = usabilityReason,
-                    cooldownUncertain = ownState == "UNKNOWN",
-                }
-            end
-            if usable ~= nil then
-                return nil, {
-                    resourceUsabilityKnown = true,
-                    actionUsable = usable,
-                    notEnoughResource = notEnoughResource == true,
-                    resourceUsabilitySource = probe.source,
-                    resourceUsabilityReason = usabilityReason,
-                    resourceDecisionDeferred = resourceDecisionDeferred == true,
-                    resourceDeferredByCast = castActive,
-                    resourceDeferredByGCD = gcdPhase == "GCD_LOCKED" or gcdPhase == "QUEUE_WINDOW",
-                }
-            end
+            observations[probe.source] = {
+                usable = usable,
+                notEnoughResource = notEnoughResource,
+                reason = usabilityReason,
+            }
         end
+    end
+
+    local spellObservation = observations.spell or {}
+    local actionObservation = observations.action or {}
+    local effectiveSource = actionObservation.usable ~= nil and "action"
+        or (spellObservation.usable ~= nil and "spell" or nil)
+    local effectiveObservation = effectiveSource and observations[effectiveSource] or {}
+    local effectiveUsable = effectiveObservation.usable
+    local explicitResource = (spellObservation.usable == false and spellObservation.notEnoughResource == true)
+        or (actionObservation.usable == false and actionObservation.notEnoughResource == true)
+    local specialResourceUnusable = allowSpecialResourceCompat == true
+        and step.specialResourceUnusableCompat == true
+        and ownState ~= "COOLDOWN"
+        and (spellObservation.usable == false or actionObservation.usable == false)
+
+    if (explicitResource or specialResourceUnusable) and resourceDecisionDeferred ~= true then
+        return {
+            phase = "RESOURCE_BLOCKED",
+            reason = "optional_injection_resource_insufficient",
+            bindingInfo = bindingInfo,
+            iconState = iconState,
+            resourceBlocked = true,
+            resourceUsabilityKnown = true,
+            actionUsable = effectiveUsable,
+            spellUsable = spellObservation.usable,
+            actionSlotUsable = actionObservation.usable,
+            notEnoughResource = explicitResource,
+            specialResourceUnusableCompat = specialResourceUnusable,
+            resourceUsabilitySource = effectiveSource,
+            resourceUsabilityReason = effectiveObservation.reason,
+            cooldownUncertain = ownState == "UNKNOWN",
+        }
+    end
+
+    -- Generic `false/false` is not proof that the step should be removed.  It
+    -- covers recoverable client conditions such as movement.  Once casts/GCD
+    -- no longer explain the value, retain the ordered step and publish a
+    -- no-token hold until the same verified action becomes usable again.
+    if effectiveUsable == false
+        and resourceDecisionDeferred ~= true
+        and ownState ~= "COOLDOWN" then
+        return {
+            phase = "TEMPORARILY_UNUSABLE",
+            reason = "optional_injection_temporarily_unusable",
+            bindingInfo = bindingInfo,
+            iconState = iconState,
+            temporaryUnavailable = true,
+            resourceUsabilityKnown = true,
+            actionUsable = false,
+            spellUsable = spellObservation.usable,
+            actionSlotUsable = actionObservation.usable,
+            notEnoughResource = false,
+            resourceUsabilitySource = effectiveSource,
+            resourceUsabilityReason = effectiveObservation.reason,
+            cooldownUncertain = ownState == "UNKNOWN",
+        }
+    end
+
+    if effectiveSource then
+        return nil, {
+            resourceUsabilityKnown = true,
+            actionUsable = effectiveUsable,
+            spellUsable = spellObservation.usable,
+            actionSlotUsable = actionObservation.usable,
+            notEnoughResource = explicitResource,
+            resourceUsabilitySource = effectiveSource,
+            resourceUsabilityReason = effectiveObservation.reason,
+            resourceDecisionDeferred = resourceDecisionDeferred == true,
+            resourceDeferredByCast = castActive,
+            resourceDeferredByGCD = gcdPhase == "GCD_LOCKED" or gcdPhase == "QUEUE_WINDOW",
+        }
     end
     return nil, {
         resourceUsabilityKnown = false,
@@ -1124,13 +1183,15 @@ local function stepSample(step, cycle, options)
     if iconState and iconState.inventoryEquipmentChanged == true then
         return { phase = "BLOCKED", reason = iconState.cooldownUnknownReason or "inventory_equipment_changed", bindingInfo = bindingInfo, iconState = iconState }
     end
-    local resourceBlock, resourceObservation = optionalInjectionResourceBlock(step, cycle, bindingInfo, iconState,
+    local usabilityGate, resourceObservation = optionalInjectionUsabilityGate(step, cycle, bindingInfo, iconState,
         options.allowSpecialResourceUnusableCompat == true)
-    if resourceBlock then return resourceBlock end
+    if usabilityGate then return usabilityGate end
     local function withResourceObservation(sample)
         if type(resourceObservation) == "table" and type(sample) == "table" then
             sample.resourceUsabilityKnown = resourceObservation.resourceUsabilityKnown == true
             sample.actionUsable = resourceObservation.actionUsable
+            sample.spellUsable = resourceObservation.spellUsable
+            sample.actionSlotUsable = resourceObservation.actionSlotUsable
             sample.notEnoughResource = resourceObservation.notEnoughResource == true
             sample.resourceUsabilitySource = resourceObservation.resourceUsabilitySource
             sample.resourceUsabilityReason = resourceObservation.resourceUsabilityReason
@@ -1300,8 +1361,11 @@ rememberStepObservation = function(self, plan, step, sample, stage)
         phase = sample.phase,
         reason = sample.reason,
         resourceBlocked = sample.resourceBlocked == true,
+        temporaryUnavailable = sample.temporaryUnavailable == true,
         resourceUsabilityKnown = sample.resourceUsabilityKnown == true,
         actionUsable = sample.actionUsable,
+        spellUsable = sample.spellUsable,
+        actionSlotUsable = sample.actionSlotUsable,
         notEnoughResource = sample.notEnoughResource == true,
         specialResourceUnusableCompat = sample.specialResourceUnusableCompat == true,
         resourceUsabilitySource = sample.resourceUsabilitySource,
@@ -1455,6 +1519,9 @@ function AutoBurst:BeginFailureRetryAttempt(plan, step, sample)
         failedSpellID = nil,
         failureCount = number(plan.failureAttempts) or 0,
         failureAcceptedForAttempt = false,
+        failureExcludedByTemporaryUnavailable = false,
+        failureObservedMoving = false,
+        movementRetryHold = false,
         retryOfDispatchAttempt = number(previousWait.dispatchAttempt) or nil,
         priorFailureObservedPhase = previousWait.failureObservedPhase,
         retryObservedPhase = sample.phase,
@@ -1490,6 +1557,43 @@ local function holdResult(plan, reason, options)
         reason = reason,
         preCombatBridge = (plan and plan.preCombatBridge == true) or options.preCombatBridge == true,
     }
+end
+
+function AutoBurst:HoldTemporarilyUnavailable(plan, step, sample, stage)
+    plan.optionalUnavailableConfirmation = nil
+    local wait = plan.wait
+    -- A matching failure followed by explicit temporary unavailability is not
+    -- a useful retry-streak observation. Dequalify it once for diagnostics;
+    -- the locked optional step remains in place regardless of failure count.
+    if type(wait) == "table"
+        and wait.failureAcceptedForAttempt == true
+        and wait.failureExcludedByTemporaryUnavailable ~= true then
+        plan.failureAttempts = math.max(0, (number(plan.failureAttempts) or 0) - 1)
+        wait.failureCount = plan.failureAttempts
+        wait.failureExcludedByTemporaryUnavailable = true
+        log(self, "step_failure_deferred_by_temporary_unusable", {
+            role = step and step.role or nil,
+            spellID = stepKind(step) == "spell" and positiveSpellID(step.spellID) or nil,
+            currentStep = plan.stepIndex,
+            dispatchAttempt = wait.dispatchAttempt,
+            failureCount = plan.failureAttempts,
+            stage = stage,
+        })
+    end
+    if shouldLogProgress(self, "step_wait_temporarily_usable") then
+        log(self, "step_wait_temporarily_usable", {
+            role = step and step.role or nil,
+            spellID = stepKind(step) == "spell" and positiveSpellID(step.spellID) or nil,
+            currentStep = plan.stepIndex,
+            dispatchAttempt = number(plan.dispatchAttempt) or 0,
+            phase = sample and sample.phase or nil,
+            actionUsable = sample and sample.actionUsable or nil,
+            spellUsable = sample and sample.spellUsable or nil,
+            actionSlotUsable = sample and sample.actionSlotUsable or nil,
+            stage = stage,
+        })
+    end
+    return holdResult(plan, "burst_step_wait_usable")
 end
 
 local function noneResult()
@@ -2571,6 +2675,7 @@ local function createPlan(self, rule, officialSpellID, creation, resolveContext,
     creation = type(creation) == "table" and creation or {}
     local t = now()
     local steps = sequenceFor(rule)
+    local deferredTailSteps = sequenceFor({ steps = rule.deferredTailSteps })
     -- The configured slot is not enough: lock the currently equipped ItemID
     -- before the plan exists.  A later gear change or macro/button mismatch
     -- fails closed rather than continuing to press `/use 13` for a new trinket.
@@ -2605,6 +2710,11 @@ local function createPlan(self, rule, officialSpellID, creation, resolveContext,
         -- diagnostics / pause extension compatibility only.
         deadlineAt = nil,
         steps = steps,
+        deferredTailSteps = deferredTailSteps,
+        deferredTailInitialCount = #deferredTailSteps,
+        deferredTailAdmittedCount = 0,
+        deferredTailExpiredCount = 0,
+        configuredSequenceLength = number(rule.configuredSequenceLength) or (#steps + #deferredTailSteps),
         stepIndex = 1,
         state = "PENDING",
         completed = {},
@@ -2661,6 +2771,8 @@ local function createPlan(self, rule, officialSpellID, creation, resolveContext,
         injectionItemID = plan.steps[1] and stepKind(plan.steps[1]) == "inventory" and plan.steps[1].expectedItemID or nil,
         sequenceLength = #plan.steps,
         sequenceKeys = plan.sequenceKeys,
+        configuredSequenceLength = plan.configuredSequenceLength,
+        deferredTailCount = #plan.deferredTailSteps,
         preCombatBridge = plan.preCombatBridge == true,
         windowAvailabilityConflict = plan.windowAvailabilityConflict == true,
         windowAvailabilityConflictReason = plan.windowAvailabilityConflictReason,
@@ -2675,9 +2787,10 @@ end
 -- Optional-step selection happens before a Burst plan claims the official
 -- window. A selected step must have a current binding and a positive own-ready
 -- cooldown result. Shared GCD (READY/QUEUE/GCD_LOCKED) remains eligible; exact
--- own CD and invalid equipment/binding are excluded. Bound cooldown-uncertain
--- or resource-blocked steps remain selected for runtime stability sampling so
--- one transient frame cannot silently remove them from either mode.
+-- own CD is excluded from the initial active chain but retained as a positioned
+-- tail candidate when its binding/equipment identity is still valid. Bound
+-- cooldown-uncertain or resource-blocked steps remain selected for runtime
+-- stability sampling so one transient frame cannot silently remove them.
 local function selectedRuleForSequence(rule, selectedSteps)
     local selected = {}
     for key, value in pairs(rule or {}) do selected[key] = value end
@@ -2699,11 +2812,12 @@ end
 
 local function preflightSequence(self, rule, cycle, options)
     options = type(options) == "table" and options or {}
-    local selected, excluded, deferredResource = {}, {}, {}
+    local selected, excluded, deferredResource, deferredTemporary, deferredCooldown = {}, {}, {}, {}, {}
     local configuredOptional, selectedOptional = 0, 0
     local cooldownEdgeEntry
     local windowSeen = false
     for index, step in ipairs(sequenceFor(rule)) do
+        step.configuredIndex = index
         if isWindowStep(step) then
             selected[#selected + 1] = step
             windowSeen = true
@@ -2721,13 +2835,21 @@ local function preflightSequence(self, rule, cycle, options)
             -- Devourer's post-window compatibility still receives its dedicated
             -- GCD settlement state below.
             local resourceCheckDeferred = sample and sample.resourceBlocked == true
-            local eligible = resourceCheckDeferred
+            local temporaryCheckDeferred = sample and sample.temporaryUnavailable == true
+            local eligible = resourceCheckDeferred or temporaryCheckDeferred
                 or isDispatchablePhase(phase)
             if eligible then
                 selected[#selected + 1] = step
                 selectedOptional = selectedOptional + 1
                 if resourceCheckDeferred then
                     deferredResource[#deferredResource + 1] = {
+                        index = index, key = step.key, role = step.role,
+                        spellID = positiveSpellID(step.spellID),
+                        phase = phase, reason = sample.reason,
+                    }
+                end
+                if temporaryCheckDeferred then
+                    deferredTemporary[#deferredTemporary + 1] = {
                         index = index, key = step.key, role = step.role,
                         spellID = positiveSpellID(step.spellID),
                         phase = phase, reason = sample.reason,
@@ -2770,6 +2892,12 @@ local function preflightSequence(self, rule, cycle, options)
                     directCooldownEdgeEligible = directCooldownEdgeEligible == true,
                 }
                 excluded[#excluded + 1] = excludedEntry
+                if phase == "COOLDOWN" and ownCooldownEvidence == true then
+                    if stepKind(step) == "inventory" then
+                        step.expectedItemID = positiveItemID(binding and (binding.itemID or binding.expectedItemID))
+                    end
+                    deferredCooldown[#deferredCooldown + 1] = step
+                end
                 if directCooldownEdgeEligible == true then cooldownEdgeEntry = excludedEntry end
             end
         end
@@ -2811,6 +2939,13 @@ local function preflightSequence(self, rule, cycle, options)
         deferredResourceCount = #deferredResource,
         firstDeferredResourceSpellID = deferredResource[1] and deferredResource[1].spellID or nil,
         firstDeferredResourceReason = deferredResource[1] and deferredResource[1].reason or nil,
+        temporaryUsabilityDeferred = #deferredTemporary > 0,
+        deferredTemporaryCount = #deferredTemporary,
+        firstDeferredTemporarySpellID = deferredTemporary[1] and deferredTemporary[1].spellID or nil,
+        firstDeferredTemporaryReason = deferredTemporary[1] and deferredTemporary[1].reason or nil,
+        deferredCooldownCount = #deferredCooldown,
+        firstDeferredCooldownSpellID = deferredCooldown[1]
+            and positiveSpellID(deferredCooldown[1].spellID) or nil,
         selectedKeys = {},
     }
     for _, step in ipairs(selected) do diagnostic.selectedKeys[#diagnostic.selectedKeys + 1] = step.key or step.role end
@@ -2818,12 +2953,18 @@ local function preflightSequence(self, rule, cycle, options)
     for _, entry in ipairs(excluded) do excludedKeys[#excludedKeys + 1] = entry.key or entry.role end
     local deferredResourceKeys = {}
     for _, entry in ipairs(deferredResource) do deferredResourceKeys[#deferredResourceKeys + 1] = entry.key or entry.role end
+    local deferredTemporaryKeys = {}
+    for _, entry in ipairs(deferredTemporary) do deferredTemporaryKeys[#deferredTemporaryKeys + 1] = entry.key or entry.role end
+    local deferredCooldownKeys = {}
+    for _, entry in ipairs(deferredCooldown) do deferredCooldownKeys[#deferredCooldownKeys + 1] = entry.key or entry.role end
     -- Mapping export intentionally keeps diagnostics scalar-only. Preserve the
     -- resolved order in compact text so the saved trace can show exactly which
     -- steps survived CD/GCD preflight without serializing raw binding objects.
     diagnostic.selectedOrder = table.concat(diagnostic.selectedKeys, ">")
     diagnostic.excludedOrder = table.concat(excludedKeys, ">")
     diagnostic.deferredResourceOrder = table.concat(deferredResourceKeys, ">")
+    diagnostic.deferredTemporaryOrder = table.concat(deferredTemporaryKeys, ">")
+    diagnostic.deferredCooldownOrder = table.concat(deferredCooldownKeys, ">")
     self.lastSequencePreflight = diagnostic
     self.lastInjectionPreflight = diagnostic
 
@@ -2866,6 +3007,8 @@ local function preflightSequence(self, rule, cycle, options)
     if status == "cooldown_edge_pending" then return nil, diagnostic end
 
     local selectedRule = selectedRuleForSequence(rule, selected)
+    selectedRule.deferredTailSteps = deferredCooldown
+    selectedRule.configuredSequenceLength = #sequenceFor(rule)
     diagnostic.ruleId = selectedRule.id
     diagnostic.requiresPreWindowCapture = selectedRule.requiresPreWindowCapture == true
     log(self, "sequence_preflight_selected", {
@@ -2874,6 +3017,9 @@ local function preflightSequence(self, rule, cycle, options)
         selectedOrder = diagnostic.selectedOrder, excludedOrder = diagnostic.excludedOrder,
         resourceCheckDeferred = diagnostic.resourceCheckDeferred,
         deferredResourceOrder = diagnostic.deferredResourceOrder,
+        temporaryUsabilityDeferred = diagnostic.temporaryUsabilityDeferred,
+        deferredTemporaryOrder = diagnostic.deferredTemporaryOrder,
+        deferredCooldownOrder = diagnostic.deferredCooldownOrder,
         firstExcludedKey = firstExcluded.key, firstExcludedRole = firstExcluded.role,
         firstExcludedReason = firstExcluded.reason,
     })
@@ -2883,6 +3029,97 @@ local function preflightSequence(self, rule, cycle, options)
         excludedOrder = diagnostic.excludedOrder,
     })
     return selectedRule, diagnostic
+end
+
+local function refreshPlanSequenceIdentity(plan)
+    local keys = {}
+    for _, step in ipairs(type(plan) == "table" and plan.steps or {}) do
+        keys[#keys + 1] = step.key or step.role
+    end
+    plan.sequenceLength = #keys
+    plan.sequenceKeys = table.concat(keys, ">")
+end
+
+-- A plan is immutable with respect to its owner and configured order, but an
+-- optional step that was cooling at creation may join the still-unvisited tail.
+-- The current configured index is a one-way frontier: anything at or behind it
+-- is permanently expired, while a newly ready future step is inserted at its
+-- original position without rebuilding or replaying the plan prefix.
+function AutoBurst:RefreshDeferredTailSteps(plan, cycle, stage)
+    local deferred = type(plan) == "table" and plan.deferredTailSteps or nil
+    if type(deferred) ~= "table" or #deferred == 0 then return end
+    local current = plan.steps and plan.steps[plan.stepIndex] or nil
+    local frontier = number(current and current.configuredIndex) or 0
+    local remaining = {}
+
+    for _, deferredStep in ipairs(deferred) do
+        local configuredIndex = number(deferredStep.configuredIndex) or 0
+        if configuredIndex <= frontier then
+            plan.deferredTailExpiredCount = (number(plan.deferredTailExpiredCount) or 0) + 1
+            log(self, "sequence_deferred_step_expired", {
+                key = deferredStep.key,
+                role = deferredStep.role,
+                spellID = stepKind(deferredStep) == "spell" and positiveSpellID(deferredStep.spellID) or nil,
+                inventorySlot = stepKind(deferredStep) == "inventory" and inventorySlot(deferredStep.inventorySlot) or nil,
+                configuredIndex = configuredIndex,
+                frontierConfiguredIndex = frontier,
+                reason = "configured_position_already_passed",
+                stage = stage,
+            })
+        else
+            local sample = stepSample(deferredStep, cycle, { allowSpecialResourceUnusableCompat = true })
+            rememberStepObservation(self, plan, deferredStep, sample, "deferred_tail_recheck")
+            local phase = sample and sample.phase or "UNKNOWN"
+            local readyForAdmission = phase == "READY_NOW" or phase == "QUEUE_WINDOW" or phase == "GCD_LOCKED"
+                or (sample and sample.temporaryUnavailable == true)
+                or (sample and sample.resourceBlocked == true)
+            if readyForAdmission then
+                if stepKind(deferredStep) == "inventory" and not positiveItemID(deferredStep.expectedItemID) then
+                    local binding = sample and sample.bindingInfo or nil
+                    deferredStep.expectedItemID = positiveItemID(binding and (binding.itemID or binding.expectedItemID))
+                end
+                local insertAt = #plan.steps + 1
+                for index = plan.stepIndex + 1, #plan.steps do
+                    local activeIndex = number(plan.steps[index] and plan.steps[index].configuredIndex) or math.huge
+                    if configuredIndex < activeIndex then
+                        insertAt = index
+                        break
+                    end
+                end
+                table.insert(plan.steps, insertAt, deferredStep)
+                plan.deferredTailAdmittedCount = (number(plan.deferredTailAdmittedCount) or 0) + 1
+                refreshPlanSequenceIdentity(plan)
+                log(self, "sequence_deferred_step_admitted", {
+                    key = deferredStep.key,
+                    role = deferredStep.role,
+                    spellID = stepKind(deferredStep) == "spell" and positiveSpellID(deferredStep.spellID) or nil,
+                    inventorySlot = stepKind(deferredStep) == "inventory" and inventorySlot(deferredStep.inventorySlot) or nil,
+                    itemID = stepKind(deferredStep) == "inventory" and positiveItemID(deferredStep.expectedItemID) or nil,
+                    configuredIndex = configuredIndex,
+                    insertedStepIndex = insertAt,
+                    frontierConfiguredIndex = frontier,
+                    observedPhase = phase,
+                    activeOrder = plan.sequenceKeys,
+                    stage = stage,
+                })
+            elseif phase == "BLOCKED" or phase == "UNUSABLE" then
+                plan.deferredTailExpiredCount = (number(plan.deferredTailExpiredCount) or 0) + 1
+                log(self, "sequence_deferred_step_expired", {
+                    key = deferredStep.key,
+                    role = deferredStep.role,
+                    spellID = stepKind(deferredStep) == "spell" and positiveSpellID(deferredStep.spellID) or nil,
+                    inventorySlot = stepKind(deferredStep) == "inventory" and inventorySlot(deferredStep.inventorySlot) or nil,
+                    configuredIndex = configuredIndex,
+                    frontierConfiguredIndex = frontier,
+                    reason = sample and sample.reason or phase,
+                    stage = stage,
+                })
+            else
+                remaining[#remaining + 1] = deferredStep
+            end
+        end
+    end
+    plan.deferredTailSteps = remaining
 end
 
 local function preWindowCooldownEdgeBudget(cycle)
@@ -3525,6 +3762,8 @@ function AutoBurst:Evaluate(official, runtime)
 
     observeLatchedPlanOfficialDeparture(self, plan, officialSpellID, "official_window_departed")
 
+    self:RefreshDeferredTailSteps(plan, cycle, plan.state or "plan_active")
+
     local step = plan.steps[plan.stepIndex]
     if not step then
         self:Abort("step_missing", false)
@@ -3566,11 +3805,34 @@ function AutoBurst:Evaluate(official, runtime)
             if result then return result end
             return self:Evaluate(official, runtime)
         end
-        if (number(plan.failureAttempts) or 0) >= MATCHED_FAILURE_RELEASE_COUNT then
-            if isOptionalStep(step) then
-                return releasePlanForInjectionUnavailable(self, plan, step, sample,
-                    "repeated_matching_spellcast_failures")
+        if isOptionalStep(step) and plan.wait.failureAcceptedForAttempt == true
+            and plan.wait.movementRetryHold == true then
+            if self:IsPlayerMoving() then
+                if shouldLogProgress(self, "step_failure_movement_hold") then
+                    log(self, "step_failure_movement_hold", {
+                        role = step.role,
+                        spellID = positiveSpellID(step.spellID),
+                        currentStep = plan.stepIndex,
+                        dispatchAttempt = plan.wait.dispatchAttempt,
+                        failureCount = number(plan.failureAttempts) or 0,
+                    })
+                end
+                return holdResult(plan, "burst_step_wait_movement")
             end
+            plan.wait.movementRetryHold = false
+            log(self, "step_failure_movement_released", {
+                role = step.role,
+                spellID = positiveSpellID(step.spellID),
+                currentStep = plan.stepIndex,
+                dispatchAttempt = plan.wait.dispatchAttempt,
+                failureCount = number(plan.failureAttempts) or 0,
+            })
+        end
+        if isOptionalStep(step) and sample.temporaryUnavailable == true then
+            return self:HoldTemporarilyUnavailable(plan, step, sample, "wait_confirm")
+        end
+        if not isOptionalStep(step)
+            and (number(plan.failureAttempts) or 0) >= MATCHED_FAILURE_RELEASE_COUNT then
             log(self, "window_repeated_failure_released", {
                 planId = plan.id,
                 currentStep = plan.stepIndex,
@@ -3617,7 +3879,8 @@ function AutoBurst:Evaluate(official, runtime)
         end
         if plan.wait.failureAcceptedForAttempt == true
             and self:GetFailureRetryBarrierRemaining(plan.wait) == 0
-            and (number(plan.failureAttempts) or 0) < MATCHED_FAILURE_RELEASE_COUNT then
+            and (isOptionalStep(step)
+                or (number(plan.failureAttempts) or 0) < MATCHED_FAILURE_RELEASE_COUNT) then
             if self:IsFailureRetryReadyPhase(sample.phase) then
                 return self:BeginFailureRetryAttempt(plan, step, sample)
             end
@@ -3735,6 +3998,9 @@ function AutoBurst:Evaluate(official, runtime)
     if sample.phase == "PAUSED" then
         self:SoftPause(sample.reason or "step_paused")
         return holdResult(plan, sample.reason or "step_paused")
+    end
+    if isOptionalStep(step) and sample.temporaryUnavailable == true then
+        return self:HoldTemporarilyUnavailable(plan, step, sample, "step_pending")
     end
     if isOptionalStep(step) and sample.resourceBlocked == true then
         local unavailable = confirmOptionalUnavailable(plan, step, sample, cycle,
@@ -3876,6 +4142,9 @@ function AutoBurst:Evaluate(official, runtime)
         failedSpellID = nil,
         failureCount = 0,
         failureAcceptedForAttempt = false,
+        failureExcludedByTemporaryUnavailable = false,
+        failureObservedMoving = false,
+        movementRetryHold = false,
         failureObservedPhase = nil,
         failureRetryBarrierRequiredFrames = 0,
         failureRetryBarrierRemainingFrames = 0,
@@ -3935,6 +4204,9 @@ function AutoBurst:GetRuntimeState()
         currentSpellID = step and stepKind(step) == "spell" and positiveSpellID(step.spellID) or nil,
         currentInventorySlot = step and stepKind(step) == "inventory" and inventorySlot(step.inventorySlot) or nil,
         currentItemID = step and stepKind(step) == "inventory" and positiveItemID(step.expectedItemID) or nil,
+        deferredTailCount = plan and type(plan.deferredTailSteps) == "table" and #plan.deferredTailSteps or 0,
+        deferredTailAdmittedCount = plan and number(plan.deferredTailAdmittedCount) or 0,
+        deferredTailExpiredCount = plan and number(plan.deferredTailExpiredCount) or 0,
         waitingForConfirmation = plan and plan.state == "WAIT_CONFIRM" or false,
         postWindowResourceSettling = plan and plan.state == "POST_WINDOW_RESOURCE_SETTLING" or false,
         postWindowResourceFreshSamples = plan and plan.postWindowResourceSettlement
@@ -4054,8 +4326,13 @@ function AutoBurst:GetSnapshot()
         currentItemID = stepKind(step) == "inventory" and positiveItemID(step and step.expectedItemID) or nil,
         sequenceLength = number(plan.sequenceLength) or #(plan.steps or {}),
         groupSequenceLength = number(plan.sequenceLength) or #(plan.steps or {}),
+        configuredSequenceLength = number(plan.configuredSequenceLength) or #(plan.steps or {}),
         sequenceKeys = plan.sequenceKeys,
         groupSequenceKeys = plan.sequenceKeys,
+        deferredTailCount = type(plan.deferredTailSteps) == "table" and #plan.deferredTailSteps or 0,
+        deferredTailInitialCount = number(plan.deferredTailInitialCount) or 0,
+        deferredTailAdmittedCount = number(plan.deferredTailAdmittedCount) or 0,
+        deferredTailExpiredCount = number(plan.deferredTailExpiredCount) or 0,
         groupWindowGeneration = self.windowGeneration or 0,
         groupDepartureLock = self.requireWindowDeparture == true,
         groupWindowReceipt = shallowCopy(self.lastConfirmedWindowReceipt),
@@ -4129,7 +4406,11 @@ function AutoBurst:GetSnapshot()
         confirmationGraceElapsed = plan.wait and plan.wait.confirmationGraceElapsed == true,
         matchingFailureCount = number(plan.failureAttempts) or 0,
         failureAcceptedForAttempt = plan.wait and plan.wait.failureAcceptedForAttempt == true,
+        failureExcludedByTemporaryUnavailable = plan.wait
+            and plan.wait.failureExcludedByTemporaryUnavailable == true,
         failureObservedPhase = plan.wait and plan.wait.failureObservedPhase or nil,
+        failureObservedMoving = plan.wait and plan.wait.failureObservedMoving == true,
+        movementRetryHold = plan.wait and plan.wait.movementRetryHold == true,
         priorFailureObservedPhase = plan.wait and plan.wait.priorFailureObservedPhase or nil,
         failureRetryObservedPhase = plan.wait and plan.wait.retryObservedPhase or nil,
         failureRetryBarrierPending = plan.wait and plan.wait.failureRetryBarrierPending == true,
