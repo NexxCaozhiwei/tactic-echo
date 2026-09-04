@@ -50,6 +50,42 @@ function Coordinator:Reset(reason)
     self.validation = nil
 end
 
+-- Cast-time window fencing is intentionally narrower than Observe().  It may
+-- refresh the validated window index, but it never builds/selects a group rule,
+-- claims ownership, changes the missed-window latch, or mutates the ordered
+-- executor.  AutoBurst uses this read-only identity check to keep a configured
+-- official window from leaking through the ordinary input path while a normal
+-- cast is still in progress.
+function Coordinator:MatchesEnabledWindow(context, officialSpellID)
+    officialSpellID = positiveInteger(officialSpellID)
+    if not officialSpellID then return false, nil, "official_spell_invalid" end
+    local groups = TE.AutoInjectionGroups
+    if not groups then return false, nil, "auto_injection_groups_unavailable" end
+    local revision, container, profileKey, revisionReason = groups:GetRevision(context)
+    if not container then return false, nil, revisionReason, profileKey end
+    local validation = self.validation
+    if self.indexContainer ~= container or self.indexRevision ~= revision or type(validation) ~= "table" then
+        local reason
+        validation, _, reason, container = groups:Validate(context)
+        if not validation then return false, nil, reason, profileKey end
+        local index = {}
+        for _, id in ipairs(container.order or {}) do
+            local group = container.groups[id]
+            local windowSpellID = group and positiveInteger(group.windowSpellID) or nil
+            if group and group.enabled == true and validation.valid[id] and windowSpellID then
+                index[windowSpellID] = id
+            end
+        end
+        self.windowIndex = index
+        self.indexContainer = container
+        self.indexRevision = revision
+        self.validation = validation
+    end
+    self.lastConflict = validation.conflicts and validation.conflicts[1] or nil
+    local matched = self.windowIndex[officialSpellID]
+    return matched ~= nil, matched, matched and nil or "official_not_group_window", profileKey
+end
+
 function Coordinator:Observe(context, officialSpellID, executor)
     officialSpellID = positiveInteger(officialSpellID)
     local groups = TE.AutoInjectionGroups

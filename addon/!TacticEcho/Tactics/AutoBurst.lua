@@ -152,7 +152,7 @@ local STEP_REVALIDATE_SECONDS = 2.20
 -- The delay deliberately forces the second sample onto a later SignalFrame tick
 -- rather than accepting two reads from the same transient client response.
 local PRE_INJECTION_COOLDOWN_CONFIRM_SAMPLES = 2
-local PRE_INJECTION_COOLDOWN_CONFIRM_INTERVAL_SECONDS = 0.06
+local PRE_INJECTION_COOLDOWN_CONFIRM_INTERVAL_SECONDS = 0.15
 -- A paused -> armed pre-window handoff is a transport ownership transition, not
 -- a gameplay/GCD delay. Require four *fresh TEAP observation frames* before
 -- exposing the injection token. This is deliberately frame-counted rather than
@@ -491,13 +491,20 @@ end
 -- This is a confirmation-only event path. It does not influence trigger timing
 -- and never reads Buffs, resources, targets or raw cooldown values. The event
 -- can satisfy only the current Phase-1 step already waiting for confirmation.
+local function hasLockedConfirmationStep(plan)
+    return type(plan) == "table"
+        and type(plan.wait) == "table"
+        and (plan.state == "WAIT_CONFIRM"
+            or (plan.state == "SOFT_PAUSED" and plan.pauseResumeState == "WAIT_CONFIRM"))
+end
+
 function AutoBurst:RecordSpellcastSucceeded(spellID)
     spellID = positiveSpellID(spellID)
     if not spellID then return false end
     local t = now()
 
     local plan = self.plan
-    if not (plan and plan.state == "WAIT_CONFIRM" and type(plan.wait) == "table") then return false end
+    if not hasLockedConfirmationStep(plan) then return false end
     local step = plan.steps and plan.steps[plan.stepIndex] or nil
     local expectedSpellID = stepKind(step) == "spell" and positiveSpellID(step and step.spellID) or nil
     local waitingSpellID = positiveSpellID(plan.wait.expectedSpellID)
@@ -544,7 +551,7 @@ function AutoBurst:RecordSpellcastFailed(spellID, event)
     local t = now()
 
     local plan = self.plan
-    if not (plan and plan.state == "WAIT_CONFIRM" and type(plan.wait) == "table") then return false end
+    if not hasLockedConfirmationStep(plan) then return false end
     local step = plan.steps and plan.steps[plan.stepIndex] or nil
     local expectedSpellID = stepKind(step) == "spell" and positiveSpellID(step and step.spellID) or nil
     local waitingSpellID = positiveSpellID(plan.wait.expectedSpellID)
@@ -976,6 +983,7 @@ end
 
 local sequenceFor
 local rememberStepObservation
+local runtimeCycleIdentity
 
 local function classifyDispatchPhase(step, cycle, bindingInfo, iconState, reason, cooldownUncertain)
     -- Off-GCD is opt-in only and only exposed for the explicit configured
@@ -1557,9 +1565,11 @@ local function holdResult(plan, reason, options)
         -- observation-only armed frame so an internal GCD/confirmation wait
         -- cannot feed back into AutoBurst as runtime.effectiveState="paused".
         observationOnly = true,
-        officialSpellID = plan and plan.officialSpellID or nil,
+        bindingToken = 0,
+        officialSpellID = plan and plan.officialSpellID or options.officialSpellID,
         planId = plan and plan.id or nil,
-        ruleId = plan and plan.rule and plan.rule.id or nil,
+        ruleId = plan and plan.rule and plan.rule.id or options.ruleId,
+        groupId = plan and plan.groupId or options.groupId,
         reason = reason,
         preCombatBridge = (plan and plan.preCombatBridge == true) or options.preCombatBridge == true,
     }
@@ -1629,6 +1639,10 @@ local function preWindowCaptureHold(capture, reason)
         reason = reason or (capture and capture.reason) or "pre_window_capture",
         preCombatBridge = capture and capture.preCombatBridge == true,
     }
+end
+
+function AutoBurst:PreWindowCaptureHold(capture, reason)
+    return preWindowCaptureHold(capture, reason)
 end
 
 local function beginPreWindowCapture(self, rule, officialSpellID, windowGeneration, reason, handoffBarrierRequired)
@@ -2001,12 +2015,13 @@ function AutoBurst:ContinueAdmittedUnknownCooldown(plan, step, cycle, sample, re
         "admitted_cooldown_unknown_" .. tostring(offer.reason or reason or "unknown"))
 end
 
-local function confirmPreInjectionOwnCooldown(self, plan, step, sample)
+local function confirmPreInjectionOwnCooldown(self, plan, step, sample, cycle)
     -- Legacy diagnostic field names retain the "preInjection" prefix for
     -- SavedVariables compatibility. The same exact two-sample certificate is
     -- now used by simple post injection as well; `direction` disambiguates it.
     local direction = plan and plan.rule and plan.rule.direction or "pre"
     local t = now()
+    local cycleKey, cycleId = runtimeCycleIdentity(cycle)
     local eligible, reason, identityKey, bindingToken = explicitOwnCooldownEvidence(step, sample)
     local confirmation = type(plan.preInjectionCooldownConfirmation) == "table"
         and plan.preInjectionCooldownConfirmation or nil
@@ -2039,6 +2054,8 @@ local function confirmPreInjectionOwnCooldown(self, plan, step, sample)
             nextProbeAt = t + PRE_INJECTION_COOLDOWN_CONFIRM_INTERVAL_SECONDS,
             identityKey = identityKey,
             bindingToken = bindingToken,
+            lastCycleKey = cycleKey,
+            lastCycleId = cycleId,
         }
         plan.preInjectionCooldownConfirmation = confirmation
         plan.preInjectionSkipAllowed = false
@@ -2065,6 +2082,10 @@ local function confirmPreInjectionOwnCooldown(self, plan, step, sample)
         return "hold", "pre_injection_cooldown_confirming"
     end
 
+    if cycleKey ~= nil and confirmation.lastCycleKey == cycleKey then
+        return "hold", "pre_injection_cooldown_same_cycle"
+    end
+
     if confirmation.identityKey ~= identityKey or confirmation.bindingToken ~= bindingToken then
         plan.preInjectionSkipAllowed = false
         plan.preInjectionRequired = true
@@ -2085,6 +2106,8 @@ local function confirmPreInjectionOwnCooldown(self, plan, step, sample)
 
     confirmation.count = (number(confirmation.count) or 0) + 1
     confirmation.nextProbeAt = t + PRE_INJECTION_COOLDOWN_CONFIRM_INTERVAL_SECONDS
+    confirmation.lastCycleKey = cycleKey
+    confirmation.lastCycleId = cycleId
     if confirmation.count >= PRE_INJECTION_COOLDOWN_CONFIRM_SAMPLES then
         plan.preInjectionSkipAllowed = true
         plan.preInjectionRequired = false
@@ -2116,8 +2139,9 @@ end
 -- disposition only after two live, exact, non-GCD samples. A single short
 -- public/API disagreement remains a revalidation state and never terminates
 -- the latched plan.
-local function confirmWindowOwnCooldown(self, plan, step, sample)
+local function confirmWindowOwnCooldown(self, plan, step, sample, cycle)
     local t = now()
+    local cycleKey, cycleId = runtimeCycleIdentity(cycle)
     local eligible, reason, identityKey, bindingToken = explicitOwnCooldownEvidence(step, sample)
     local confirmation = type(plan.windowCooldownConfirmation) == "table"
         and plan.windowCooldownConfirmation or nil
@@ -2143,6 +2167,8 @@ local function confirmWindowOwnCooldown(self, plan, step, sample)
             nextProbeAt = t + PRE_INJECTION_COOLDOWN_CONFIRM_INTERVAL_SECONDS,
             identityKey = identityKey,
             bindingToken = bindingToken,
+            lastCycleKey = cycleKey,
+            lastCycleId = cycleId,
         }
         plan.windowCooldownConfirmation = confirmation
         log(self, "window_own_cooldown_sample", {
@@ -2160,6 +2186,11 @@ local function confirmWindowOwnCooldown(self, plan, step, sample)
         return "hold", "window_own_cooldown_confirming"
     end
 
+
+    if cycleKey ~= nil and confirmation.lastCycleKey == cycleKey then
+        return "hold", "window_own_cooldown_same_cycle"
+    end
+
     if confirmation.identityKey ~= identityKey or confirmation.bindingToken ~= bindingToken then
         log(self, "window_own_cooldown_rejected", {
             role = step.role,
@@ -2173,6 +2204,8 @@ local function confirmWindowOwnCooldown(self, plan, step, sample)
 
     confirmation.count = (number(confirmation.count) or 0) + 1
     confirmation.nextProbeAt = t + PRE_INJECTION_COOLDOWN_CONFIRM_INTERVAL_SECONDS
+    confirmation.lastCycleKey = cycleKey
+    confirmation.lastCycleId = cycleId
     if confirmation.count >= PRE_INJECTION_COOLDOWN_CONFIRM_SAMPLES then
         log(self, "window_own_cooldown_confirmed", {
             role = step.role,
@@ -2435,7 +2468,67 @@ local function startInventoryRecovery(self, plan, step, reason)
     return true
 end
 
-local function skipOptionalStep(self, plan, step, reason)
+local function deferredConfiguredStepAhead(plan)
+    local cursor = number(type(plan) == "table" and plan.configuredCursor) or 0
+    for _, deferredStep in ipairs(type(plan) == "table" and plan.deferredTailSteps or {}) do
+        if (number(deferredStep and deferredStep.configuredIndex) or 0) > cursor then
+            return true
+        end
+    end
+    return false
+end
+
+local function deferredConfiguredGapBeforeNext(plan)
+    local cursor = number(type(plan) == "table" and plan.configuredCursor) or 0
+    local nextStep = type(plan) == "table" and type(plan.steps) == "table"
+        and plan.steps[plan.stepIndex] or nil
+    local nextConfiguredIndex = number(nextStep and nextStep.configuredIndex) or math.huge
+    for _, deferredStep in ipairs(type(plan) == "table" and plan.deferredTailSteps or {}) do
+        local configuredIndex = number(deferredStep and deferredStep.configuredIndex) or 0
+        if configuredIndex > cursor and configuredIndex < nextConfiguredIndex then
+            return true
+        end
+    end
+    return false
+end
+
+local function markConfiguredStepTerminal(plan, step, cycle)
+    if type(plan) ~= "table" then return end
+    local configuredIndex = number(type(step) == "table" and step.configuredIndex) or 0
+    plan.configuredCursor = math.max(number(plan.configuredCursor) or 0, configuredIndex)
+    if deferredConfiguredGapBeforeNext(plan) then
+        local cycleKey, cycleId = runtimeCycleIdentity(cycle)
+        plan.deferredAdvancePending = true
+        plan.deferredAdvanceCycleKey = cycleKey
+        plan.deferredAdvanceCycleId = cycleId
+    else
+        plan.deferredAdvancePending = false
+        plan.deferredAdvanceCycleKey = nil
+        plan.deferredAdvanceCycleId = nil
+    end
+end
+
+local function completeOrderedPlan(self, plan, reason)
+    log(self, "plan_completed", {
+        reason = reason,
+        configuredCursor = number(plan and plan.configuredCursor) or 0,
+        deferredTailCount = type(plan and plan.deferredTailSteps) == "table" and #plan.deferredTailSteps or 0,
+    })
+    lockWindowDeparture(self, plan)
+    self.plan = nil
+    return terminalResult(self, reason, {
+        windowSpellID = plan.rule.windowSpellID,
+        injectionSpellID = plan.rule.injectionSpellID,
+        ruleSource = plan.rule.source,
+        ruleId = plan.rule.id,
+    })
+end
+
+function AutoBurst:CompleteOrderedPlan(plan, reason)
+    return completeOrderedPlan(self, plan, reason)
+end
+
+local function skipOptionalStep(self, plan, step, reason, cycle)
     if not (plan and isOptionalStep(step)) then return holdResult(plan, "sequence_optional_step_invalid") end
     log(self, "sequence_optional_step_skipped", {
         role = step.role, key = step.key, category = step.category,
@@ -2466,16 +2559,9 @@ local function skipOptionalStep(self, plan, step, reason)
     plan.candidateFirstOfferedAt = nil
     plan.candidateLastOfferedAt = nil
     plan.stepIndex = plan.stepIndex + 1
-    if plan.stepIndex > #plan.steps then
-        log(self, "plan_completed", { reason = reason })
-        lockWindowDeparture(self, plan)
-        self.plan = nil
-        return terminalResult(self, reason, {
-            windowSpellID = plan.rule.windowSpellID,
-            injectionSpellID = plan.rule.injectionSpellID,
-            ruleSource = plan.rule.source,
-            ruleId = plan.rule.id,
-        })
+    markConfiguredStepTerminal(plan, step, cycle)
+    if plan.stepIndex > #plan.steps and not deferredConfiguredStepAhead(plan) then
+        return completeOrderedPlan(self, plan, reason)
     end
     return holdResult(plan, "burst_next_step_pending")
 end
@@ -2501,7 +2587,7 @@ local function completePlanForWindowOwnCooldown(self, plan, reason)
     })
 end
 
-local function runtimeCycleIdentity(cycle)
+runtimeCycleIdentity = function(cycle)
     local runtimeSnapshot = type(cycle) == "table" and cycle.runtimeSnapshot or nil
     local cycleId = type(runtimeSnapshot) == "table" and runtimeSnapshot.cycleId or nil
     if type(cycleId) == "number" or type(cycleId) == "string" then
@@ -2510,6 +2596,10 @@ local function runtimeCycleIdentity(cycle)
     if type(runtimeSnapshot) == "table" then return runtimeSnapshot, nil end
     if type(cycle) == "table" then return cycle, nil end
     return nil, nil
+end
+
+function AutoBurst:RuntimeCycleIdentity(cycle)
+    return runtimeCycleIdentity(cycle)
 end
 
 local function confirmOptionalUnavailable(plan, step, sample, cycle, reason)
@@ -2576,6 +2666,7 @@ local function finishStep(self, plan, source, cycle)
     plan.candidateLastOfferedAt = nil
     plan.stepIndex = plan.stepIndex + 1
     plan.state = "PENDING"
+    markConfiguredStepTerminal(plan, step, cycle)
     log(self, "step_confirmed", {
         role = step.role,
         actionKind = stepKind(step),
@@ -2584,17 +2675,10 @@ local function finishStep(self, plan, source, cycle)
         itemID = stepKind(step) == "inventory" and step.expectedItemID or nil,
         confirmation = source,
         currentStep = plan.stepIndex - 1,
+        configuredCursor = plan.configuredCursor,
     })
-    if plan.stepIndex > #plan.steps then
-        log(self, "plan_completed", { reason = "all_steps_confirmed" })
-        lockWindowDeparture(self, plan)
-        self.plan = nil
-        return terminalResult(self, "all_steps_confirmed", {
-            windowSpellID = plan.rule.windowSpellID,
-            injectionSpellID = plan.rule.injectionSpellID,
-            ruleSource = plan.rule.source,
-            ruleId = plan.rule.id,
-        })
+    if plan.stepIndex > #plan.steps and not deferredConfiguredStepAhead(plan) then
+        return completeOrderedPlan(self, plan, "all_steps_confirmed")
     end
     local nextStep = plan.steps[plan.stepIndex]
     if isWindowStep(step) and isPostWindowResourceSettlementStep(nextStep) then
@@ -2657,7 +2741,7 @@ end
 -- focused mode terminates the all-or-nothing sequence.
 -- It intentionally does not use failure events as evidence and never locks the
 -- window departure: SignalFrame may continue the official window normally.
-local function releasePlanForInjectionUnavailable(self, plan, step, sample, reason)
+local function releasePlanForInjectionUnavailable(self, plan, step, sample, reason, cycle)
     if not (self and self.plan == plan and isOptionalStep(step)) then return nil end
     local phase = type(sample) == "table" and sample.phase or nil
     local why = reason or (type(sample) == "table" and sample.reason) or "optional_step_unavailable"
@@ -2674,7 +2758,7 @@ local function releasePlanForInjectionUnavailable(self, plan, step, sample, reas
     }
     self.lastInjectionPreflight = self.lastSequencePreflight
     if plan.rule and plan.rule.mode == "simple" then
-        return skipOptionalStep(self, plan, step, why)
+        return skipOptionalStep(self, plan, step, why, cycle)
     end
     self.lastAbortReason = "focused_optional_step_unavailable"
     local windowAlreadyDispatched = plan.windowDispatchAttempted == true
@@ -2744,6 +2828,13 @@ local function createPlan(self, rule, officialSpellID, creation, resolveContext,
         deferredTailAdmittedCount = 0,
         deferredTailExpiredCount = 0,
         configuredSequenceLength = number(rule.configuredSequenceLength) or (#steps + #deferredTailSteps),
+        -- The cursor records the last configured position that is permanently
+        -- behind the plan. It never moves backwards and is independent from
+        -- the compacted active-step array.
+        configuredCursor = math.max(0, (number(steps[1] and steps[1].configuredIndex) or 1) - 1),
+        deferredAdvancePending = false,
+        deferredAdvanceCycleKey = nil,
+        deferredAdvanceCycleId = nil,
         stepIndex = 1,
         state = "PENDING",
         completed = {},
@@ -3081,14 +3172,16 @@ end
 
 -- A plan is immutable with respect to its owner and configured order, but an
 -- optional step that was cooling at creation may join the still-unvisited tail.
--- The current configured index is a one-way frontier: anything at or behind it
--- is permanently expired, while a newly ready future step is inserted at its
--- original position without rebuilding or replaying the plan prefix.
+-- configuredCursor is the one-way frontier. Before crossing a deferred gap,
+-- the evaluator waits for a distinct business snapshot; a newly ready step is
+-- inserted at its original position, otherwise that position expires forever.
 function AutoBurst:RefreshDeferredTailSteps(plan, cycle, stage)
     local deferred = type(plan) == "table" and plan.deferredTailSteps or nil
     if type(deferred) ~= "table" or #deferred == 0 then return end
     local current = plan.steps and plan.steps[plan.stepIndex] or nil
-    local frontier = number(current and current.configuredIndex) or 0
+    local frontier = number(plan.configuredCursor) or 0
+    local currentConfiguredIndex = number(current and current.configuredIndex) or math.huge
+    local currentLocked = plan.state == "WAIT_CONFIRM" and plan.wait ~= nil
     local remaining = {}
 
     for _, deferredStep in ipairs(deferred) do
@@ -3110,13 +3203,14 @@ function AutoBurst:RefreshDeferredTailSteps(plan, cycle, stage)
             rememberStepObservation(self, plan, deferredStep, sample, "deferred_tail_recheck")
             local phase = sample and sample.phase or "UNKNOWN"
             local readyForAdmission = phase == "READY_NOW" or phase == "QUEUE_WINDOW" or phase == "GCD_LOCKED"
-            if readyForAdmission then
+            if readyForAdmission and not (currentLocked and configuredIndex < currentConfiguredIndex) then
                 if stepKind(deferredStep) == "inventory" and not positiveItemID(deferredStep.expectedItemID) then
                     local binding = sample and sample.bindingInfo or nil
                     deferredStep.expectedItemID = positiveItemID(binding and (binding.itemID or binding.expectedItemID))
                 end
                 local insertAt = #plan.steps + 1
-                for index = plan.stepIndex + 1, #plan.steps do
+                local insertFrom = currentLocked and (plan.stepIndex + 1) or plan.stepIndex
+                for index = insertFrom, #plan.steps do
                     local activeIndex = number(plan.steps[index] and plan.steps[index].configuredIndex) or math.huge
                     if configuredIndex < activeIndex then
                         insertAt = index
@@ -3124,6 +3218,8 @@ function AutoBurst:RefreshDeferredTailSteps(plan, cycle, stage)
                     end
                 end
                 table.insert(plan.steps, insertAt, deferredStep)
+                current = plan.steps[plan.stepIndex]
+                currentConfiguredIndex = number(current and current.configuredIndex) or math.huge
                 plan.deferredTailAdmittedCount = (number(plan.deferredTailAdmittedCount) or 0) + 1
                 refreshPlanSequenceIdentity(plan)
                 log(self, "sequence_deferred_step_admitted", {
@@ -3139,6 +3235,20 @@ function AutoBurst:RefreshDeferredTailSteps(plan, cycle, stage)
                     activeOrder = plan.sequenceKeys,
                     stage = stage,
                 })
+            elseif readyForAdmission and currentLocked and configuredIndex < currentConfiguredIndex then
+                -- A step already dispatched owns the head until exact
+                -- confirmation. Nothing may be inserted in front of it.
+                plan.deferredTailExpiredCount = (number(plan.deferredTailExpiredCount) or 0) + 1
+                log(self, "sequence_deferred_step_expired", {
+                    key = deferredStep.key,
+                    role = deferredStep.role,
+                    spellID = stepKind(deferredStep) == "spell" and positiveSpellID(deferredStep.spellID) or nil,
+                    inventorySlot = stepKind(deferredStep) == "inventory" and inventorySlot(deferredStep.inventorySlot) or nil,
+                    configuredIndex = configuredIndex,
+                    frontierConfiguredIndex = frontier,
+                    reason = "configured_position_locked_current",
+                    stage = stage,
+                })
             elseif phase == "BLOCKED" or phase == "UNUSABLE" then
                 plan.deferredTailExpiredCount = (number(plan.deferredTailExpiredCount) or 0) + 1
                 log(self, "sequence_deferred_step_expired", {
@@ -3149,6 +3259,25 @@ function AutoBurst:RefreshDeferredTailSteps(plan, cycle, stage)
                     configuredIndex = configuredIndex,
                     frontierConfiguredIndex = frontier,
                     reason = sample and sample.reason or phase,
+                    stage = stage,
+                })
+            elseif configuredIndex < currentConfiguredIndex then
+                -- This is the deferred step's configured turn. The caller has
+                -- already enforced a distinct post-confirmation snapshot, so a
+                -- remaining CD/UNKNOWN advances past this position once.
+                plan.deferredTailExpiredCount = (number(plan.deferredTailExpiredCount) or 0) + 1
+                plan.configuredCursor = math.max(number(plan.configuredCursor) or 0, configuredIndex)
+                frontier = plan.configuredCursor
+                log(self, "sequence_deferred_step_expired", {
+                    key = deferredStep.key,
+                    role = deferredStep.role,
+                    spellID = stepKind(deferredStep) == "spell" and positiveSpellID(deferredStep.spellID) or nil,
+                    inventorySlot = stepKind(deferredStep) == "inventory" and inventorySlot(deferredStep.inventorySlot) or nil,
+                    configuredIndex = configuredIndex,
+                    frontierConfiguredIndex = frontier,
+                    observedPhase = phase,
+                    reason = "configured_position_unavailable_at_turn",
+                    detail = sample and sample.reason or phase,
                     stage = stage,
                 })
             else
@@ -3271,7 +3400,7 @@ local function settlePostWindowResource(self, plan, step, cycle)
     local reason = sample.resourceBlocked == true
         and "post_window_resource_unavailable_confirmed"
         or "post_window_resource_unknown_released"
-    return releasePlanForInjectionUnavailable(self, plan, step, sample, reason), nil, true
+    return releasePlanForInjectionUnavailable(self, plan, step, sample, reason, cycle), nil, true
 end
 
 -- The official recommendation is an independent, read-only window anchor.  A
@@ -3306,7 +3435,39 @@ function AutoBurst:Evaluate(official, runtime)
         recordDecision(self, self.plan and "paused" or "idle", earlyPauseReason, {
             officialSpellID = officialSpellID,
         })
-        return self.plan and holdResult(self.plan, earlyPauseReason) or noneResult()
+        if self.plan then return holdResult(self.plan, earlyPauseReason) end
+        if type(self.preWindowCapture) == "table" then
+            return self:PreWindowCaptureHold(self.preWindowCapture, earlyPauseReason)
+        end
+        if self.requireWindowDeparture == true and officialSpellID == self.lockedWindowSpellID then
+            return holdResult(nil, "burst_await_window_departure", {
+                officialSpellID = officialSpellID,
+                groupId = self.runtimeGroupId,
+            })
+        end
+
+        -- A normal cast remains the player's current action, so do not select a
+        -- rule, scan optional steps, create a plan, or advance a cursor here.
+        -- Still fence a validated configured window with BindingToken=0. Without
+        -- this identity-only hold, SignalFrame falls back to the ordinary path
+        -- and can queue W before the A-W-B-C plan owns it.
+        local earlyContext = runtime.context or (TE.Context and TE.Context:GetPlayer()) or {}
+        local coordinator = TE.AutoInjectionCoordinator
+        local matchesWindow, matchedGroupId
+        if coordinator and type(coordinator.MatchesEnabledWindow) == "function" then
+            matchesWindow, matchedGroupId = coordinator:MatchesEnabledWindow(earlyContext, officialSpellID)
+        end
+        if matchesWindow == true then
+            recordDecision(self, "hold", "cast_window_fenced", {
+                officialSpellID = officialSpellID,
+                matchedGroupId = matchedGroupId,
+            })
+            return holdResult(nil, "burst_cast_window_fence", {
+                officialSpellID = officialSpellID,
+                groupId = matchedGroupId,
+            })
+        end
+        return noneResult()
     end
     local previousOfficialSpellID = self.lastOfficialSpellID
     local departedLockedWindowSpellID = nil
@@ -3824,10 +3985,38 @@ function AutoBurst:Evaluate(official, runtime)
 
     observeLatchedPlanOfficialDeparture(self, plan, officialSpellID, "official_window_departed")
 
+    if plan.deferredAdvancePending == true then
+        local cycleKey, cycleId = self:RuntimeCycleIdentity(cycle)
+        if cycleKey ~= nil and cycleKey == plan.deferredAdvanceCycleKey then
+            recordDecision(self, "hold", "deferred_tail_fresh_snapshot_pending", {
+                officialSpellID = officialSpellID,
+                windowSpellID = plan.rule and plan.rule.windowSpellID or nil,
+                ruleSource = plan.rule and plan.rule.source or nil,
+                ruleId = plan.rule and plan.rule.id or nil,
+                state = plan.state,
+                configuredCursor = plan.configuredCursor,
+                confirmationCycleId = plan.deferredAdvanceCycleId,
+            })
+            return holdResult(plan, "deferred_tail_fresh_snapshot_pending")
+        end
+        plan.deferredAdvancePending = false
+        plan.deferredAdvanceCycleKey = nil
+        plan.deferredAdvanceCycleId = nil
+        log(self, "sequence_deferred_fresh_snapshot", {
+            cycleId = cycleId,
+            configuredCursor = plan.configuredCursor,
+            currentStep = plan.stepIndex,
+            deferredTailCount = type(plan.deferredTailSteps) == "table" and #plan.deferredTailSteps or 0,
+        })
+    end
+
     self:RefreshDeferredTailSteps(plan, cycle, plan.state or "plan_active")
 
     local step = plan.steps[plan.stepIndex]
     if not step then
+        if type(plan.deferredTailSteps) ~= "table" or #plan.deferredTailSteps == 0 then
+            return self:CompleteOrderedPlan(plan, "all_steps_confirmed")
+        end
         self:Abort("step_missing", false)
         return terminalResult(self, "step_missing", { officialSpellID = officialSpellID })
     end
@@ -3948,7 +4137,7 @@ function AutoBurst:Evaluate(official, runtime)
                 "optional_injection_resource_insufficient")
             if unavailable then
                 return releasePlanForInjectionUnavailable(self, plan, step, sample,
-                    "optional_injection_resource_insufficient_confirmed")
+                    "optional_injection_resource_insufficient_confirmed", cycle)
             end
             return holdResult(plan, "optional_injection_resource_confirming")
         end
@@ -4039,15 +4228,15 @@ function AutoBurst:Evaluate(official, runtime)
             "optional_injection_resource_insufficient")
         if unavailable then
             return releasePlanForInjectionUnavailable(self, plan, step, sample,
-                "optional_injection_resource_insufficient_confirmed")
+                "optional_injection_resource_insufficient_confirmed", cycle)
         end
         return holdResult(plan, "optional_injection_resource_confirming")
     end
     if isOptionalStep(step) and sample.phase == "COOLDOWN" then
-        local disposition, cooldownReason = confirmPreInjectionOwnCooldown(self, plan, step, sample)
+        local disposition, cooldownReason = confirmPreInjectionOwnCooldown(self, plan, step, sample, cycle)
         if disposition == "skip" then
             return releasePlanForInjectionUnavailable(self, plan, step, sample,
-                "optional_step_own_cooldown:" .. tostring(cooldownReason or sample.reason or sample.phase))
+                "optional_step_own_cooldown:" .. tostring(cooldownReason or sample.reason or sample.phase), cycle)
         end
         if disposition == "hold" then return holdResult(plan, cooldownReason) end
         return revalidateUnknownStep(self, plan, step, sample,
@@ -4090,10 +4279,10 @@ function AutoBurst:Evaluate(official, runtime)
     if sample.phase == "COOLDOWN" then
         if isOptionalStep(step) then
             return releasePlanForInjectionUnavailable(self, plan, step, sample,
-                "optional_step_own_cooldown:" .. tostring(sample.reason or sample.phase))
+                "optional_step_own_cooldown:" .. tostring(sample.reason or sample.phase), cycle)
         end
         if isWindowStep(step) and plan.windowDispatchAttempted ~= true then
-            local disposition, cooldownReason = confirmWindowOwnCooldown(self, plan, step, sample)
+            local disposition, cooldownReason = confirmWindowOwnCooldown(self, plan, step, sample, cycle)
             if disposition == "skip" then
                 return completePlanForWindowOwnCooldown(self, plan, cooldownReason or "confirmed_own_cooldown")
             end
@@ -4240,6 +4429,9 @@ function AutoBurst:GetRuntimeState()
         deferredTailCount = plan and type(plan.deferredTailSteps) == "table" and #plan.deferredTailSteps or 0,
         deferredTailAdmittedCount = plan and number(plan.deferredTailAdmittedCount) or 0,
         deferredTailExpiredCount = plan and number(plan.deferredTailExpiredCount) or 0,
+        configuredCursor = plan and number(plan.configuredCursor) or 0,
+        deferredAdvancePending = plan and plan.deferredAdvancePending == true or false,
+        deferredAdvanceCycleId = plan and plan.deferredAdvanceCycleId or nil,
         waitingForConfirmation = plan and plan.state == "WAIT_CONFIRM" or false,
         admittedOwnReady = plan and plan.wait and plan.wait.admittedOwnReady == true or false,
         postWindowResourceSettling = plan and plan.state == "POST_WINDOW_RESOURCE_SETTLING" or false,
@@ -4367,6 +4559,9 @@ function AutoBurst:GetSnapshot()
         deferredTailInitialCount = number(plan.deferredTailInitialCount) or 0,
         deferredTailAdmittedCount = number(plan.deferredTailAdmittedCount) or 0,
         deferredTailExpiredCount = number(plan.deferredTailExpiredCount) or 0,
+        configuredCursor = number(plan.configuredCursor) or 0,
+        deferredAdvancePending = plan.deferredAdvancePending == true,
+        deferredAdvanceCycleId = plan.deferredAdvanceCycleId,
         groupWindowGeneration = self.windowGeneration or 0,
         groupDepartureLock = self.requireWindowDeparture == true,
         groupWindowReceipt = shallowCopy(self.lastConfirmedWindowReceipt),

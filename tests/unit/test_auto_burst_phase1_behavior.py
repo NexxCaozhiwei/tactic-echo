@@ -958,6 +958,118 @@ assert(eval().dispatchSpellID == 642, "the plan must continue directly to C with
 """)
 
 
+def test_deferred_gap_uses_fresh_snapshot_and_rejoins_at_exact_configured_position() -> None:
+    run_lua(AUTO_BURST_HARNESS + r"""
+settings.burstProfiles.PALADIN_3 = {
+    customInjectionSpellIDs = { 55342, 642 },
+    injectionOrder = { 31884, 55342, 642 },
+    autoBurstSequence = {
+        order = { "injection:31884", "window", "injection:55342", "injection:642", "trinket:13", "trinket:14" },
+        enabled = {
+            ["injection:31884"] = true,
+            ["injection:55342"] = true,
+            ["injection:642"] = true,
+        },
+    },
+}
+bindings[55342] = "ready"; bindingTokens[55342] = 5; cooldowns[55342] = "cooldown"
+bindings[642] = "ready"; bindingTokens[642] = 6; cooldowns[642] = "ready"
+
+assert(eval().dispatchSpellID == 31884)
+AutoBurst:RecordSpellcastSucceeded(31884)
+assert(eval().dispatchSpellID == 343527)
+AutoBurst:RecordSpellcastSucceeded(343527)
+
+local sameSnapshot = eval(nil, nil, 7001)
+assert(sameSnapshot.kind == "hold" and sameSnapshot.reason == "deferred_tail_fresh_snapshot_pending",
+    "window confirmation must not cross the B gap on the same business snapshot")
+cooldowns[55342] = "ready"
+local b = eval(nil, nil, 7002)
+assert(b.kind == "candidate" and b.dispatchSpellID == 55342,
+    "newly ready B must be inserted before the already-ready C")
+local ordered = AutoBurst:GetSnapshot()
+assert(ordered.sequenceKeys == "injection:31884>window>injection:55342>injection:642")
+AutoBurst:RecordSpellcastSucceeded(55342)
+assert(eval().dispatchSpellID == 642, "C may dispatch only after B is confirmed")
+""")
+
+
+def test_deferred_gap_expired_at_its_turn_never_replays_in_front_of_locked_successor() -> None:
+    run_lua(AUTO_BURST_HARNESS + r"""
+settings.burstProfiles.PALADIN_3 = {
+    customInjectionSpellIDs = { 55342, 642 },
+    injectionOrder = { 31884, 55342, 642 },
+    autoBurstSequence = {
+        order = { "injection:31884", "window", "injection:55342", "injection:642", "trinket:13", "trinket:14" },
+        enabled = {
+            ["injection:31884"] = true,
+            ["injection:55342"] = true,
+            ["injection:642"] = true,
+        },
+    },
+}
+bindings[55342] = "ready"; bindingTokens[55342] = 5; cooldowns[55342] = "cooldown"
+bindings[642] = "ready"; bindingTokens[642] = 6; cooldowns[642] = "ready"
+
+assert(eval().dispatchSpellID == 31884)
+AutoBurst:RecordSpellcastSucceeded(31884)
+assert(eval().dispatchSpellID == 343527)
+AutoBurst:RecordSpellcastSucceeded(343527)
+assert(eval(nil, nil, 7101).reason == "deferred_tail_fresh_snapshot_pending")
+local c = eval(nil, nil, 7102)
+assert(c.kind == "candidate" and c.dispatchSpellID == 642,
+    "B still on CD at its configured turn must be passed without blocking C")
+
+cooldowns[55342] = "ready"
+local stillC = eval(nil, nil, 7103)
+assert(stillC.kind == "candidate" and stillC.dispatchSpellID == 642,
+    "a passed B must never be inserted ahead of the already-dispatched C")
+local snapshot = AutoBurst:GetSnapshot()
+assert(snapshot.deferredTailCount == 0 and snapshot.currentSpellID == 642)
+""")
+
+
+def test_admitting_one_deferred_gap_does_not_expire_later_gap_before_its_turn() -> None:
+    run_lua(AUTO_BURST_HARNESS + r"""
+settings.burstProfiles.PALADIN_3 = {
+    customInjectionSpellIDs = { 55342, 642, 100001 },
+    injectionOrder = { 31884, 55342, 642, 100001 },
+    autoBurstSequence = {
+        order = { "injection:31884", "window", "injection:55342", "injection:642", "injection:100001", "trinket:13", "trinket:14" },
+        enabled = {
+            ["injection:31884"] = true,
+            ["injection:55342"] = true,
+            ["injection:642"] = true,
+            ["injection:100001"] = true,
+        },
+    },
+}
+bindings[55342] = "ready"; bindingTokens[55342] = 5; cooldowns[55342] = "cooldown"
+bindings[642] = "ready"; bindingTokens[642] = 6; cooldowns[642] = "cooldown"
+bindings[100001] = "ready"; bindingTokens[100001] = 7; cooldowns[100001] = "ready"
+
+assert(eval().dispatchSpellID == 31884)
+AutoBurst:RecordSpellcastSucceeded(31884)
+assert(eval().dispatchSpellID == 343527)
+AutoBurst:RecordSpellcastSucceeded(343527)
+assert(eval(nil, nil, 7201).reason == "deferred_tail_fresh_snapshot_pending")
+
+cooldowns[55342] = "ready"
+local b = eval(nil, nil, 7202)
+assert(b.kind == "candidate" and b.dispatchSpellID == 55342)
+local afterBAdmission = AutoBurst:GetSnapshot()
+assert(afterBAdmission.deferredTailCount == 1,
+    "admitting B must leave still-cooling C eligible until B is confirmed")
+
+AutoBurst:RecordSpellcastSucceeded(55342)
+assert(eval(nil, nil, 7203).reason == "deferred_tail_fresh_snapshot_pending")
+cooldowns[642] = "ready"
+local c = eval(nil, nil, 7204)
+assert(c.kind == "candidate" and c.dispatchSpellID == 642,
+    "C must rejoin at its own turn before the already-ready D")
+""")
+
+
 def test_focused_sequence_refuses_build_when_any_enabled_optional_step_is_cd() -> None:
     run_lua(AUTO_BURST_HARNESS + r"""
 settings.autoBurstMode = "focused"
@@ -1971,12 +2083,58 @@ local paused = AutoBurst:Evaluate({ spellID = officialSpellID }, {
         castDisplay = { active = true, kind = "cast", spellID = 999999 },
     },
 })
-assert(paused.kind == "none" and AutoBurst:GetSnapshot().active == false)
+assert(paused.kind == "hold" and paused.reason == "burst_cast_window_fence"
+    and paused.observationOnly == true and paused.bindingToken == 0
+    and AutoBurst:GetSnapshot().active == false,
+    "a configured window must be fenced without creating a plan while another cast is active")
 assert(AutoBurst.lastOfficialSpellID == nil and AutoBurst.currentWindowSpellID == nil,
     "cast protection must run before consuming the official window edge")
 local injection = eval()
 assert(injection.kind == "candidate" and injection.dispatchSpellID == 31884,
     "the first healthy frame after the cast must still observe the untouched window")
+""")
+
+
+def test_casting_step_success_is_retained_while_wait_confirm_is_soft_paused() -> None:
+    run_lua(AUTO_BURST_HARNESS + r"""
+settings.burstProfiles.PALADIN_3 = {
+    customInjectionSpellIDs = { 55342, 365350 },
+    injectionOrder = { 55342, 365350 },
+    autoBurstSequence = {
+        order = { "injection:55342", "injection:365350", "window", "trinket:13", "trinket:14" },
+        enabled = {
+            ["injection:55342"] = true,
+            ["injection:365350"] = true,
+            ["trinket:13"] = false,
+            ["trinket:14"] = false,
+        },
+    },
+}
+bindings[55342] = "ready"; bindingTokens[55342] = 5; cooldowns[55342] = "ready"
+bindings[365350] = "ready"; bindingTokens[365350] = 6; cooldowns[365350] = "ready"
+
+assert(eval().dispatchSpellID == 55342)
+AutoBurst:RecordSpellcastSucceeded(55342)
+local surge = eval()
+assert(surge.kind == "candidate" and surge.dispatchSpellID == 365350)
+
+local casting = AutoBurst:Evaluate({ spellID = officialSpellID }, {
+    inCombat = true, intentState = "armed", effectiveState = "armed",
+    primary = { spellID = officialSpellID }, context = testContext,
+    runtimeSnapshot = {
+        cycleId = 9200,
+        castDisplay = { active = true, kind = "cast", spellID = 365350 },
+    },
+})
+assert(casting.kind == "hold" and casting.reason == "runtime_cast")
+assert(AutoBurst:RecordSpellcastSucceeded(365350) == true,
+    "the exact success receipt must survive the SOFT_PAUSED wrapper around WAIT_CONFIRM")
+local pausedSnapshot = AutoBurst:GetSnapshot()
+assert(pausedSnapshot.state == "SOFT_PAUSED" and pausedSnapshot.confirmationEventSpellID == 365350)
+
+local window = eval()
+assert(window.kind == "candidate" and window.dispatchSpellID == officialSpellID,
+    "the first healthy frame must confirm the casting step and advance to the window")
 """)
 
 
@@ -2108,6 +2266,10 @@ local result = eval()
 assert(result.kind == "candidate" and result.dispatchSpellID == 343527,
     "the ready window may proceed while the future CD step remains deferred")
 AutoBurst:RecordSpellcastSucceeded(343527)
+local pending = eval()
+assert(pending.kind == "hold" and pending.reason == "deferred_tail_fresh_snapshot_pending"
+    and AutoBurst:GetSnapshot().active == true,
+    "the confirmation snapshot cannot also advance over the deferred configured position")
 local completed = eval()
 assert(completed.kind ~= "candidate" and AutoBurst:GetSnapshot().active == false,
     "a future step still on own cooldown when its position is reached must never be dispatched")

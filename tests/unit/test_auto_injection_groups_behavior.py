@@ -293,7 +293,7 @@ local second = addConfigured(300, 301)
 local firstRule = assert(Groups:BuildRule(context, "group-1"))
 local executor = { requireWindowDeparture = true, runtimeGroupId = "group-1" }
 local selected, reason, owner = Coordinator:Observe(context, 300, executor)
-assert(selected == firstRule and reason == nil and owner == "group-1")
+assert(selected and selected.id == firstRule.id and reason == nil and owner == "group-1")
 assert(Coordinator.activeGroupId == "group-1")
 assert(Coordinator.lastIgnoredGroupId == second)
 ''')
