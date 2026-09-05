@@ -190,6 +190,7 @@ local PRIORITY_LOG_EVENTS = {
     plan_rejected = true,
     plan_gate_window_official_cooldown_conflict = true,
     confirmed_window_reentry_suppressed = true,
+    window_reentry_ready = true,
     window_repeated_failure_released = true,
     window_official_cooldown_revalidate = true,
     window_official_cooldown_resolved = true,
@@ -3412,6 +3413,48 @@ local function isOfficialWindowAvailabilityConflict(sample)
     return type(sample) == "table" and (sample.phase == "COOLDOWN" or sample.phase == "UNKNOWN")
 end
 
+-- A new, unexecuted generation is not a consumed-window departure lock. Keep
+-- its sole capture while own readiness settles, including window-first rules.
+-- Recheck only the window on fresh healthy business snapshots; do not rebuild
+-- the optional sequence, infer elapsed cooldowns, or replay an executed prefix.
+function AutoBurst:RevalidateWindowReentry(capture, cycle, runtime, sample)
+    local cycleKey, cycleId = self:RuntimeCycleIdentity(cycle)
+    if sample == nil and cycleKey ~= nil and capture.windowReentryCycleKey == cycleKey then
+        return continuePreWindowCapture(self, capture, "window_reentry_wait_ready", nil, runtime)
+    end
+    local step = { key = "window", role = "window", category = "window", kind = "spell",
+        spellID = capture.rule.windowSpellID }
+    sample = sample or stepSample(step, cycle)
+    capture.windowReentryCycleKey = cycleKey
+    capture.windowReentryCycleId = cycleId
+    capture.windowReentrySamples = (number(capture.windowReentrySamples) or 0) + 1
+    capture.windowReentryPhase = sample.phase
+    capture.windowReentryObservedAt = now()
+    rememberStepObservation(self, nil, step, sample, "window_reentry_revalidate")
+    if isDispatchablePhase(sample.phase) then
+        capture.windowReentryPending = false
+        self.lastWindowRejectReason = nil
+        log(self, "window_reentry_ready", {
+            captureId = capture.id, windowGeneration = capture.windowGeneration,
+            windowSpellID = step.spellID, phase = sample.phase,
+            cycleId = cycleId, samples = capture.windowReentrySamples,
+        })
+        return nil
+    end
+    if sample.phase == "BLOCKED" or sample.phase == "UNUSABLE" then
+        self:Abort(sample.reason or "window_reentry_binding_invalid", false)
+        return terminalResult(self, "window_reentry_invalidated")
+    end
+    self.lastWindowRejectReason = "window_reentry_wait_ready"
+    recordDecision(self, "hold", "window_reentry_wait_ready", {
+        officialSpellID = capture.officialSpellID, windowSpellID = step.spellID,
+        phase = sample.phase, cycleId = cycleId,
+    })
+    return continuePreWindowCapture(self, capture, "window_reentry_wait_ready", {
+        detail = sample.reason or sample.phase,
+    }, runtime)
+end
+
 function AutoBurst:Evaluate(official, runtime)
     runtime = type(runtime) == "table" and runtime or {}
     local settings = tactics()
@@ -3645,6 +3688,10 @@ function AutoBurst:Evaluate(official, runtime)
     end
     cycle.resolveContext = runtime.resolveContext
     cycle.runtimeSnapshot = runtime.runtimeSnapshot
+    if not self.plan and capture and capture.windowReentryPending == true then
+        local waiting = self:RevalidateWindowReentry(capture, cycle, runtime)
+        if waiting then return waiting end
+    end
     if not self.plan then
         if not officialSpellID or officialSpellID ~= rule.windowSpellID then
             if capture then
@@ -3799,7 +3846,7 @@ function AutoBurst:Evaluate(official, runtime)
                 self, rule, officialSpellID, self.windowGeneration,
                 windowReason or "official_window_edge", rearmedFromNonArmed
             )
-        elseif capture and rule.requiresPreWindowCapture ~= true then
+        elseif capture and rule.requiresPreWindowCapture ~= true and capture.windowReentryObserved ~= true then
             -- A previously captured front step may have been excluded by the
             -- current CD preflight, leaving window-first ordering. Do not retain
             -- an unnecessary handoff barrier in that case.
@@ -3847,26 +3894,20 @@ function AutoBurst:Evaluate(official, runtime)
         local confirmedWindow = type(self.lastConfirmedWindowReceipt) == "table"
             and self.lastConfirmedWindowReceipt or nil
         local duplicateConfirmedWindowCooldown = creation.windowAvailabilityConflict == true
-            and windowSample.phase == "COOLDOWN"
+            and (windowSample.phase == "COOLDOWN" or (capture and capture.windowReentryObserved == true))
             and confirmedWindow ~= nil
             and positiveSpellID(confirmedWindow.spellID) == positiveSpellID(rule.windowSpellID)
             and number(confirmedWindow.combatEpoch) == number(self.combatEpoch)
 
         if duplicateConfirmedWindowCooldown then
-            -- A recommendation may briefly rotate away immediately after the
-            -- window succeeds and then expose the same spell again while its
-            -- own cooldown is still active. The visibility departure lock has
-            -- correctly ended, but this is not a new usable window and must not
-            -- replay front injections or publish a failing window candidate.
-            self.lockedWindowSpellID = rule.windowSpellID
-            self.requireWindowDeparture = true
-            self.preCombatBridgeDepartureLock = false
-            self.departureLockGeneration = number(self.windowGeneration)
-            self.consumedWindowGeneration = number(self.windowGeneration)
-                or self.consumedWindowGeneration
-            self.activePlanGeneration = nil
-            self:ClaimGroupOwnership(rule.groupId)
-            self.lastWindowRejectReason = "confirmed_window_reentry_on_cooldown"
+            -- The previous window has departed, but this new generation has
+            -- not dispatched anything. A COOLDOWN sample prevents replay now;
+            -- it cannot consume the new generation or require another departure
+            -- before readiness may recover. Reuse the single capture/owner.
+            capture = capture or beginPreWindowCapture(self, rule, officialSpellID,
+                self.windowGeneration, "window_reentry_wait_ready", rearmedFromNonArmed)
+            capture.windowReentryObserved = true
+            capture.windowReentryPending = true
             log(self, "confirmed_window_reentry_suppressed", {
                 officialSpellID = officialSpellID,
                 windowSpellID = rule.windowSpellID,
@@ -3877,20 +3918,7 @@ function AutoBurst:Evaluate(official, runtime)
                 priorWindowGeneration = confirmedWindow.windowGeneration,
                 priorConfirmation = confirmedWindow.confirmation,
             })
-            if capture then
-                releasePreWindowCapture(self, "confirmed_window_reentry_on_cooldown")
-                capture = nil
-            end
-            recordDecision(self, "hold", "confirmed_window_reentry_on_cooldown", {
-                officialSpellID = officialSpellID,
-                windowSpellID = rule.windowSpellID,
-                injectionSpellID = rule.injectionSpellID,
-                ruleSource = rule.source,
-                ruleId = rule.id,
-            })
-            return holdResult(nil, "burst_await_window_departure", {
-                preCombatBridge = false,
-            })
+            return self:RevalidateWindowReentry(capture, cycle, runtime, windowSample)
         end
 
         if creation.windowAvailabilityConflict then
@@ -4490,6 +4518,11 @@ function AutoBurst:GetSnapshot()
             preWindowCaptureHandoffBarrierPublishedFrames = captureActive and number(capture.handoffBarrierPublishedFrames) or 0,
             preWindowCaptureRetryCount = captureActive and number(capture.retryCount) or 0,
             preWindowCaptureLastReason = captureActive and capture.lastRetryReason or nil,
+            windowReentryPending = captureActive and capture.windowReentryPending == true,
+            windowReentryPhase = captureActive and capture.windowReentryPhase or nil,
+            windowReentryCycleId = captureActive and capture.windowReentryCycleId or nil,
+            windowReentrySamples = captureActive and number(capture.windowReentrySamples) or 0,
+            windowReentryObservedAt = captureActive and number(capture.windowReentryObservedAt) or nil,
             preWindowCaptureCooldownEdgePending = captureActive and number(capture.cooldownEdgeStartedAt) ~= nil,
             preWindowCaptureCooldownEdgeStepKey = captureActive and capture.cooldownEdgeStepKey or nil,
             preWindowCaptureCooldownEdgeSpellID = captureActive and positiveSpellID(capture.cooldownEdgeSpellID) or nil,
@@ -5268,6 +5301,11 @@ function AutoBurst:GetDiagnostics()
             handoffBarrierPublishedFrames = snapshot.preWindowCaptureHandoffBarrierPublishedFrames,
             retryCount = snapshot.preWindowCaptureRetryCount,
             lastReason = snapshot.preWindowCaptureLastReason,
+            windowReentryPending = snapshot.windowReentryPending == true,
+            windowReentryPhase = snapshot.windowReentryPhase,
+            windowReentryCycleId = snapshot.windowReentryCycleId,
+            windowReentrySamples = snapshot.windowReentrySamples,
+            windowReentryObservedAt = snapshot.windowReentryObservedAt,
         },
         combatEpoch = self.combatEpoch or 0,
         preCombatBridgeWorldFence = self.preCombatBridgeWorldFence == true,

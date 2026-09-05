@@ -428,12 +428,14 @@ local duplicate = eval()
 assert(duplicate.kind == "hold", "same confirmed window on own cooldown must be suppressed")
 local suppressed = AutoBurst:GetSnapshot()
 assert(suppressed.active == false, "cooldown reentry must not create a second plan")
-assert(suppressed.requireWindowDeparture == true,
-    "suppressed generation must remain observation-only until departure")
+assert(suppressed.requireWindowDeparture == false and suppressed.preWindowCaptureActive == true,
+    "an unexecuted generation must retain revalidation ownership, not a consumed departure lock")
+assert(suppressed.consumedWindowGeneration ~= suppressed.windowGeneration,
+    "an own-CD observation must not consume the new window generation")
 assert(suppressed.lastConfirmedWindowSpellID == 343527,
     "snapshot must retain the exact confirmed window receipt")
-assert(suppressed.lastWindowRejectReason == "confirmed_window_reentry_on_cooldown",
-    "diagnostics must identify the duplicate confirmed-window cooldown")
+assert(suppressed.lastWindowRejectReason == "window_reentry_wait_ready",
+    "diagnostics must identify the recoverable window readiness wait")
 
 officialSpellID = 999001
 assert(eval().kind == "none", "second departure should clear the suppressed generation")
@@ -442,6 +444,182 @@ officialSpellID = 343527
 local nextWindow = eval()
 assert(nextWindow.kind == "candidate" and nextWindow.dispatchSpellID == 31884,
     "a later ready window must start the next normal sequence")
+""")
+
+
+WINDOW_REENTRY_HARNESS = AUTO_BURST_HARNESS + r"""
+local function finish_test_sequence(order)
+    for _, spellID in ipairs(order) do
+        local result = eval()
+        assert(result.kind == "candidate" and result.dispatchSpellID == spellID)
+        assert(AutoBurst:RecordSpellcastSucceeded(spellID))
+    end
+    assert(eval().kind == "hold")
+    officialSpellID = 999001
+    assert(eval().kind == "none")
+end
+local function enter_cooldown_reentry()
+    nowValue = 59.915
+    cooldowns[343527] = "cooldown"
+    officialSpellID = 343527
+    assert(eval("armed", true, 100).kind == "hold")
+end
+"""
+
+
+@pytest.mark.parametrize("window_first", [False, True])
+@pytest.mark.parametrize("mode", ["simple", "focused"])
+@pytest.mark.parametrize("charged", [False, True])
+def test_window_reentry_recovers_without_another_official_departure(window_first, mode, charged) -> None:
+    setup = "use_post_sequence()\n" if window_first else ""
+    order = "{343527, 31884}" if window_first else "{31884, 343527}"
+    ready = '{ charges = 1, maxCharges = 2, cooldownActive = true }' if charged else '"ready"'
+    run_lua(WINDOW_REENTRY_HARNESS + setup + f'''
+settings.autoBurstMode = "{mode}"
+finish_test_sequence({order})
+enter_cooldown_reentry()
+local capture = AutoBurst.preWindowCapture
+assert(capture and not AutoBurst.requireWindowDeparture)
+local generation = capture.windowGeneration
+local reads = 0
+local collect = TE.IconState.CollectCooldownOnly
+function TE.IconState:CollectCooldownOnly(spellID, options)
+    assert(spellID == 343527, "pending reentry must not repeatedly scan optional steps")
+    reads = reads + 1
+    return collect(self, spellID, options)
+end
+nowValue = 60
+cooldowns[343527] = "unknown"
+assert(eval("armed", true, 101).kind == "hold")
+assert(reads == 1)
+cooldowns[343527] = {ready}
+assert(eval("armed", false, 101).kind == "hold", "same business snapshot cannot resolve readiness")
+assert(reads == 1)
+TE.IconState.CollectCooldownOnly = collect
+local recovered = eval("armed", true, 102)
+assert(recovered.kind == "candidate" and recovered.dispatchSpellID == {343527 if window_first else 31884})
+assert(AutoBurst.plan.windowGeneration == generation, "recovery must retain the original new generation")
+assert(AutoBurst.preWindowCapture == nil and AutoBurst.requireWindowDeparture == false)
+''')
+
+
+@pytest.mark.parametrize("kind", ["cast", "channel", "empower"])
+def test_window_reentry_does_not_probe_or_rebuild_during_cast(kind) -> None:
+    run_lua(WINDOW_REENTRY_HARNESS + f'''
+finish_test_sequence({{31884, 343527}})
+enter_cooldown_reentry()
+local capture = AutoBurst.preWindowCapture
+assert(capture)
+local collect = TE.IconState.CollectCooldownOnly
+TE.IconState.CollectCooldownOnly = function() error("must not sample during cast protection") end
+cooldowns[343527] = "ready"
+local paused = AutoBurst:Evaluate({{ spellID = officialSpellID }}, {{
+    inCombat = true, intentState = "armed", effectiveState = "{kind}", context = testContext,
+    runtimeSnapshot = {{ cycleId = 101, castDisplay = {{ active = true, kind = "{kind}" }} }},
+}})
+assert(paused.kind == "hold" and paused.observationOnly == true)
+assert(AutoBurst.preWindowCapture == capture and AutoBurst.plan == nil)
+TE.IconState.CollectCooldownOnly = collect
+assert(eval("armed", true, 102).dispatchSpellID == 31884)
+''')
+
+
+def test_window_reentry_recovery_preserves_full_order_and_existing_success_lock() -> None:
+    run_lua(WINDOW_REENTRY_HARNESS + r"""
+assert(TE.AutoInjectionGroups:AddInjection(testContext, "group-1", 375576))
+assert(TE.AutoInjectionGroups:AddInjection(testContext, "group-1", 255937))
+bindings[375576], bindings[255937] = "ready", "ready"
+bindingTokens[375576], bindingTokens[255937] = 7, 8
+finish_test_sequence({31884, 343527, 375576, 255937})
+enter_cooldown_reentry()
+assert(AutoBurst.preWindowCapture and not AutoBurst.requireWindowDeparture)
+-- Actual cooldown can persist arbitrarily long without consuming this generation.
+for i = 101, 105 do
+    nowValue = i
+    assert(eval("armed", true, i).kind == "hold")
+    assert(AutoBurst.plan == nil and not AutoBurst.requireWindowDeparture)
+end
+cooldowns[343527] = "ready"
+for _, spellID in ipairs({31884, 343527, 375576, 255937}) do
+    local result = eval()
+    assert(result.kind == "candidate" and result.dispatchSpellID == spellID)
+    assert(eval().dispatchSpellID == spellID, "a candidate offer alone cannot advance the step")
+    assert(AutoBurst:RecordSpellcastSucceeded(spellID))
+end
+assert(eval().kind == "hold")
+assert(AutoBurst.requireWindowDeparture and not AutoBurst.preWindowCapture)
+assert(eval().kind == "hold", "even ready samples must not replay a successfully consumed window")
+""")
+
+
+@pytest.mark.parametrize("boundary", ["departure", "disabled", "combat", "world", "configuration"])
+def test_window_reentry_pending_respects_lifecycle_boundaries(boundary) -> None:
+    actions = {
+        "departure": 'officialSpellID = 999001; assert(eval().kind == "none")',
+        "disabled": 'settings.autoInjectionEnabled = false; settings.autoBurstEnabled = false; assert(eval().kind == "none")',
+        "combat": 'assert(eval_out_of_combat(true).kind == "none")',
+        "world": 'AutoBurst:ActivateWorldTransitionFence("test")',
+        "configuration": 'assert(TE.AutoInjectionGroups:SetGroupWindow(testContext, "group-1", 400)); eval()',
+    }
+    run_lua(WINDOW_REENTRY_HARNESS + r"""
+finish_test_sequence({31884, 343527})
+enter_cooldown_reentry()
+assert(AutoBurst.preWindowCapture and not AutoBurst.requireWindowDeparture)
+""" + actions[boundary] + r"""
+assert(AutoBurst.preWindowCapture == nil and AutoBurst.plan == nil,
+    "a stale pending generation must not survive a lifecycle or configuration boundary")
+""")
+
+
+def test_window_reentry_owner_does_not_replay_a_missed_other_group() -> None:
+    run_lua(WINDOW_REENTRY_HARNESS + r"""
+local Groups, Coordinator = TE.AutoInjectionGroups, TE.AutoInjectionCoordinator
+local ok, second = Groups:AddGroup(testContext)
+assert(ok and Groups:SetGroupWindow(testContext, second, 400))
+assert(Groups:AddInjection(testContext, second, 31884))
+assert(Groups:SetGroupEnabled(testContext, second, true))
+bindings[400], bindingTokens[400] = "ready", 8
+finish_test_sequence({31884, 343527})
+enter_cooldown_reentry()
+assert(Coordinator.activeGroupId == "group-1" and AutoBurst.preWindowCapture)
+officialSpellID = 400
+assert(eval().kind == "none")
+assert(Coordinator.lastIgnoredGroupId == second)
+assert(Coordinator.lastIgnoredEvent == "group_window_ignored_while_owner_active")
+assert(AutoBurst.preWindowCapture == nil and AutoBurst.plan == nil)
+assert(eval().kind == "none", "a missed group must not take over without a new edge")
+""")
+
+
+@pytest.mark.parametrize("window_first", [False, True])
+def test_window_reentry_resume_keeps_the_existing_four_frame_handoff(window_first) -> None:
+    setup = "use_post_sequence()\n" if window_first else ""
+    order = "{343527, 31884}" if window_first else "{31884, 343527}"
+    run_lua(WINDOW_REENTRY_HARNESS + setup + f'''
+finish_test_sequence({order})
+enter_cooldown_reentry()
+local capture = AutoBurst.preWindowCapture
+assert(capture)
+eval("paused")
+cooldowns[343527] = "ready"
+for i = 1, 4 do
+    local barrier = eval("armed", true)
+    assert(barrier.kind == "hold", "resume must retain the authenticated handoff barrier")
+end
+assert(eval("armed", true).dispatchSpellID == {343527 if window_first else 31884})
+''')
+
+
+def test_window_reentry_binding_loss_cannot_authorize_a_new_plan() -> None:
+    run_lua(WINDOW_REENTRY_HARNESS + r"""
+finish_test_sequence({31884, 343527})
+enter_cooldown_reentry()
+assert(AutoBurst.preWindowCapture)
+bindings[343527] = "missing"
+cooldowns[343527] = "ready"
+assert(eval().kind ~= "candidate")
+assert(AutoBurst.preWindowCapture == nil and AutoBurst.plan == nil)
+assert(AutoBurst.requireWindowDeparture, "hard-invalid owned capture still uses the existing abort lock")
 """)
 
 
