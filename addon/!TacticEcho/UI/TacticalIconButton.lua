@@ -365,7 +365,9 @@ local function configureCooldown(frame, style)
     if frame.SetDrawBling then frame:SetDrawBling(false) end
     if frame.SetReverse then frame:SetReverse(reverse) end
     if frame.SetHideCountdownNumbers then frame:SetHideCountdownNumbers(true) end
-    frame:SetAlpha(enabled and alpha or 0)
+    -- Swipe opacity must not dim Blizzard's accurate countdown text.
+    if frame.SetSwipeColor then frame:SetSwipeColor(0, 0, 0, alpha) end
+    frame:SetAlpha(1)
     return enabled, reverse
 end
 
@@ -393,6 +395,17 @@ end
 local function setNativeCountdownNumbers(frame, visible)
     if frame and frame.SetHideCountdownNumbers then
         pcall(frame.SetHideCountdownNumbers, frame, visible ~= true)
+    end
+    -- Keep Blizzard as the text authority, but render its FontString alongside
+    -- our labels, above cooldown swipes and cast/press effects. No duration read.
+    if frame and frame.tacticEchoTextOverlay and frame.GetCountdownFontString then
+        local ok, text = pcall(frame.GetCountdownFontString, frame)
+        if ok and text then
+            if text.SetParent then text:SetParent(frame.tacticEchoTextOverlay) end
+            if text.SetDrawLayer then text:SetDrawLayer("OVERLAY", 7) end
+            if text.SetAlpha then text:SetAlpha(1) end
+            if text.SetShown then text:SetShown(visible == true) end
+        end
     end
 end
 
@@ -1113,6 +1126,7 @@ function TacticalIconButton:Create(parent, name, size, interactionRole)
         if frame.SetDrawEdge then frame:SetDrawEdge(drawEdge) end
         if frame.SetDrawBling then frame:SetDrawBling(false) end
         if frame.SetHideCountdownNumbers then frame:SetHideCountdownNumbers(true) end
+        frame:HookScript("OnHide", function(self) setNativeCountdownNumbers(self, false) end)
         frame:Hide()
     end
 
@@ -1207,6 +1221,9 @@ function TacticalIconButton:Create(parent, name, size, interactionRole)
     card.textOverlayFrame:SetAllPoints(card)
     card.textOverlayFrame:SetFrameLevel(card:GetFrameLevel() + 20)
     card.textOverlayFrame:EnableMouse(false)
+    card.cooldown.tacticEchoTextOverlay = card.textOverlayFrame
+    card.chargeCooldown.tacticEchoTextOverlay = card.textOverlayFrame
+    card.gcdCooldown.tacticEchoTextOverlay = card.textOverlayFrame
 
     card.hotkey = card.textOverlayFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     card.hotkey:SetJustifyH("RIGHT")

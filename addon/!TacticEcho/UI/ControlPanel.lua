@@ -768,8 +768,8 @@ function ControlPanel:ToggleAutoBurst(source)
     tactics.autoInjectionEnabled = tactics.autoInjectionEnabled ~= true
     tactics.autoBurstEnabled = tactics.autoInjectionEnabled
     panelStatus(tactics.autoInjectionEnabled == true
-        and "自动注入已开启；可派发状态显示 HAD。"
-        or "自动注入已关闭；可派发状态显示 LCC。")
+        and "自动注入已开启；HUD 常驻显示 HAD 与当前运行状态。"
+        or "自动注入已关闭；HUD 常驻显示 LCC，保留技能与冷却提示。")
     self:ApplyVisuals(false)
     return tactics.autoInjectionEnabled == true, source
 end

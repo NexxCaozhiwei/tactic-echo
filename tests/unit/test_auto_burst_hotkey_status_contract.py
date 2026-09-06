@@ -53,7 +53,7 @@ class AutoBurstHotkeyStatusContractTests(unittest.TestCase):
 
     def test_dispatchable_hud_line_uses_lcc_or_had_without_changing_icon_label(self) -> None:
         self.assertIn("tactics.autoInjectionEnabled", self.board)
-        self.assertIn('dispatchable = autoInjectionEnabled == true and "HAD" or "LCC"', self.board)
+        self.assertIn('dispatchable = "可用"', self.board)
         self.assertIn('if visual == "dispatchable" then', self.styles)
         self.assertNotIn('label = "HAD"', self.styles)
 

@@ -848,7 +848,7 @@ end
 -- action-slot label must name exactly one current macro whose parsed body
 -- references exactly one of slots 13/14. Duplicate same-name/same-slot bodies
 -- and dual-slot macros remain fail-closed.
-local function semanticInventoryMacroResolution(labelCandidates, layout, diag)
+local function semanticInventoryMacroResolution(labelCandidates, layout, diag, allowItemBody)
     diag.inventorySemanticAttempted = true
     diag.inventoryActionTextCandidateCount = 0
     diag.inventoryActionInfoNameCandidateCount = 0
@@ -926,7 +926,20 @@ local function semanticInventoryMacroResolution(labelCandidates, layout, diag)
         local slot14 = TE.MacroSemantics:MatchInventorySlot(semantics, 14, "broad") == true
         if slot13 ~= slot14 then matchedSlot = slot13 and 13 or 14 end
     end
-    if not matchedSlot then
+    -- Preserve existing /use ItemID/name sources in the explicit item-subtype
+    -- route too. This proves only current macro identity; ResolveItem must
+    -- still match the requested item's exact body semantics before use.
+    local itemBody = false
+    if allowItemBody == true and hasMacroBody(candidate.snapshot.body) and type(semantics) == "table" then
+        local hasInventorySlot = false
+        for _, action in ipairs(semantics.actions or {}) do
+            if action.kind == "item_slot" then hasInventorySlot = true end
+            if action.command == "/use" and action.kind == "spell_or_item" then itemBody = true end
+        end
+        if semantics.hasCastsequence == true then itemBody = true end
+        if hasInventorySlot then itemBody = false end
+    end
+    if not matchedSlot and not itemBody then
         diag.inventorySemanticRejectedCount = 1
         diag.failureReason = "macro_semantic_identity_no_inventory_match"
         return nil
@@ -936,6 +949,7 @@ local function semanticInventoryMacroResolution(labelCandidates, layout, diag)
     local lookupSource = source == "action_info_macro_name"
         and "action_info_name_unique_inventory_semantic"
         or "action_text_unique_inventory_semantic"
+    if not matchedSlot then lookupSource = "action_text_unique_item_semantic" end
     diag.lookupByActionText = source == "action_text"
     diag.lookupByActionInfoName = source == "action_info_macro_name"
     diag.semanticNameSource = source
@@ -946,7 +960,7 @@ local function semanticInventoryMacroResolution(labelCandidates, layout, diag)
     return setResolvedMacro(diag, candidate.snapshot, candidate.spellInfo, lookupSource, lookupSource)
 end
 
-local function resolveMacroFromActionSlot(actionSlot, actionInfoID, actionMacroSpellID)
+local function resolveMacroFromActionSlot(actionSlot, actionInfoID, actionMacroSpellID, subType)
     local diag = {
         actionSlot = actionSlot,
         actionInfoId = actionInfoID,
@@ -954,6 +968,7 @@ local function resolveMacroFromActionSlot(actionSlot, actionInfoID, actionMacroS
         actionMacroSpellID = normalizeSpellID(actionMacroSpellID),
         macroIdentitySource = "unresolved",
         macroIdentityVerified = false,
+        subType = subType,
     }
 
     local okText, actionText = safeCall(GetActionText, actionSlot)
@@ -964,6 +979,25 @@ local function resolveMacroFromActionSlot(actionSlot, actionInfoID, actionMacroS
         diag.accountMacroCount = layout.accountCount
         diag.characterMacroCount = layout.characterCount
         diag.characterMacroStart = layout.characterStart
+    end
+
+    -- Retail's explicit item subtype can report an item-action handle which
+    -- numerically collides with an account macro index (observed: 32 for /use
+    -- 13 in character macro 143). Never read that handle as a macro identity.
+    -- Reuse the unique current action-label + indexed inventory-body join.
+    if subType == "item" then
+        diag.actionInfoLooksLikeMacroIndex = false
+        diag.actionInfoItemHandle = true
+        local labels = {}
+        if type(diag.actionText) == "string" and diag.actionText ~= "" then
+            labels[1] = { name = diag.actionText, source = "action_text" }
+        end
+        local inventory = semanticInventoryMacroResolution(labels, layout, diag, true)
+        if not inventory and not diag.failureReason then
+            diag.failureReason = #labels == 0 and "macro_action_text_missing"
+                or "macro_action_text_name_not_found"
+        end
+        return diag
     end
 
     local direct = directMacroIndexResolution(actionInfoID, diag.actionText, layout, diag)
@@ -1156,7 +1190,7 @@ end
 
 
 local function buildMacroEntry(base, actionInfoID, subType, actionMacroSpellID)
-    local diag = resolveMacroFromActionSlot(base.actionSlot, actionInfoID, actionMacroSpellID)
+    local diag = resolveMacroFromActionSlot(base.actionSlot, actionInfoID, actionMacroSpellID, subType)
     diag.slot = base.actionSlot
     diag.buttonName = base.buttonName
     diag.bindingCommand = base.bindingCommand
@@ -1613,6 +1647,23 @@ function Resolver:IsAutoBurstMacroEligible(value)
     return true, nil
 end
 
+-- Binding a macro to a spell does not make its displayed action state that
+-- spell's state. Multi-spell/sequence macros may display another action even
+-- while the requested spell is present in the verified body.
+function Resolver:IsSpellActionStateTrusted(value)
+    value = type(value) == "table" and value or {}
+    if value.source ~= "macro" then return value.actionBarStateTrusted == true or value.directActionSlot == true end
+    if self:IsVerifiedCurrentMacroSource(value, value.macroAssociation) ~= true then return false end
+    local semantics = value.macroSemantics
+    if semantics.hasCastsequence == true then return false end
+    for _, action in ipairs(semantics.actions or {}) do
+        if action.kind == "item_slot" then return false end
+    end
+    local spellID = tonumber(value.matchedSpellID or value.spellID or value.requestedSpellID)
+    if not spellID or not TE.MacroSemantics then return false end
+    return TE.MacroSemantics:MatchSpell(semantics, spellID, getSpellName(spellID), "strict") == true
+end
+
 
 -- Diagnostics are request-scoped.  An unrelated visible macro is not evidence
 -- for a requested control spell and must never be rendered as that spell's
@@ -1749,9 +1800,15 @@ local function makeCandidate(entry, spellID, association, matchedSpellID, matchK
         }
         macroAutoBurstEligible = Resolver:IsAutoBurstMacroEligible(eligibilityValue) == true
     end
-    local actionBarStateTrusted = entry.actionSlot ~= nil and (
-        not isMacro or macroAutoBurstEligible == true
-    )
+    local actionBarStateTrusted = entry.actionSlot ~= nil and not isMacro
+    if isMacro then
+        actionBarStateTrusted = Resolver:IsSpellActionStateTrusted({
+            source = "macro", macroDiagnostic = entry.macroDiagnostic,
+            macroOpaqueRepresentedSpell = entry.macroOpaqueRepresentedSpell,
+            macroSemantics = semantics, macroAssociation = macroAssociation,
+            matchedSpellID = matchedSpellID or spellID,
+        })
+    end
     return {
         spellID = spellID,
         slot = entry.actionSlot,

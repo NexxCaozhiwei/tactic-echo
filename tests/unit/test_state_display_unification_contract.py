@@ -59,7 +59,7 @@ class StateDisplayUnificationContractTests(unittest.TestCase):
         board = BOARD.read_text(encoding="utf-8")
         styles = STYLES.read_text(encoding="utf-8")
         icon = ICON.read_text(encoding="utf-8")
-        self.assertIn('dispatchable = autoInjectionEnabled == true and "HAD" or "LCC"', board)
+        self.assertIn('dispatchable = "可用"', board)
         self.assertIn('if visual == "dispatchable" then', styles)
         self.assertNotIn('label = "HAD"', styles)
         self.assertIn('channeling = "引导中"', board)

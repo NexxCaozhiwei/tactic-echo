@@ -1077,6 +1077,15 @@ local function optionalInjectionUsabilityGate(step, cycle, bindingInfo, iconStat
     local observations = {}
     for _, probe in ipairs(probes) do
         local fn = runtime[probe.method]
+        -- A multi-spell/sequence macro's button may describe a different spell.
+        -- Keep its existing token, but obtain this step's usability by SpellID.
+        if probe.source == "action" and bindingInfo.source == "macro" then
+            local resolver = TE.ActionBarBindingResolver
+            if not resolver or type(resolver.IsSpellActionStateTrusted) ~= "function"
+                or resolver:IsSpellActionStateTrusted(bindingInfo) ~= true then
+                fn = nil
+            end
+        end
         if type(fn) == "function" then
             local ok, usable, notEnoughResource, usabilityReason = pcall(
                 fn, runtime, runtimeSnapshot, probe.value
@@ -5172,13 +5181,10 @@ function AutoBurst:BuildHudSnapshot(primary, context, settings, runtimeSnapshot)
     -- compact mode and debug settings no longer decide which cards are shown.
     local autoInjectionEnabled = settings.autoInjectionEnabled
     if autoInjectionEnabled == nil then autoInjectionEnabled = settings.autoBurstEnabled end
-    if autoInjectionEnabled ~= true then
-        out.state, out.stateLabel, out.notice = "SUPPRESSED", "自动注入关闭", "开启自动注入后按组顺序显示全部已启用组"
-        return out
-    end
     local coordinator = TE.AutoInjectionCoordinator
     local coordinatorSnapshot = coordinator and coordinator:GetSnapshot(context) or {}
     local activeGroupId = stateSnapshot and stateSnapshot.activeGroupId or coordinatorSnapshot.activeGroupId
+    if autoInjectionEnabled ~= true then activeGroupId = nil end
     out.items, out.profileKey, out.diagnostics, out.displayedGroups = hudConfiguredGroups(
         runtimeSnapshot, context, activeGroupId)
     out.activeGroupId = activeGroupId
@@ -5188,6 +5194,10 @@ function AutoBurst:BuildHudSnapshot(primary, context, settings, runtimeSnapshot)
     out.recommendationState = out.active and "auto_injection_group_sequences" or "sequence_unavailable"
     out.notice = out.active and ("已按组顺序显示 " .. tostring(out.displayGroupCount) .. " 个自动注入组")
         or "当前专精没有已启用且可显示的自动注入组"
+    if autoInjectionEnabled ~= true then
+        out.state, out.stateLabel = "DISPLAY_ONLY", "自动注入关闭"
+        out.notice = "自动注入关闭；保留已启用组的只读技能与冷却提示"
+    end
     return out
 end
 

@@ -163,7 +163,7 @@ local function statusText(primary)
     local autoInjectionEnabled = tactics and tactics.autoInjectionEnabled
     if autoInjectionEnabled == nil and tactics then autoInjectionEnabled = tactics.autoBurstEnabled end
     local labels = {
-        dispatchable = autoInjectionEnabled == true and "HAD" or "LCC",
+        dispatchable = "可用",
         primary = "官方推荐",
         display_only = "仅显示",
         blocked = "已阻断",
@@ -179,7 +179,8 @@ local function statusText(primary)
         unbound = "无绑定",
         unknown = "状态未知",
     }
-    return labels[visual.visualState] or visual.label or "等待官方推荐"
+    local mode = autoInjectionEnabled == true and "|cff66ccffHAD|r" or "|cffffcc66LCC|r"
+    return mode .. "  |  " .. (labels[visual.visualState] or visual.label or "等待官方推荐")
 end
 
 -- Do not use tostring/table.concat directly on fields copied from a WoW API
@@ -372,7 +373,7 @@ local function ensureBoard()
     nodes.primary.settingsPage = "main"
     for _, card in ipairs(nodes.tactical.burst) do card.settingsPage = "burst" end
 
-    board.statusText = board:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+    board.statusText = board:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     board.statusText:SetJustifyH("LEFT")
     board.statusText:SetTextColor(0.76, 0.84, 0.96)
     board.statusText:Hide()
@@ -454,7 +455,7 @@ local function renderInternal(self, snapshot)
     end
 
     board.statusText:SetText(statusText(primary))
-    applyFrameShown(board.statusText, hud.showStatusText ~= false and primary and primary.hidden ~= true)
+    applyFrameShown(board.statusText, hud.showStatusText ~= false)
     TacticalHudLayout:Apply(board, defenseFrame, nodes, hud)
     -- TacticalHudLayout owns coordinates and base sizing. Apply effective
     -- combat-state presentation afterward so its internal layout cache never
