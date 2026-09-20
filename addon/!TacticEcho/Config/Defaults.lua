@@ -14,6 +14,8 @@ local Defaults = {
         protocolMode = "v3_dynamic",
         toggleHotkey = "",
         autoBurstToggleHotkey = "",
+        specialModeToggleHotkey = "",
+        specialModeEnabled = false,
         performanceDiagnostics = false,
     },
     hud = {

@@ -1160,6 +1160,19 @@ function SignalFrame:BuildBusinessMessage(reason, sampledSpellID, sampledStatus,
         runtimeReason = reactionDecision.reason or runtimeReason or "reaction_interrupt_hold"
     end
 
+    local specialSelection
+    if dispatchOrigin == "official" and dispatchSpellID and TE.SpecialMode then
+        specialSelection = TE.SpecialMode:Select(officialSpellID, context)
+        if specialSelection then
+            dispatchSpellID = specialSelection.spellID
+            runtimeReason = runtimeReason or "special_mode_replacement"
+            if not dispatchSpellID then
+                observationOnly = true
+                runtimeReason = specialSelection.reason
+            end
+        end
+    end
+
     if manualPriorityObservation then
         -- Do this after both candidate selectors so even a previously queued
         -- Burst/Reaction decision cannot retain a live token during a direct
@@ -1202,6 +1215,22 @@ function SignalFrame:BuildBusinessMessage(reason, sampledSpellID, sampledStatus,
             )
         else
             rememberOfficialBinding(nil, nil, nil, nil)
+        end
+    end
+    if specialSelection and not manualPriorityObservation and dispatchSpellID and outputState ~= "armed" then
+        bindingInfo = nil
+        observationOnly = true
+    elseif specialSelection and not manualPriorityObservation and dispatchSpellID then
+        -- Reuse the ordinary resolver and transport envelope, but validate the
+        -- replacement's own cooldown. Failure never falls back to the source.
+        local ok, allowed, specialReason = pcall(TE.SpecialMode.CanDispatch,
+            TE.SpecialMode, dispatchSpellID, bindingInfo, runtimeSnapshot)
+        if not ok or not allowed then
+            bindingInfo = nil
+            observationOnly = true
+            runtimeReason = ok and specialReason or "special_mode_evaluator_error"
+        else
+            runtimeReason = runtimeReason or specialReason
         end
     end
     local action, legacyCatalogReason

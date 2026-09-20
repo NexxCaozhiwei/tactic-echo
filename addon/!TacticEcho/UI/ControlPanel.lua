@@ -1,5 +1,5 @@
 -- Tactic Echo settings center (TEUI v2).
--- The four current pages cover runtime, HUD, Auto Injection and profiles. This file
+-- Current pages cover runtime, HUD, Auto Injection, Special Mode and profiles. This file
 -- only changes settings/presentation and never creates a recommendation,
 -- BindingToken, TEAP frame or TEK input request.
 local TE = _G.TacticEcho
@@ -30,6 +30,10 @@ local autoBurstHotkeyOwner
 local autoBurstHotkeyCapture
 local pendingAutoBurstHotkey
 local pendingAutoBurstApplyAfterCombat = false
+local specialModeHotkeyOwner
+local specialModeHotkeyCapture
+local pendingSpecialModeHotkey
+local pendingSpecialModeApplyAfterCombat = false
 local pendingCompactPositionSave = false
 local compactToggleButton
 
@@ -57,10 +61,11 @@ local PAGE_META = {
     general = { label = "常规", description = "运行状态、手动启停 / 脱战策略与 Tactic Echo 自身快捷键。" },
     hud = { label = "HUD", description = "主键与自动注入队列的显示、大小、方向和常用外观。" },
     burst = { label = "自动注入", description = "自动注入总开关、技能组、执行模式与九步顺序。" },
+    special = { label = "特殊模式", description = "按专精保存三组官方推荐替换；自动注入照常运行。" },
     profiles = { label = "配置文件", description = "保存、载入和管理配置；范围自动切换位于高级设置。" },
 }
 
-local NAV_ORDER = { "general", "hud", "burst", "profiles" }
+local NAV_ORDER = { "general", "hud", "burst", "special", "profiles" }
 local LEGACY_PAGE_ALIAS = {
     main = "hud", tactics = "hud", interrupt = "hud", control = "hud",
     defense = "hud", defensive = "hud", actionbar = "general",
@@ -547,8 +552,8 @@ end
 function ControlPanel:ApplyToggleHotkey(binding, fromStored)
     binding = type(binding) == "string" and binding or ""
     local settings = ensureSettings()
-    if binding ~= "" and binding == settings.autoBurstToggleHotkey then
-        setHotkeyHint("启动/暂停快捷键不能与自动注入快捷键相同。")
+    if binding ~= "" and (binding == settings.autoBurstToggleHotkey or binding == settings.specialModeToggleHotkey) then
+        setHotkeyHint("启动/暂停快捷键不能与自动注入或特殊模式快捷键相同。")
         return false, "auto_burst_hotkey_conflict"
     end
     if not fromStored then settings.toggleHotkey = binding end
@@ -606,8 +611,8 @@ end
 function ControlPanel:ApplyAutoBurstHotkey(binding, fromStored)
     binding = type(binding) == "string" and binding or ""
     local settings = ensureSettings()
-    if binding ~= "" and binding == settings.toggleHotkey then
-        setAutoBurstHotkeyHint("自动注入快捷键不能与启动/暂停快捷键相同。")
+    if binding ~= "" and (binding == settings.toggleHotkey or binding == settings.specialModeToggleHotkey) then
+        setAutoBurstHotkeyHint("自动注入快捷键不能与启动/暂停或特殊模式快捷键相同。")
         return false, "toggle_hotkey_conflict"
     end
     if not fromStored then settings.autoBurstToggleHotkey = binding end
@@ -648,6 +653,67 @@ end
 
 function ControlPanel:ApplyStoredAutoBurstHotkey()
     return self:ApplyAutoBurstHotkey(ensureSettings().autoBurstToggleHotkey or "", true)
+end
+
+local function ensureSpecialModeHotkeyOwner()
+    if specialModeHotkeyOwner then return specialModeHotkeyOwner end
+    specialModeHotkeyOwner = CreateFrame("Button", "TacticEchoSpecialModeToggleHotkeyButton", UIParent)
+    specialModeHotkeyOwner:SetSize(1, 1)
+    specialModeHotkeyOwner:SetPoint("TOPLEFT", UIParent, "TOPLEFT", -12, 12)
+    specialModeHotkeyOwner:SetAlpha(0)
+    specialModeHotkeyOwner:RegisterForClicks("AnyUp")
+    specialModeHotkeyOwner:SetScript("OnClick", function()
+        if TE.ControlPanel then TE.ControlPanel:ToggleSpecialMode("hotkey") end
+    end)
+    specialModeHotkeyOwner:Show()
+    return specialModeHotkeyOwner
+end
+
+function ControlPanel:ApplySpecialModeHotkey(binding, fromStored)
+    binding = type(binding) == "string" and binding or ""
+    local settings = ensureSettings()
+    if binding ~= "" and (binding == settings.toggleHotkey or binding == settings.autoBurstToggleHotkey) then
+        panelStatus("特殊模式快捷键不能与启动/暂停或自动注入快捷键相同。")
+        return false, "toggle_hotkey_conflict"
+    end
+    if not fromStored then settings.specialModeToggleHotkey = binding end
+    pendingSpecialModeHotkey = binding
+    if InCombatLockdown and InCombatLockdown() then
+        pendingSpecialModeApplyAfterCombat = true
+        panelStatus("特殊模式快捷键已保存，将在脱战后应用：" .. formatHotkey(binding))
+        self:UpdateInputStatus()
+        return false, "deferred_in_combat"
+    end
+    local owner = ensureSpecialModeHotkeyOwner()
+    local clearOk, clearError = pcall(function()
+        if type(ClearOverrideBindings) == "function" then ClearOverrideBindings(owner) end
+    end)
+    if not clearOk then
+        panelStatus("清除旧特殊模式快捷键失败：" .. tostring(clearError))
+        return false, "clear_override_failed"
+    end
+    if binding ~= "" then
+        if type(SetOverrideBindingClick) ~= "function" then
+            panelStatus("当前客户端不支持临时覆盖快捷键")
+            return false, "override_binding_unavailable"
+        end
+        local ok, err = pcall(SetOverrideBindingClick, owner, true, binding,
+            "TacticEchoSpecialModeToggleHotkeyButton", "LeftButton")
+        if not ok then
+            panelStatus("应用特殊模式快捷键失败：" .. tostring(err))
+            return false, "override_binding_failed"
+        end
+    end
+    pendingSpecialModeApplyAfterCombat = false
+    settings.specialModeToggleHotkey = binding
+    panelStatus(binding == "" and "特殊模式快捷键已清除。"
+        or ("特殊模式快捷键已应用：" .. formatHotkey(binding)))
+    self:UpdateInputStatus()
+    return true
+end
+
+function ControlPanel:ApplyStoredSpecialModeHotkey()
+    return self:ApplySpecialModeHotkey(ensureSettings().specialModeToggleHotkey or "", true)
 end
 
 local function ensureHotkeyCapture()
@@ -710,6 +776,38 @@ local function ensureAutoBurstHotkeyCapture()
     end)
     autoBurstHotkeyCapture:Hide()
     return autoBurstHotkeyCapture
+end
+
+local function ensureSpecialModeHotkeyCapture()
+    if specialModeHotkeyCapture then return specialModeHotkeyCapture end
+    specialModeHotkeyCapture = CreateFrame("EditBox", "TacticEchoSpecialModeHotkeyCapture", UIParent, "InputBoxTemplate")
+    specialModeHotkeyCapture:SetSize(1, 1)
+    specialModeHotkeyCapture:SetPoint("CENTER", UIParent, "CENTER", 0, 0)
+    specialModeHotkeyCapture:SetAlpha(0)
+    specialModeHotkeyCapture:SetFrameStrata("TOOLTIP")
+    specialModeHotkeyCapture:SetAutoFocus(false)
+    specialModeHotkeyCapture:EnableKeyboard(true)
+    if type(specialModeHotkeyCapture.SetPropagateKeyboardInput) == "function" then
+        specialModeHotkeyCapture:SetPropagateKeyboardInput(false)
+    end
+    specialModeHotkeyCapture:SetScript("OnEscapePressed", function(box)
+        box:ClearFocus(); box:Hide()
+        panelStatus("特殊模式快捷键录入已取消。")
+    end)
+    specialModeHotkeyCapture:SetScript("OnKeyDown", function(box, key)
+        local captured = normalizeCapturedHotkey(key)
+        if not captured then return end
+        box:ClearFocus(); box:Hide()
+        if captured == "__cancel" then
+            panelStatus("特殊模式快捷键录入已取消。")
+            return
+        end
+        pendingSpecialModeHotkey = captured
+        panelStatus("待应用的特殊模式快捷键：" .. formatHotkey(captured) .. "。点击“应用”提交。")
+        ControlPanel:UpdateInputStatus()
+    end)
+    specialModeHotkeyCapture:Hide()
+    return specialModeHotkeyCapture
 end
 
 function ControlPanel:BeginToggleHotkeyCapture()
@@ -1590,7 +1688,95 @@ local function buildProfiles(pane)
     refreshAdvanced()
 end
 
+
+function ControlPanel:ToggleSpecialMode()
+    local settings = ensureSettings()
+    settings.specialModeEnabled = settings.specialModeEnabled ~= true
+    panelStatus(settings.specialModeEnabled and "特殊模式已开启" or "特殊模式已关闭")
+    if TE.SignalFrame then TE.SignalFrame:Refresh("special_mode_toggle") end
+    self:ApplyVisuals(false)
+end
+
+local function buildSpecial(pane)
+    local y = createSection(pane, "特殊模式", -12)
+    createCheckbox(pane, "启用特殊模式", LEFT_X, y,
+        function() return TE.SpecialMode:IsEnabled() end,
+        function() ControlPanel:ToggleSpecialMode() end)
+    y = y - 40
+    createText(pane, "GameFontDisableSmall", LEFT_X, y, 690,
+        "只替换官方推荐；自动注入照常运行。命中后替换技能不可用时等待，不回退原技能。")
+    y = y - 40
+    local hotkey = createEditBox(pane, "切换快捷键", LEFT_X, y, 150, ensureSettings().specialModeToggleHotkey)
+    hotkey:SetScript("OnTextChanged", function(_, userInput)
+        if userInput then pendingSpecialModeHotkey = nil end
+    end)
+    createActionButton(pane, "录入", 320, y, 70, function()
+        local capture = ensureSpecialModeHotkeyCapture()
+        capture:SetText(""); capture:Show(); capture:SetFocus()
+        panelStatus("请按快捷键组合，Esc 取消；录入后点击应用。")
+    end)
+    createActionButton(pane, "应用", 402, y, 70, function()
+        ControlPanel:ApplySpecialModeHotkey(pendingSpecialModeHotkey or hotkey:GetText(), false)
+        hotkey:SetText(ensureSettings().specialModeToggleHotkey or "")
+        pendingSpecialModeHotkey = nil
+    end)
+    createActionButton(pane, "清除", 484, y, 70, function()
+        pendingSpecialModeHotkey = nil
+        ControlPanel:ApplySpecialModeHotkey("", false); hotkey:SetText("")
+    end)
+    y = y - 55
+    createText(pane, "GameFontDisableSmall", LEFT_X, y, 690,
+        "两栏只填写数字 SpellID。先保存替换，再启用该组；已启用组的原技能不能重复。")
+    y = y - 40
+    for i = 1, 3 do
+        local index = i
+        y = createSection(pane, "替换组 " .. i, y)
+        local function current()
+            local groups = TE.SpecialMode:GetGroups(nil, true)
+            return groups and groups[index] or {}
+        end
+        createCheckbox(pane, "启用本组", LEFT_X, y, function() return current().enabled end, function(value)
+            local group = current()
+            if not value then group.enabled = false
+            else
+                local ok, reason = TE.SpecialMode:Configure(index, group.sourceSpellID, group.targetSpellID, true)
+                if not ok then panelStatus(reason) end
+            end
+            if TE.SignalFrame then TE.SignalFrame:Refresh("special_mode_config") end
+        end)
+        y = y - 36
+        local source = createEditBox(pane, "原技能 SpellID", LEFT_X, y, 150, "")
+        local target = createEditBox(pane, "替换 SpellID", RIGHT_X, y, 150, "")
+        local loadedKey, loadedGroups
+        registerControl(function()
+            local groups, key = TE.SpecialMode:GetGroups(nil, true)
+            if key ~= loadedKey or groups ~= loadedGroups then
+                local group = groups and groups[index] or {}
+                source:SetText(tostring(group.sourceSpellID or ""))
+                target:SetText(tostring(group.targetSpellID or ""))
+                loadedKey = key
+                loadedGroups = groups
+            end
+        end)
+        y = y - 36
+        createActionButton(pane, "保存替换", LEFT_X, y, 110, function()
+            local groups, key = TE.SpecialMode:GetGroups(nil, true)
+            if key ~= loadedKey or groups ~= loadedGroups then panelStatus("配置或专精已变化，请重新编辑。"); return end
+            local ok, reason = TE.SpecialMode:Configure(index, source:GetText(), target:GetText(), current().enabled)
+            panelStatus(ok and "替换组已保存。" or reason)
+            if ok then
+                source:ClearFocus(); target:ClearFocus()
+                ControlPanel:ApplyVisuals(false)
+                if TE.SignalFrame then TE.SignalFrame:Refresh("special_mode_config") end
+            end
+        end)
+        y = y - 52
+    end
+    pane:SetHeight(math.abs(y) + 24)
+end
+
 local BUILDERS = {
+    special = buildSpecial,
     general = buildGeneral,
     hud = buildHUD,
     burst = buildBurst,
@@ -1774,6 +1960,7 @@ eventFrame:SetScript("OnEvent", function(_, event)
     if event == "PLAYER_REGEN_ENABLED" then
         if pendingApplyAfterCombat then ControlPanel:ApplyStoredToggleHotkey() end
         if pendingAutoBurstApplyAfterCombat then ControlPanel:ApplyStoredAutoBurstHotkey() end
+        if pendingSpecialModeApplyAfterCombat then ControlPanel:ApplyStoredSpecialModeHotkey() end
         if pendingCompactPositionSave then
             pendingCompactPositionSave = false
             if root().minimized == true then savePanelPosition("compact") end
@@ -1784,6 +1971,7 @@ eventFrame:SetScript("OnEvent", function(_, event)
     ControlPanel:Create()
     ControlPanel:ApplyStoredToggleHotkey()
     ControlPanel:ApplyStoredAutoBurstHotkey()
+    ControlPanel:ApplyStoredSpecialModeHotkey()
     if store.visible and store.minimized == true then
         frame:Show()
         ControlPanel:UpdateInputStatus()
@@ -1805,6 +1993,8 @@ SlashCmdList.TACTICECHOUI = function(message)
         ControlPanel:Show("hud")
     elseif command == "main" or command == "primary" then
         ControlPanel:Show("main")
+    elseif command == "special" then
+        ControlPanel:Show("special")
     elseif command == "burst" then
         ControlPanel:Show("burst")
     elseif command == "interrupt" then

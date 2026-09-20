@@ -149,6 +149,12 @@ function ProfileManager:Activate(name, reason)
     root.tactics = copy(source.tactics or {})
     store.activeName = name
     store.lastActivationReason = reason or "manual"
+    if TE.ControlPanel and TE.ControlPanel.ApplyStoredSpecialModeHotkey then
+        TE.ControlPanel:ApplyStoredSpecialModeHotkey()
+    end
+    if TE.SignalFrame and TE.SignalFrame.GetLastEncoded and TE.SignalFrame:GetLastEncoded() then
+        TE.SignalFrame:Refresh("profile_special_mode")
+    end
     return true, name
 end
 

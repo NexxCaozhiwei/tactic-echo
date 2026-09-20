@@ -13,7 +13,7 @@ def read(relative: str) -> str:
 
 def test_settings_center_has_only_current_product_pages() -> None:
     control = read("UI/ControlPanel.lua")
-    assert 'local NAV_ORDER = { "general", "hud", "burst", "profiles" }' in control
+    assert 'local NAV_ORDER = { "general", "hud", "burst", "special", "profiles" }' in control
     assert 'main = "hud"' in control
     assert "general = buildGeneral" in control
     assert "hud = buildHUD" in control

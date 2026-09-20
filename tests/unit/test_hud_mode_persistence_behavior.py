@@ -13,7 +13,7 @@ def section(path, start, end):
 
 def test_mode_survives_all_runtime_states():
     helper = section("UI/TacticalBoard.lua", "local function statusText(primary)", "-- Do not use tostring")
-    run_lua(helper + '''
+    run_lua('local special = false\nlocal TE = {SpecialMode = {IsEnabled = function() return special end}}\n' + helper + '''
 for _, enabled in ipairs({true, false}) do
     TacticEchoDB = {tactics = {autoInjectionEnabled = enabled}}
     for _, state in ipairs({"paused", "standby", "dispatchable", "blocked", "channeling", "unknown"}) do
@@ -23,6 +23,10 @@ for _, enabled in ipairs({true, false}) do
     end
 end
 assert(statusText(nil):find("LCC", 1, true))
+special = true
+assert(statusText(nil):find("特殊", 1, true))
+special = false
+assert(not statusText(nil):find("特殊", 1, true))
 ''')
 
 

@@ -180,6 +180,7 @@ local function statusText(primary)
         unknown = "状态未知",
     }
     local mode = autoInjectionEnabled == true and "|cff66ccffHAD|r" or "|cffffcc66LCC|r"
+    if TE.SpecialMode and TE.SpecialMode:IsEnabled() then mode = mode .. "  |  特殊" end
     return mode .. "  |  " .. (labels[visual.visualState] or visual.label or "等待官方推荐")
 end
 

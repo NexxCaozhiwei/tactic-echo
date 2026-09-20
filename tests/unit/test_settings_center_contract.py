@@ -16,7 +16,7 @@ class SettingsCenterContractTests(unittest.TestCase):
             'label = "HUD"',
             'label = "自动注入"',
             'label = "配置文件"',
-            'local NAV_ORDER = { "general", "hud", "burst", "profiles" }',
+            'local NAV_ORDER = { "general", "hud", "burst", "special", "profiles" }',
             'TacticEchoSettingsCenter',
         ):
             self.assertIn(token, text)
