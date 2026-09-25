@@ -16,6 +16,7 @@ local Defaults = {
         autoBurstToggleHotkey = "",
         specialModeToggleHotkey = "",
         specialModeEnabled = false,
+        highlightRecommendationEnabled = false,
         performanceDiagnostics = false,
     },
     hud = {
@@ -122,6 +123,9 @@ local Defaults = {
         -- The old legacy manual-rule hand-entered SpellID test rule is intentionally
         -- retired: runtime plans always resolve through the real profile lists.
         autoBurstMode = "simple", -- simple | focused
+        -- A per-spec disabled map is maintained by HighlightRecommendation;
+        -- action-bar candidates default to prioritized when this feature is on.
+        highlightRecommendationProfiles = {},
         interruptDisplayMode = "cast",
         controlDisplayMode = "cast",
         defensiveDisplayMode = "condition",

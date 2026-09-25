@@ -1549,8 +1549,8 @@ function Resolver:GetCacheSummary(resolveContext)
     }
 end
 
-function Resolver:GetButtonCache()
-    return self:EnsureCache("get_cache")
+function Resolver:GetButtonCache(resolveContext)
+    return self:EnsureCache("get_cache", resolveContext)
 end
 
 -- P5.5/P5.6 policy: representative action-info spell evidence is not a

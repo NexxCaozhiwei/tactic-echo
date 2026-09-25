@@ -142,7 +142,7 @@ end
 
 local MAX_SIGNAL_FRAMES = 60
 local SIGNAL_HISTORY_HEARTBEAT_SECONDS = 0.50
-local SEQUENCE_STATE_FIELD_COUNT = 27
+local SEQUENCE_STATE_FIELD_COUNT = 28
 local DISPATCH_ATTEMPT_STATE_INDEX = 19
 
 local function sameSequenceState(left, right)
@@ -219,6 +219,8 @@ local function remember(encoded, reason, sequenceState, observedAt)
         monitor = encoded.monitor,
         monitorFlags = encoded.monitorFlags,
         dispatchOrigin = encoded.dispatchOrigin,
+        recommendationSource = encoded.recommendationSource,
+        highlightRecommendation = encoded.highlightRecommendation,
         officialSpellID = encoded.officialSpellID,
         dispatchSpellID = encoded.dispatchSpellID,
         burstPlan = encoded.burstPlan,
@@ -1098,6 +1100,27 @@ function SignalFrame:BuildBusinessMessage(reason, sampledSpellID, sampledStatus,
         end
     end
 
+    -- A verified action-bar spell with an explicit client activation overlay
+    -- can take ordinary dispatch priority. This selector never mutates the
+    -- immutable official recommendation consumed by AutoInjectionCoordinator.
+    local highlightDecision, highlightAudit
+    -- AutoBurst's normal no-owner result is `kind="none"`; treating it as
+    -- busy here prevented the ordinary highlight selector from running on
+    -- almost every frame. Both `none` and the legacy `idle` mean that Burst
+    -- has no candidate or ownership to protect.
+    local burstIdle = not autoDecision or autoDecision.kind == "idle" or autoDecision.kind == "none"
+    local reactionIdle = not reactionDecision or (reactionDecision.kind ~= "candidate" and reactionDecision.kind ~= "hold")
+    if outputState == "armed" and not manualPriorityObservation and not inputFocusActive
+        and not castLock.active and burstIdle and reactionIdle and TE.HighlightRecommendation then
+        local ok, decision, audit = pcall(TE.HighlightRecommendation.Evaluate, TE.HighlightRecommendation,
+            context, resolveContext, runtimeSnapshot)
+        if ok then
+            highlightDecision, highlightAudit = decision, audit
+        else
+            highlightAudit = { reason = "highlight_evaluator_error" }
+        end
+    end
+
     -- P5.8 has no out-of-combat Burst transport exception. Session policy
     -- remains authoritative until combat begins; therefore no AutoBurst result
     -- may elevate the protocol envelope while `inCombat` is false.
@@ -1117,6 +1140,7 @@ function SignalFrame:BuildBusinessMessage(reason, sampledSpellID, sampledStatus,
     local observationOnly = explicitObservationOnly or burstHoldObservation or reactionHoldObservation or manualPriorityObservation
 
     local dispatchOrigin = "official"
+    local dispatchRecommendationSource = "official"
     local dispatchSpellID = officialSpellID
     local dispatchActionKind = "spell"
     local dispatchInventorySlot = nil
@@ -1129,6 +1153,7 @@ function SignalFrame:BuildBusinessMessage(reason, sampledSpellID, sampledStatus,
     local officialBindingInfo, officialBindingReason
     if autoDecision and autoDecision.kind == "candidate" then
         dispatchOrigin = "burst"
+        dispatchRecommendationSource = "auto_injection"
         dispatchSpellID = tonumber(autoDecision.dispatchSpellID)
         dispatchActionKind = autoDecision.dispatchActionKind == "inventory" and "inventory" or "spell"
         dispatchInventorySlot = tonumber(autoDecision.dispatchInventorySlot)
@@ -1141,11 +1166,13 @@ function SignalFrame:BuildBusinessMessage(reason, sampledSpellID, sampledStatus,
         -- through to the official action, without turning the whole runtime
         -- into a paused/manual state.
         dispatchOrigin = "burst"
+        dispatchRecommendationSource = "auto_injection"
         dispatchSpellID = nil
         dispatchActionKind = "hold"
         runtimeReason = autoDecision.reason or runtimeReason or "burst_hold"
     elseif reactionDecision and reactionDecision.kind == "candidate" then
         dispatchOrigin = "reaction"
+        dispatchRecommendationSource = "reaction"
         dispatchSpellID = tonumber(reactionDecision.dispatchSpellID)
         dispatchActionKind = "spell"
         bindingInfo = reactionDecision.bindingInfo
@@ -1155,13 +1182,20 @@ function SignalFrame:BuildBusinessMessage(reason, sampledSpellID, sampledStatus,
         -- into an observation hold. P4.4 keeps a stable candidate alive
         -- until cast exit and lets TEK dedupe that stable sequence after output.
         dispatchOrigin = "reaction"
+        dispatchRecommendationSource = "reaction"
         dispatchSpellID = nil
         dispatchActionKind = "hold"
         runtimeReason = reactionDecision.reason or runtimeReason or "reaction_interrupt_hold"
+    elseif highlightDecision and highlightDecision.spellID then
+        dispatchRecommendationSource = "highlight"
+        dispatchSpellID = tonumber(highlightDecision.spellID)
+        bindingInfo = highlightDecision.bindingInfo
+        runtimeReason = highlightDecision.reason or "highlight_dispatch"
     end
 
     local specialSelection
-    if dispatchOrigin == "official" and dispatchSpellID and TE.SpecialMode then
+    if dispatchOrigin == "official" and dispatchRecommendationSource == "official"
+        and dispatchSpellID and TE.SpecialMode then
         specialSelection = TE.SpecialMode:Select(officialSpellID, context)
         if specialSelection then
             dispatchSpellID = specialSelection.spellID
@@ -1184,6 +1218,7 @@ function SignalFrame:BuildBusinessMessage(reason, sampledSpellID, sampledStatus,
         dispatchInventorySlot = nil
         dispatchItemID = nil
         bindingInfo = nil
+        dispatchRecommendationSource = "none"
         runtimeReason = manualPriority.reason or "manual_click_priority"
     end
 
@@ -1283,6 +1318,7 @@ function SignalFrame:BuildBusinessMessage(reason, sampledSpellID, sampledStatus,
         reactionDecision and reactionDecision.reactionKind or "none", reactionDecision and reactionDecision.source or "none",
         reactionDecision and reactionDecision.castKey or "none", reactionDecision and reactionDecision.routeMode or "none",
         manualPriorityObservation, manualPriority and manualPriority.kind or "none", manualPriority and manualPriority.source or "none",
+        dispatchRecommendationSource,
     }
 
     return {
@@ -1303,6 +1339,8 @@ function SignalFrame:BuildBusinessMessage(reason, sampledSpellID, sampledStatus,
         dispatchInventorySlot = dispatchInventorySlot,
         dispatchItemID = dispatchItemID,
         dispatchOrigin = dispatchOrigin,
+        recommendationSource = dispatchRecommendationSource,
+        highlightRecommendation = highlightAudit,
         burstPlan = autoDecision,
         reactionPlan = reactionDecision,
         reactionDeliveryStable = stableReactionCandidate == true,

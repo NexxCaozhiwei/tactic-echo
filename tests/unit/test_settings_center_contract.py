@@ -15,8 +15,9 @@ class SettingsCenterContractTests(unittest.TestCase):
             'label = "常规"',
             'label = "HUD"',
             'label = "自动注入"',
+            'label = "高亮推荐"',
             'label = "配置文件"',
-            'local NAV_ORDER = { "general", "hud", "burst", "special", "profiles" }',
+            'local NAV_ORDER = { "general", "hud", "burst", "highlight", "special", "profiles" }',
             'TacticEchoSettingsCenter',
         ):
             self.assertIn(token, text)
@@ -28,6 +29,7 @@ class SettingsCenterContractTests(unittest.TestCase):
         diagnostics = (ADDON / "UI" / "Diagnostics.lua").read_text(encoding="utf-8")
         self.assertIn('SLASH_TACTICECHOUI1 = "/teui"', text)
         self.assertIn('ControlPanel:Show("hud")', text)
+        self.assertIn('ControlPanel:Show("highlight")', text)
         self.assertIn('SLASH_TACTICECHOTACTICS1 = "/tetactics"', diagnostics)
         self.assertIn('TE.ControlPanel:Show("hud")', diagnostics)
 
@@ -57,6 +59,12 @@ class SettingsCenterContractTests(unittest.TestCase):
         text = (ADDON / "UI" / "ControlPanel.lua").read_text(encoding="utf-8")
         self.assertNotIn("OpenSettingsPanel", text)
         self.assertNotIn("Settings.OpenToCategory", text)
+
+    def test_highlight_skill_rows_report_unavailable_specialization(self) -> None:
+        text = (ADDON / "UI" / "ControlPanel.lua").read_text(encoding="utf-8")
+        self.assertIn("local function addHighlightSkillCheckbox(pane, candidate, y)", text)
+        self.assertIn('SetSpellEnabled(spellID, value)', text)
+        self.assertIn('当前专精信息尚未载入，技能开关未保存；请稍后重试。', text)
 
     def test_hud_right_click_routes_to_current_pages_without_burst_subpages(self) -> None:
         panel = (ADDON / "UI" / "ControlPanel.lua").read_text(encoding="utf-8")

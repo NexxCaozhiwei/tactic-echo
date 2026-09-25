@@ -330,6 +330,22 @@ local function normalizeTactics(tactics, priorHudSchema)
     end
     tactics.autoBurstEnabled = tactics.autoInjectionEnabled == true
     tactics.autoBurstMode = isEnum(tactics.autoBurstMode, { simple = true, focused = true }, defaults.autoBurstMode)
+    tactics.highlightRecommendationProfiles = type(tactics.highlightRecommendationProfiles) == "table"
+        and tactics.highlightRecommendationProfiles or {}
+    for key, profile in pairs(tactics.highlightRecommendationProfiles) do
+        if type(key) ~= "string" or type(profile) ~= "table" then
+            tactics.highlightRecommendationProfiles[key] = nil
+        else
+            local disabled = type(profile.disabledSpellIDs) == "table" and profile.disabledSpellIDs or {}
+            profile.disabledSpellIDs = {}
+            for spellID, value in pairs(disabled) do
+                local id = tonumber(spellID)
+                if value == true and id and id > 0 and id < 2147483647 and id == math.floor(id) then
+                    profile.disabledSpellIDs[tostring(id)] = true
+                end
+            end
+        end
+    end
     tactics.autoBurstDebug = false
     -- 1.0.26 retires the global legacy manual-rule manual rule.  Settings are now
     -- stored by specialization as stable sequence step identities; deleting
@@ -410,6 +426,8 @@ function Normalize:All()
     settings.protocolMode = type(settings.protocolMode) == "string" and settings.protocolMode or defaults.protocolMode
     settings.toggleHotkey = type(settings.toggleHotkey) == "string" and settings.toggleHotkey or defaults.toggleHotkey
     settings.specialModeEnabled = settings.specialModeEnabled == true
+    settings.highlightRecommendationEnabled = boolean(settings.highlightRecommendationEnabled,
+        defaults.highlightRecommendationEnabled == true)
     settings.specialModeToggleHotkey = type(settings.specialModeToggleHotkey) == "string" and settings.specialModeToggleHotkey or ""
     settings.autoBurstToggleHotkey = type(settings.autoBurstToggleHotkey) == "string"
         and settings.autoBurstToggleHotkey or defaults.autoBurstToggleHotkey

@@ -1,5 +1,5 @@
 -- Tactic Echo settings center (TEUI v2).
--- Current pages cover runtime, HUD, Auto Injection, Special Mode and profiles. This file
+-- Current pages cover runtime, HUD, Auto Injection, Highlight Recommendation, Special Mode and profiles. This file
 -- only changes settings/presentation and never creates a recommendation,
 -- BindingToken, TEAP frame or TEK input request.
 local TE = _G.TacticEcho
@@ -61,11 +61,12 @@ local PAGE_META = {
     general = { label = "常规", description = "运行状态、手动启停 / 脱战策略与 Tactic Echo 自身快捷键。" },
     hud = { label = "HUD", description = "主键与自动注入队列的显示、大小、方向和常用外观。" },
     burst = { label = "自动注入", description = "自动注入总开关、技能组、执行模式与九步顺序。" },
+    highlight = { label = "高亮推荐", description = "按当前专精动作条高亮状态选择优先派发技能。" },
     special = { label = "特殊模式", description = "按专精保存三组官方推荐替换；自动注入照常运行。" },
     profiles = { label = "配置文件", description = "保存、载入和管理配置；范围自动切换位于高级设置。" },
 }
 
-local NAV_ORDER = { "general", "hud", "burst", "special", "profiles" }
+local NAV_ORDER = { "general", "hud", "burst", "highlight", "special", "profiles" }
 local LEGACY_PAGE_ALIAS = {
     main = "hud", tactics = "hud", interrupt = "hud", control = "hud",
     defense = "hud", defensive = "hud", actionbar = "general",
@@ -1704,7 +1705,7 @@ local function buildSpecial(pane)
         function() ControlPanel:ToggleSpecialMode() end)
     y = y - 40
     createText(pane, "GameFontDisableSmall", LEFT_X, y, 690,
-        "只替换官方推荐；自动注入照常运行。命中后替换技能不可用时等待，不回退原技能。")
+        "只替换官方推荐派发；高亮推荐派发不应用特殊模式。自动注入保持原优先级。")
     y = y - 40
     local hotkey = createEditBox(pane, "切换快捷键", LEFT_X, y, 150, ensureSettings().specialModeToggleHotkey)
     hotkey:SetScript("OnTextChanged", function(_, userInput)
@@ -1775,8 +1776,60 @@ local function buildSpecial(pane)
     pane:SetHeight(math.abs(y) + 24)
 end
 
+local function addHighlightSkillCheckbox(pane, candidate, y)
+    -- Keep each skill identity in a helper invocation's local scope. The
+    -- getter and setter must always address the row the player clicked.
+    local spellID = tonumber(candidate.spellID)
+    if not spellID then return end
+    createCheckbox(pane, (candidate.name or "技能") .. "  (" .. tostring(spellID) .. ")",
+        LEFT_X, y,
+        function() return TE.HighlightRecommendation:IsSpellEnabled(spellID) end,
+        function(value)
+            local ok, reason = TE.HighlightRecommendation:SetSpellEnabled(spellID, value)
+            if not ok then
+                if reason == "specialization_unavailable" then
+                    panelStatus("当前专精信息尚未载入，技能开关未保存；请稍后重试。")
+                else
+                    panelStatus("技能开关保存失败：" .. tostring(reason or "unknown"))
+                end
+                return
+            end
+            if TE.SignalFrame then TE.SignalFrame:Refresh("highlight_recommendation_skill") end
+        end,
+        "勾选后，该技能在客户端明确高亮时可优先于官方推荐派发。")
+end
+
+local function buildHighlight(pane)
+    local y = createSection(pane, "高亮推荐", -12)
+    createCheckbox(pane, "启用高亮推荐", LEFT_X, y,
+        function() return TE.HighlightRecommendation and TE.HighlightRecommendation:IsEnabled() end,
+        function(value)
+            TE.HighlightRecommendation:SetEnabled(value)
+            if TE.SignalFrame then TE.SignalFrame:Refresh("highlight_recommendation_toggle") end
+            panelStatus(value and "高亮推荐已启用。" or "高亮推荐已关闭。")
+        end)
+    y = y - 38
+    createText(pane, "GameFontDisableSmall", LEFT_X, y, 690,
+        "客户端明确高亮，且技能自身可用、冷却与 GCD 就绪时，按动作条顺序优先派发。资源不足时继续官方推荐。")
+    y = y - 42
+    y = createSection(pane, "当前专精动作条技能", y)
+    local candidates = TE.HighlightRecommendation and TE.HighlightRecommendation:GetCandidates() or {}
+    if #candidates == 0 then
+        createText(pane, "GameFontDisableSmall", LEFT_X, y, 690,
+            "暂未发现带有效绑定的动作条技能。设置会在动作条技能载入后刷新。")
+        y = y - 30
+    else
+        for _, candidate in ipairs(candidates) do
+            addHighlightSkillCheckbox(pane, candidate, y)
+            y = y - 34
+        end
+    end
+    pane:SetHeight(math.abs(y) + 28)
+end
+
 local BUILDERS = {
     special = buildSpecial,
+    highlight = buildHighlight,
     general = buildGeneral,
     hud = buildHUD,
     burst = buildBurst,
@@ -1997,6 +2050,8 @@ SlashCmdList.TACTICECHOUI = function(message)
         ControlPanel:Show("special")
     elseif command == "burst" then
         ControlPanel:Show("burst")
+    elseif command == "highlight" then
+        ControlPanel:Show("highlight")
     elseif command == "interrupt" then
         ControlPanel:Show("interrupt", "interrupt")
     elseif command == "control" then

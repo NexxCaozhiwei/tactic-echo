@@ -1,8 +1,8 @@
-# AGENTS.md — Tactic Echo 1.5.8 开发与安全边界
+# AGENTS.md — Tactic Echo 1.5.12 开发与安全边界
 
 ## 0. 当前收窄范围（最高优先级）
 
-- 当前产品范围只保留：首页/设置中心、HUD 主键、官方主推荐输入链路及特殊模式替换、AutoBurst 及其设置页/运行链路。
+- 当前产品范围只保留：首页/设置中心、HUD 主键、官方推荐与高亮推荐共用的主推荐输入链路及特殊模式替换、AutoBurst 及其设置页/运行链路。
 - 打断、控制、防御、生存模块，包括自动打断、自动控制、只读反应高亮、姓名板群控扫描、目标框/姓名板打断提示、TargetCastPrompt、监控/调试页面、MappingExport、OfficialApiProbe，均视为退役功能，默认不得加载、不得轮询、不得在 HUD 中显示，也不得通过设置页重新启用。
 - HUD 只允许展示主键与 AutoBurst 队列；候选历史队列、打断/控制/位移、防御/生存卡片必须保持空输出或隐藏。`queueMode=primary` 表示仅主键；其他旧队列模式只能解释为“主键 + 爆发”。
 - HUD 可见期间，底部状态行常驻自动注入模式 `HAD`（开启）或 `LCC`（关闭），并独立显示可用、暂停、待命等运行状态；LCC 仍显示已启用组的只读注入卡片，不产生自动执行资格；HUD 按钮自身不得把 dispatchable 状态改写为 `HAD`，按钮状态/tooltip fallback 仍沿用原有“可用/推荐/施法/引导”等语义。
@@ -12,7 +12,7 @@
 
 ## 1. 基线与交付
 
-- 当前唯一开发基线：`1.5.8`。用户可见的 AutoBurst 已泛化并更名为“自动注入”：每专精最多三个独立配置组必须共享唯一 `AutoInjectionCoordinator`、唯一 AutoBurst OrderedPlan、唯一 capture 和唯一候选；不得复制并行状态机、事件、轮询或输入路径。新组必须保持关闭并允许先完整编辑窗口 SpellID、注入/饰品和顺序，配置完整后才可启用；本组窗口不得再次作为本组注入。HUD 必须按组保存顺序展示全部已启用组，每组保持自身步骤顺序并与其他组分行或分列，最多三组、每组九张、总计 27 张只读卡；这不得改变唯一活动组和唯一派发计划。当前组启用/停用入口必须位于“当前组基本设置”上方；窗口字段须说明只填写数字 SpellID，周期刷新不得覆盖当前组正在编辑的名称、窗口或其他文本输入；自动注入页滚动高度须跟随当前实际序列行数，不得保留固定 3200 像素尾部空白。AutoBurst 与输入路径仍以 1.0.35 为冻结基线；HUD 冷却渲染仍以已实测稳定的 1.0.31 实时转盘路径为基础，并由 1.0.38 收口为“DurationObject 只画转盘、HUD 徽标统一纯秒数”。自动打断生产运行继续硬暂停，自动注入保持脱战硬门控。HUD 卡片与 HUD 手动点击层在战斗中不得直接调用受保护 `Button:Hide()` / secure proxy Hide 路径；卡片 Button 在战斗中不得调用 `SetAlpha`、`EnableMouse`、`Show` 或 `Hide`，只能记录待处理状态；`HudClickRouter` 的 secure proxy 与 blocker 在战斗中同样不得调用 `SetAlpha`、`Show` 或 `Hide`，只能记录 `tacticEchoCombatVisibilityPending` 与 `dirty`；`TacticalBoard` 与 defense 容器在战斗中不得调用 `SetScale`、`SetAlpha`、`SetShown`、`Show` 或 `Hide`，`TacticalHudLayout` 在战斗中不得执行 `SetScale`、`SetPoint`、`SetSize`、`SetShown` 等布局变更，只能记录 pending/dirty，脱战后再真实隐藏、显示、缩放或重建。TEK 本地连发介入白名单仅豁免配置中的主键，默认 `W/A/S/D/SPACE` 不触发手动让步；非白名单真实键盘输入，包括不能单独加入白名单的 `Ctrl`、`Alt`、`Shift`、`Win` 修饰键，必须从按下到抬起持续 `manual_input_held`，抬起后再进入既有 release delay、freshness 与 replay guard。TEK 必须支持 `Shift+1` 至 `Shift+=` 等动作条绑定 token；扩展修饰键或新键位时必须同步 binding token 解析、SendInput 编码与测试。默认 `pause_out_of_combat` 策略对外命名为“自动启停”：未进战斗或脱战时保持底层 `paused` 安全帧，但 HUD/设置中心必须显示“待命”，进战后自动恢复运行；手动暂停和脱战停止仍显示为暂停。无论 Defaults、旧 SavedVariables、组配置、官方窗口、已有 plan/capture 或既有 bridge 字段为何，只要 `inCombat=false`，不得创建/保留 Burst capture 或 plan，不得生成 Burst candidate、TEAP Burst 帧或 TEK 请求。默认动作条槽位可作为 TEAP/TEK 自动派发来源扫描，不要求对应动作条按钮当前可见；HUD 手动点击只能静态 secure proxy 复用可靠当前可见默认动作条按钮/已识别宏，隐藏按钮只能用于 TEAP/TEK 自动派发，不能成为 HUD 手动点击代理。HUD/原生默认动作条真实左键必须以 `manual_hold`、动作码 0、BindingToken 0 优先于后续派发。宏列表存在、宏名、图标及未知宏正文均不得作为当前动作栏身份或钢条判断依据。此前版本仅保留历史记录。 1.4.5 进一步冻结：Claim 只代表已建立的 plan、pre-window capture 或 departure lock 真实所有权；每个 armed epoch 的前置窗口只允许首次健康观察恢复一次；group runtime 必须使用明确 `<profileKey>:<groupId>` 且不得产生 `unknown:<groupId>`；所有冷却/充能回退（包括饰品）必须经过至少两个样本与 0.15 秒稳定确认；非法启用组 HUD 必须显示 INVALID 且无派发暗示；高频 Evaluate 不得逐帧执行完整 Normalize；persistent recovery 策略与 TEAP/TEK 协议不变。 1.4.6 进一步冻结：departure lock 直接观察到另一组窗口时必须先以旧所有权记录新窗口错过再释放；任何已拥有 capture 的 Abort 都必须先建立必要离开锁；冷却/充能回退在 runtime cycleId 可用时必须来自两个不同业务样本；所有手工建锁/无锁终止路径必须同步 Claim/Release，释放原因不得覆盖忽略事件。 1.4.14 进一步冻结：每个计划只允许一个配置顺序游标；初始自身 CD 步骤仅可作为未越过位置的候补，恢复后按原始位置向后补入，不得重建或重放前缀；已进入活动链的可选步骤不得因匹配失败次数被删除，移动失败期间只允许无 Token 等待并在停下后重试。 1.5.1 进一步覆盖：任何步骤首次派发必须有明确自身可用证据，UNKNOWN 或明确自身 CD 不得借公开 GCD 降级派发；已经明确接纳的当前步骤可在后续读数短暂 UNKNOWN 或移动失败时继续共享节奏；施法、引导、蓄力期间不得选择规则、扫描候补或推进游标。 1.5.2 进一步覆盖：配置窗口在普通施法、引导或蓄力期间必须以 observation-only、BindingToken 0 身份栅栏阻止官方链路提前派发，但不得选择规则、创建 plan/capture、扫描候补或推进游标；当前步骤只有在精确成功或稳定自身 CD/充能证据确认后才推进；推进前若存在配置缺口，必须等待不同 runtime cycleId 的下一业务快照，再按原 `configuredIndex` 接纳明确可用步骤或永久越过仍为 CD/UNKNOWN 的位置；已经越过的位置不得回插到已派发步骤之前。 1.5.3 进一步覆盖：已派发步骤在施法、引导或蓄力保护期间进入 `SOFT_PAUSED` 时，只要 `pauseResumeState=WAIT_CONFIRM` 且当前 wait 身份仍一致，必须接收该当前步骤的精确成功/失败/中断收据；收据只能写入当前 wait，施法期间仍不得推进游标，恢复后的健康业务帧再按原确认或重试路径处理。
+- 当前唯一开发基线：`1.5.12`。用户可见的 AutoBurst 已泛化并更名为“自动注入”：每专精最多三个独立配置组必须共享唯一 `AutoInjectionCoordinator`、唯一 AutoBurst OrderedPlan、唯一 capture 和唯一候选；不得复制并行状态机、事件、轮询或输入路径。新组必须保持关闭并允许先完整编辑窗口 SpellID、注入/饰品和顺序，配置完整后才可启用；本组窗口不得再次作为本组注入。HUD 必须按组保存顺序展示全部已启用组，每组保持自身步骤顺序并与其他组分行或分列，最多三组、每组九张、总计 27 张只读卡；这不得改变唯一活动组和唯一派发计划。当前组启用/停用入口必须位于“当前组基本设置”上方；窗口字段须说明只填写数字 SpellID，周期刷新不得覆盖当前组正在编辑的名称、窗口或其他文本输入；自动注入页滚动高度须跟随当前实际序列行数，不得保留固定 3200 像素尾部空白。AutoBurst 与输入路径仍以 1.0.35 为冻结基线；HUD 冷却渲染仍以已实测稳定的 1.0.31 实时转盘路径为基础，并由 1.0.38 收口为“DurationObject 只画转盘、HUD 徽标统一纯秒数”。自动打断生产运行继续硬暂停，自动注入保持脱战硬门控。HUD 卡片与 HUD 手动点击层在战斗中不得直接调用受保护 `Button:Hide()` / secure proxy Hide 路径；卡片 Button 在战斗中不得调用 `SetAlpha`、`EnableMouse`、`Show` 或 `Hide`，只能记录待处理状态；`HudClickRouter` 的 secure proxy 与 blocker 在战斗中同样不得调用 `SetAlpha`、`Show` 或 `Hide`，只能记录 `tacticEchoCombatVisibilityPending` 与 `dirty`；`TacticalBoard` 与 defense 容器在战斗中不得调用 `SetScale`、`SetAlpha`、`SetShown`、`Show` 或 `Hide`，`TacticalHudLayout` 在战斗中不得执行 `SetScale`、`SetPoint`、`SetSize`、`SetShown` 等布局变更，只能记录 pending/dirty，脱战后再真实隐藏、显示、缩放或重建。TEK 本地连发介入白名单仅豁免配置中的主键，默认 `W/A/S/D/SPACE` 不触发手动让步；非白名单真实键盘输入，包括不能单独加入白名单的 `Ctrl`、`Alt`、`Shift`、`Win` 修饰键，必须从按下到抬起持续 `manual_input_held`，抬起后再进入既有 release delay、freshness 与 replay guard。TEK 必须支持 `Shift+1` 至 `Shift+=` 等动作条绑定 token；扩展修饰键或新键位时必须同步 binding token 解析、SendInput 编码与测试。默认 `pause_out_of_combat` 策略对外命名为“自动启停”：未进战斗或脱战时保持底层 `paused` 安全帧，但 HUD/设置中心必须显示“待命”，进战后自动恢复运行；手动暂停和脱战停止仍显示为暂停。无论 Defaults、旧 SavedVariables、组配置、官方窗口、已有 plan/capture 或既有 bridge 字段为何，只要 `inCombat=false`，不得创建/保留 Burst capture 或 plan，不得生成 Burst candidate、TEAP Burst 帧或 TEK 请求。默认动作条槽位可作为 TEAP/TEK 自动派发来源扫描，不要求对应动作条按钮当前可见；HUD 手动点击只能静态 secure proxy 复用可靠当前可见默认动作条按钮/已识别宏，隐藏按钮只能用于 TEAP/TEK 自动派发，不能成为 HUD 手动点击代理。HUD/原生默认动作条真实左键必须以 `manual_hold`、动作码 0、BindingToken 0 优先于后续派发。宏列表存在、宏名、图标及未知宏正文均不得作为当前动作栏身份或钢条判断依据。此前版本仅保留历史记录。 1.4.5 进一步冻结：Claim 只代表已建立的 plan、pre-window capture 或 departure lock 真实所有权；每个 armed epoch 的前置窗口只允许首次健康观察恢复一次；group runtime 必须使用明确 `<profileKey>:<groupId>` 且不得产生 `unknown:<groupId>`；所有冷却/充能回退（包括饰品）必须经过至少两个样本与 0.15 秒稳定确认；非法启用组 HUD 必须显示 INVALID 且无派发暗示；高频 Evaluate 不得逐帧执行完整 Normalize；persistent recovery 策略与 TEAP/TEK 协议不变。 1.4.6 进一步冻结：departure lock 直接观察到另一组窗口时必须先以旧所有权记录新窗口错过再释放；任何已拥有 capture 的 Abort 都必须先建立必要离开锁；冷却/充能回退在 runtime cycleId 可用时必须来自两个不同业务样本；所有手工建锁/无锁终止路径必须同步 Claim/Release，释放原因不得覆盖忽略事件。 1.4.14 进一步冻结：每个计划只允许一个配置顺序游标；初始自身 CD 步骤仅可作为未越过位置的候补，恢复后按原始位置向后补入，不得重建或重放前缀；已进入活动链的可选步骤不得因匹配失败次数被删除，移动失败期间只允许无 Token 等待并在停下后重试。 1.5.1 进一步覆盖：任何步骤首次派发必须有明确自身可用证据，UNKNOWN 或明确自身 CD 不得借公开 GCD 降级派发；已经明确接纳的当前步骤可在后续读数短暂 UNKNOWN 或移动失败时继续共享节奏；施法、引导、蓄力期间不得选择规则、扫描候补或推进游标。 1.5.2 进一步覆盖：配置窗口在普通施法、引导或蓄力期间必须以 observation-only、BindingToken 0 身份栅栏阻止官方链路提前派发，但不得选择规则、创建 plan/capture、扫描候补或推进游标；当前步骤只有在精确成功或稳定自身 CD/充能证据确认后才推进；推进前若存在配置缺口，必须等待不同 runtime cycleId 的下一业务快照，再按原 `configuredIndex` 接纳明确可用步骤或永久越过仍为 CD/UNKNOWN 的位置；已经越过的位置不得回插到已派发步骤之前。 1.5.3 进一步覆盖：已派发步骤在施法、引导或蓄力保护期间进入 `SOFT_PAUSED` 时，只要 `pauseResumeState=WAIT_CONFIRM` 且当前 wait 身份仍一致，必须接收该当前步骤的精确成功/失败/中断收据；收据只能写入当前 wait，施法期间仍不得推进游标，恢复后的健康业务帧再按原确认或重试路径处理。
 - **1.5.4 窗口冷却重入覆盖**：旧窗口已离开后，新代次尚未派发且自身 CD 与官方窗口冲突时，只能保留唯一 capture 等待明确可用，不得因此消费新代次或建立不可复检的 departure lock。该窄场景允许窗口排首复用同一个 observation-only capture；必须按不同健康 runtime cycle 仅复检窗口，CD/UNKNOWN 不派发，ready 后重新预检并按原序建链。capture 的组/配置/代次、四帧恢复 handoff、跨组忽略和生命周期清理仍统一。已经消费或硬终止的离开锁不得因冷却恢复而自动解除；施法/引导/蓄力期间仍不复检、不建链、不推进。
 - **基线归档是强制仓库规范**：所有 `BASELINE_<版本>.md` 只允许置于 `docs/baselines/`，根目录不得保存重复 baseline。每次版本化源码改动必须同步：① `docs/baselines/BASELINE_<VERSION>.md`；② 根目录 `CHANGELOG.md` 同版本条目；③ `VERSION`、TOC 与 `Core/Bootstrap.lua`。不得以临时根目录 baseline、仅更新 CHANGELOG 或仅更新版本号交付。
 - **补丁清单归档是强制仓库规范**：所有 `PATCH_MANIFEST*` 只允许置于 `docs/patch-manifests/`，根目录和 `docs/` 根层不得保存重复 patch manifest。清单只作为交付历史，不得替代当前 baseline、CHANGELOG 或 live source。
@@ -35,6 +35,24 @@
 ## 1.5.8 特殊模式覆盖
 
 当前开发基线提升为 `1.5.8`，继承以上约束。用户手动开关的特殊模式每专精允许三组独立启停的精确 SpellID 替换；只替换官方派发，不修改官方推荐，不递归匹配，不拦截自动注入候选或 hold。替换复用共享动作条/宏身份、BindingToken、RuntimeSnapshot 自身冷却/充能、GCDGate 及 TEAP/TEK；目标无绑定或 CD/UNKNOWN 时零 Token 等待，不回退原技能。快捷键仅切换 TE 设置，战斗内编辑绑定延迟脱战应用；HUD 只读显示模式状态，不产生派发资格。
+
+## 1.5.9 高亮推荐派发
+
+当前开发基线为 `1.5.9`。高亮推荐作为官方推荐派发之前的候选选择层，总开关默认关闭，按专精保存已停用技能；未停用的已解析动作条技能默认参与高亮优先选择。候选仅从当前动作条缓存发现，最多 36 个，并复用 resolver 的真实 BindingToken 与宏身份规则；只接受公开布尔 `true`，并要求明确自身冷却/充能可用及 GCD 时序可派发。多个命中按当前动作条顺序选一个。API 未知、无合格高亮候选或候选失效时继续官方推荐。高亮来源不改写官方推荐快照，不改变 AutoInjectionCoordinator 的所有权/窗口观察；特殊模式仅应用于官方来源。手动优先、暂停、施法保护及 TEAP/TEK 门禁不变。高亮来源作为非线协议诊断元数据记录，不增加协议位或输入通道。宏只在共享 resolver 验证当前身份和正文关联后参与。
+
+## 1.5.10 高亮推荐门控与设置恢复
+
+当前开发基线为 `1.5.10`。AutoBurst 的 `none` 与 `idle` 均表示没有候选/所有权，不能阻止高亮推荐评估；candidate/hold 的优先级和官方推荐不可变、AutoInjection 窗口锚定规则不变。技能复选框的每行回调必须绑定自己的 SpellID；若专精身份尚不可用，设置操作必须明确提示未保存。高亮 API 的显式布尔 `false` 必须保留为 false，不能折叠成 UNKNOWN。TEAP/TEK 协议和门禁不变。
+
+
+
+## 1.5.11 高亮技能专精配置键修复
+
+当前开发基线为 `1.5.11`。高亮技能偏好必须使用 `BurstProfiles:SpecKey()` 的方法调用约定，基于当前职业与专精索引读写独立配置；测试替身必须与生产方法签名一致。特殊模式、AutoBurst 派发优先级、TEAP/TEK 协议与门禁不变。
+
+## 1.5.12 高亮推荐施放可用性门控
+
+当前开发基线为 `1.5.12`。仅高亮推荐候选可在当前动作条来源和真实 BindingToken 已验证后，经共享 `RuntimeSnapshot:GetSpellUsability()` 对精确 SpellID 读取公开 `usable` / `notEnoughResource` 布尔值；这是对 3.2 节 AutoBurst 资源例外范围的明确增补，不授权其他推荐或展示链读取资源。高亮优先派发须有明确 `usable=true`，资源不足、不可用或 UNKNOWN 均跳过当前高亮候选并继续后续候选，全部不合格时沿用官方推荐与特殊模式；不得等待攒资源，不读取或保存具体资源数值。现有宏身份、AutoBurst 所有权、TEAP/TEK 协议和门禁不变。
 
 ## 2. 常规派发路径
 

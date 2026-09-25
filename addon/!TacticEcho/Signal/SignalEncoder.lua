@@ -176,6 +176,18 @@ function SignalEncoder:Encode(message)
         monitor = message.monitor,
         monitorFlags = monitorFlags,
         dispatchOrigin = dispatchOrigin,
+        recommendationSource = ({ highlight = true, auto_injection = true, reaction = true, none = true })[message.recommendationSource]
+            and message.recommendationSource or "official",
+        highlightRecommendation = type(message.highlightRecommendation) == "table" and {
+            reason = type(message.highlightRecommendation.reason) == "string" and message.highlightRecommendation.reason or nil,
+            spellID = tonumber(message.highlightRecommendation.spellID) or nil,
+            unknownCount = tonumber(message.highlightRecommendation.unknownCount) or 0,
+            enabledCount = tonumber(message.highlightRecommendation.enabledCount) or 0,
+            candidateCount = tonumber(message.highlightRecommendation.candidateCount) or 0,
+            resourceBlockedCount = tonumber(message.highlightRecommendation.resourceBlockedCount) or 0,
+            unusableCount = tonumber(message.highlightRecommendation.unusableCount) or 0,
+            usabilityUnknownCount = tonumber(message.highlightRecommendation.usabilityUnknownCount) or 0,
+        } or nil,
         officialSpellID = message.officialSpellID,
         dispatchSpellID = message.dispatchSpellID,
         dispatchActionKind = message.dispatchActionKind,
