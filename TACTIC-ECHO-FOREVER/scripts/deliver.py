@@ -10,7 +10,7 @@ import zipfile
 ROOT = Path(__file__).resolve().parents[1]
 VERSION = (ROOT / "VERSION").read_text().strip()
 TARGET = Path(r"E:\World of Warcraft\_cn_beta_\Interface\AddOns\TACTIC-ECHO-FOREVER")
-LOAD = ["Config.lua", "Safety.lua", "Sequence.lua", "Profiles.lua", "Research.lua", "UI.lua", "HUD.lua", "Dispatch.lua", "Presentation.lua", "Transport.lua", "Core/Bootstrap.lua", "Bindings.xml"]
+LOAD = ["Config.lua", "Safety.lua", "Sequence.lua", "HudStyles.lua", "Profiles.lua", "Recommendation.lua", "Research.lua", "UI.lua", "UIComponents.lua", "SequenceEditor.lua", "HUD.lua", "Dispatch.lua", "Presentation.lua", "Transport.lua", "Runtime.lua", "Hotkeys.lua", "Core/Bootstrap.lua", "Bindings.xml"]
 RUNTIME = ["TACTIC-ECHO-FOREVER.toc", "VERSION"] + LOAD + ["README.md", "CHANGELOG.md"]
 
 
@@ -31,23 +31,42 @@ def main():
     out = ROOT.parent / "dist/tef"
     out.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    receipt = {"version": VERSION, "interface": 16001, "verified_exe": "1.60.1.70338",
+    receipt = {"version": VERSION, "interface": 16001, "client_evidence_exe": "1.60.1.70338",
                "simulation_only": True, "target": str(TARGET), "backup": None}
-    receipt["validation"] = {"lua51_cases": 71, "tek_interop_dry_run_cases": 6,
-        "exact_manual_packet_encodings": 3, "simulated_single_dispatch_budget": 1,
+    receipt["validation"] = {"lua51_cases": 193, "tek_interop_dry_run_cases": 6,
+        "exact_manual_packet_encodings": 3, "simulated_single_dispatch_budget": 1, "manual_handoff_dry_run_cases": 2,
         "paused_start_toggle_handoff": "passed",
         "acceptance_harness_mock_tests": 2, "startup_dry_run": "waiting_without_input",
         "pytest_passed": 789, "pytest_skipped": 7, "pytest_subtests_passed": 17,
         "tek_unittest": 234, "addon_unittest": 244, "lua_syntax": "passed",
         "baseline_contract": "passed", "compileall": "passed",
-        "new_features_in_game_verified": False, "tek_source_modified": True,
+        "new_features_in_game_verified": False, "tek_source_modified": False,
         "live_pixel_locate_decode": "passed_token_zero_no_input", "gamma_combinations_limit": 64,
-        "production_tek_signal_found": True, "hud_and_settings_live_layout_observed": True,
-        "real_sendinput_verified": True, "game_success_receipts_verified": True,
-        "live_evidence_version": "0.5.0", "live_evidence_session": 29,
-        "request_entry_guard_in_game_verified": False}
-    receipt["transport"] = {"protocol": 3, "mode": "default_observation_explicit_production_request", "default_binding_token": 0,
-        "default_enabled": True, "default_request_permission": False, "desktop_tek_ui_linked": True, "per_step_explicit_request": True}
+        "production_tek_signal_found": False, "hud_and_settings_live_layout_observed": False,
+        "real_sendinput_verified": False, "game_success_receipts_verified": False,
+        "request_entry_guard_in_game_verified": False, "continuous_in_game_verified": False}
+    receipt["sequence_editor"] = {"max_steps_per_scene": 16, "repeat_count_min": 1,
+        "repeat_count_max": 99, "count_evidence": "public_current_initiation_and_succeeded",
+        "legacy_17_32_steps_preserved_inactive": True, "drag_cursor_spell_id_position": 4,
+        "drag_in_game_verified": False, "shoot_5019_in_game_verified": False,
+        "shoot_active_or_unknown_binding_token": 0}
+    receipt["hotkey"] = {"capture_saves_immediately": True, "typed_save_or_enter": True,
+        "explicit_override_existing_binding": True, "override_default": False,
+        "control_keys_excluded_from_spell_dispatch": True,
+        "readback_requires_exact_override_command": True, "reapply_events": ["PLAYER_LOGIN",
+        "PLAYER_ENTERING_WORLD", "UPDATE_BINDINGS", "PLAYER_REGEN_ENABLED"],
+        "in_game_trigger_verified": False, "in_game_reload_verified": False}
+    receipt["loop_modes"] = {"modes": ["none", "normal", "target", "combat"],
+        "old_loop_true_migration": "normal", "reset_preserves_intent": True,
+        "reset_retires_public_initiations": True, "new_modes_in_game_verified": False}
+    receipt["hud_label_styles"] = {"modules": ["main", "preview", "global"],
+        "font_size": [8, 30], "scale": [0.6, 2.0], "combat_layout_deferred": True,
+        "in_game_layout_verified": False, "dispatch_authority": False}
+    receipt["historical_live_evidence"] = {"version": "0.7.0", "session": 39,
+        "sequence": [116, 205, 205, 143], "game_success_receipts_verified": True,
+        "proves_current_version": False}
+    receipt["transport"] = {"protocol": 3, "mode": "unified_intent_auto_standby_or_fixed_attempt", "default_binding_token": 0,
+        "default_enabled": True, "default_request_permission": True, "desktop_tek_ui_linked": True, "per_step_explicit_request": False, "continuous_default_enabled": False, "default_runtime_mode": "auto", "auto_start_preference": True, "runtime_in_game_verified": False, "continuous_requires_public_numeric_evidence": False}
     sources = sorted([ROOT / name for name in RUNTIME] +
                      list((ROOT / "docs").rglob("*.md")) +
                      [ROOT / "tests/run.lua", ROOT / "tests/run.py", ROOT / "tests/test_acceptance_harness.py", ROOT / "scripts/deliver.py", ROOT / "scripts/tek_acceptance.py"])

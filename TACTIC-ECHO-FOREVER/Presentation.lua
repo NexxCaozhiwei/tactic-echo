@@ -47,6 +47,7 @@ function P:Read(id,cooldownEvent)
 end
 function P:Paint(card,step,cooldownEvent)
     local U=TEF.UI
+    card.visualID=step and not step.unverified and step.spellID or nil
     U:Call(card.cooldown,"Clear")
     if not step or step.unverified then
         U:Paint(card.key,"SetText","—"); U:Paint(card.meta,"SetText","")
@@ -66,4 +67,12 @@ function P:Paint(card,step,cooldownEvent)
     if view.recharging then ok,duration=S.Call(path,step.spellID)
     else ok,duration=S.Call(path,step.spellID,true) end
     if ok then U:Call(card.cooldown,"SetCooldownFromDurationObject",duration) end
+end
+function P:Tick(card)
+    local cached=card.visualID and self.cooldowns[card.visualID]
+    if not cached then return end
+    local ok,raw=S.Call("GetTime"); local now=ok and S.Public(raw,"number")
+    if not now then TEF.UI:Paint(card.cooldownText,"SetText","?"); return end
+    local remain=math.ceil(math.max(0,cached.start+cached.duration/cached.rate-now))
+    TEF.UI:Paint(card.cooldownText,"SetText",remain>0 and tostring(remain) or "")
 end

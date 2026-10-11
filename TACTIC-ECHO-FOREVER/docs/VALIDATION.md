@@ -1,3 +1,33 @@
+# 0.10.1验证
+
+193项Lua5.1模拟与18项TOC入口/TEK互操作通过；新增选项鼠标移开与切页保持、页面底层纹理及HUD右键入口回归。pytest789通过/7跳过/17subtests；TEK234/AddOn244/验收mock2；72Lua语法、baseline、compileall及diff检查通过。界面效果待游戏内视觉验收。
+
+# 0.10.0验证
+
+190项Lua5.1模拟通过：新增F5显式覆盖、原生绑定保留/reload重建、UNKNOWN仍拒绝；控制键及战斗延迟期间旧键从技能派发排除、第二绑定可选；四循环模式迁移/重复/次数、目标与脱战事件、意图保留、旧START/SUCCEEDED失效及4096身份上限；标签白名单/Secret/边界/reload隔离、隐藏保持、战斗延迟和单个显示API失败。18TOC入口、6Bindings检查，原TEK互操作6项decoder/dry-run、3编码/1预算/2手动恢复通过。仓库pytest789通过、7跳过、17subtests；TEK234/AddOn244/mock2；72Lua语法、baseline、compileall通过。
+
+TEF S53(0.9.1)保存F6，三次HOTKEY_CONFLICT；205→143→2136有精确成功收据，到5019×3但未保留5019成功计数。不能据此确认F5原生用途或新版覆盖/循环/HUD实机成立。新版按PRODUCTION_0.10.0.md验收。
+
+# 0.9.1验证
+
+178项Lua5.1/TOC17入口/XML与原TEK互操作通过；新增UI录入提交、reload重建、生命周期晚加载重试、同步事件重入、刷新幂等、错误/Secret/冲突/战斗延迟及取消。真实快捷键仍待游戏内确认，见HOTKEY_FIX_0.9.1.md。
+
+# 0.9.0验证
+
+166项Lua5.1模拟通过，新增拖拽第四字段/Secret/失败/满额保留游标、精确ID排序删除/次数、16/17边界、旧配置保留、空配置关闭、草稿隔离/刷新、重复收据与同索引重入、暂停/循环/保存/reload、5019激活与未知零Token、精确动作槽nil范围回退。17TOC入口与6Bindings检查，6decoder/dry-run、3编码/1预算/2手动恢复互操作通过。pytest789通过/7跳过/17subtests；TEK234、AddOn244、验收脚本mock2。baseline/compileall/71Lua语法通过，实际Wow.exe 1.60.1.70338。
+
+0.8.2/S49已有前三步116→205→205成功，末步143与循环未保留。新编辑器和5019逐次收据尚未游戏验证；模拟与文件部署不能替代实机。按PRODUCTION_0.9.0.md验证。
+
+# 0.7.0验证
+
+追加实机S39（14:41:25落盘）：同一generation10的连续请求1–4对应116→205→205→143，各自公开SENT关联与SUCCEEDED成功，末步LOOP_COMPLETED回首步。TEK保留7条windows_sendinput成功记录（不是全部物理输入计数）；第二轮116失败后停止，未误计步。只将上述固定序列/相邻计数/循环与输入链标记实机成立，未测功能仍待验收。详见FIELD_REPORT_2026-10-11_TEF_070_S39.md。0.7.0交付时的“尚未实机”收据是部署时历史状态，不改写原包/哈希。
+
+99项Lua5.1模拟、TOC 15个入口及6个Bindings动作通过；新增职业/专精/Secret隔离、来源缺失、三模式、自动启动、单步幂等、连续四步、旧任务失效和快捷键冲突/延迟/组合键。未调用真实输入器，新功能未游戏验收。
+
+# 0.6.1修复验证
+
+87项Lua5.1模拟通过：新增冷却/GCD/充能接口不被固定尝试读取、无关动作栏刷新保留、进战保留及目标变化停止；保留文本焦点/目标/范围/usable UNKNOWN拒绝、施法保护与失败停止。新修复未实机验收，S34只证明旧版连续阻塞和手动成功。
+
 # 验证与证据范围（2026-10-11）
 
 ## 0.5.0
@@ -35,6 +65,26 @@
 当前配置116→205→205→143，保留StandardConfig原四步及AdjacentConfig两步205。Engine及门禁无改动，未扩展等级等价。新增跨ID误匹配、相邻205两次独立成功、后续143选择与成功测试，共28项Lua5.1模拟及TOC/基线检查通过。0.1.2两步205已在session10实机完整完成，首发STOP无额外推进；本次新四步仍待RANK_SEQUENCE_TEST_0.1.3.md独立实测。
 
 交付为dist/tef/TACTIC-ECHO-FOREVER-0.1.3.zip与TEF-0.1.3-delivery.json，部署备份现有TEF目录并核对9安装文件SHA256；TE回归、Lua语法与compileall按下述既有命令运行。未修改WTF及TE运行逻辑。
+
+## 0.8.2 原TE普通派发/手动让权恢复 — 2026-10-11
+
+用户明确覆盖失败停机与全局移动门禁。141项Lua5.1通过：新增9项顺序外开怪、未发起候选等待释放、当前关联保护、移动尝试、重复失败恢复及停止粘性；原132项保留，移动/静止失败断言按新授权行为更新。追加2项TEF实际编码→原TEKEngine/PhysicalInputPause dry-run互操作，Q/SHIFT按住让权、松开delay及freshness恢复通过，无实际Windows输入。
+
+pytest789通过、7跳过、17 subtests通过，TEK unittest234、AddOn244、验收mock2；baseline、compileall、所有Lua语法及diff检查通过。协议/TEK源码无改动。当前落盘0.8.0/S46，只能证明旧失败关意图及5019顺序外现象；0.8.2新行为需实机。部署20文件SHA256、TOC版本与16入口/Interface16001核对，完整备份、保留未知文件，不改WTF。学习原代码与具体差异见TE_DISPATCH_PARITY_0.8.2.md。
+
+## 0.8.1 移动失败与相邻ID收据 — 2026-10-11
+
+新增8项Lua5.1模拟，共132项通过：移动失败保留意图并原步重试；旧失败/START/SUCCEEDED隔离；heartbeat先阻断的事件顺序；静止精确失败停机；相邻205旧失败不关闭当前请求；Secret/nil身份与移动API未知/失败零Token；API重入；128身份容量与reload清空。旧124项保留。
+
+仓库pytest789通过、7跳过、17 subtests通过，TEK unittest234、AddOn244、验收mock2通过。baseline、compileall、Lua语法及diff检查通过。0.8.0/S45落盘确认失败路径误停风险，未持久化移动值/GUID，不推断具体失败原因；0.8.1移动恢复仍待实机。部署20文件逐文件SHA256核对、TOC0.8.1/Interface16001/16加载入口，既有TEF备份并保留未知文件，不改WTF。
+
+## 0.8.0 审计落实验证 — 2026-10-11
+
+保留99项既有Lua5.1测试，新增25项，共124项通过；6项TEK decoder/dry-run、3种精确编码、1项模拟预算通过。XML验证六绑定只有一个正式启停，旧入口明确兼容/开发分组。状态机、主卡、设置同步及事件刷新覆盖详见UI_RUNTIME_UNIFICATION_0.8.0.md。
+
+baseline contract通过；pytest789通过、7跳过、17 subtests通过；TEK unittest234、AddOn244、验收脚本mock2通过；compileall、全部AddOn/TEF Lua语法和diff检查通过。测试中的模拟inputSent和故障注入不能作为实机证据。
+
+完整源码ZIP逐成员SHA256复核，单层插件根目录；本轮不部署、不提交推送。0.8.0新HUD/设置/热键/自动恢复尚未实机验证，0.7.0/S39仅历史参考。下一轮按PRODUCTION_0.8.0.md验收。
 
 ## 0.1.2 临时相邻同技能配置
 
@@ -76,3 +126,8 @@ TE仓库第9节回归：baseline contract通过；pytest 782 passed、7 skipped�
 # 0.4.1 验证增补
 
 增加三项Lua5.1模拟：无关动作更新保留锁定请求；技能/键位/按钮对象变更及Secret/API异常立即撤回；生产dispatch入口与游戏成功计步分离、失败不自动重请求。总计68项。复用实际TEK协议/门禁互操作验证，不执行真实Windows输入。新版本物理派发需实机另验。
+# 0.6.0 连续派发实验 — 2026-10-11
+
+84项Lua5.1模拟通过，包括固定四步、相邻同技能、单步循环、5143/7268、等待成功、失败停止、公开证据UNKNOWN/缺失/调用失败、采样重入生命周期失效、128条日志及重复等待去噪。TOC加载列表及五个原生绑定检查通过。
+
+仓库789 passed、7 skipped、17 subtests passed；TEK unittest234、AddOn244、验收脚本mock2通过。baseline、compileall及全部Lua语法通过。TEK源码和EXE本次不变。连续功能及新增HUD控件尚未游戏内验收；0.5.0/S29和S30成功证据不能代替0.6.0实机结论。

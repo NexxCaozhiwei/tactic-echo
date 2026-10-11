@@ -10,10 +10,10 @@ def main():
 
     toc = (ROOT / "TACTIC-ECHO-FOREVER.toc").read_text(encoding="utf-8")
     entries = [line.strip() for line in toc.splitlines() if line.strip() and not line.startswith("#")]
-    assert entries == ["Config.lua", "Safety.lua", "Sequence.lua", "Profiles.lua", "Research.lua", "UI.lua", "HUD.lua", "Dispatch.lua", "Presentation.lua", "Transport.lua", "Core/Bootstrap.lua", "Bindings.xml"]
+    assert entries == ["Config.lua", "Safety.lua", "Sequence.lua", "HudStyles.lua", "Profiles.lua", "Recommendation.lua", "Research.lua", "UI.lua", "UIComponents.lua", "SequenceEditor.lua", "HUD.lua", "Dispatch.lua", "Presentation.lua", "Transport.lua", "Runtime.lua", "Hotkeys.lua", "Core/Bootstrap.lua", "Bindings.xml"]
     assert "## Interface: 16001" in toc and "## SavedVariables: TEF_DB" in toc
     version = (ROOT / "VERSION").read_text().strip()
-    assert version == "0.5.1" and f"## Version: {version}" in toc
+    assert version == "0.10.1" and f"## Version: {version}" in toc
     assert f'local VERSION = "{version}"' in (ROOT / "Core/Bootstrap.lua").read_text(encoding="utf-8")
     baseline = ROOT / f"docs/baselines/BASELINE_{version}.md"
     if not baseline.is_file():
@@ -27,12 +27,20 @@ def main():
         if entry.endswith(".xml"):
             import xml.etree.ElementTree as ET
             tree=ET.parse(ROOT/entry)
-            assert len(list(tree.getroot()))==4
+            assert len(list(tree.getroot()))==6
+            public = [b for b in tree.getroot() if b.attrib.get("header")=="TEF"]
+            assert len(public)==1 and public[0].attrib["name"]=="TEF_TOGGLE_DISPATCH"
+            assert "TEF_ToggleDispatchIntent()" in public[0].text
             continue
         lua.execute("assert(loadfile(...))", str(ROOT / entry))
         code = (ROOT / entry).read_text(encoding="utf-8")
         # Forbidden runtime dependencies/inputs and asynchronous advancement.
         assert not re.search(r"TacticEchoDB|TEProbeDB|C_Timer|CastSpell|RunMacro|SetCVar|TargetUnit|SendInput", code)
+        if entry in ("UI.lua","UIComponents.lua","SequenceEditor.lua","HUD.lua","Dispatch.lua","Transport.lua","Core/Bootstrap.lua"):
+            assert not re.search(r"(?:engine|self\.e|e)\.running\s*=", code)
+            assert not re.search(r"Runtime\.intent\s*=", code)
+        if entry=="HUD.lua":
+            assert not re.search(r"Dispatch:Request|SecureActionButton|UseAction",code)
         if entry not in ("Transport.lua","HUD.lua"):
             assert "OnUpdate" not in code
     lua.globals().arg = lua.table_from([ROOT.as_posix()])
@@ -93,7 +101,33 @@ def main():
     assert not allowed and reason=="frame_state_paused" and context.start_toggle_seen_disarmed
     allowed,reason=gate.evaluate(frame,context,send_input=True)
     assert allowed,reason
-    print("Lua 5.1/TOC; 6 TEK decoder/dry-run cases, 3 exact manual packet encodings and 1 simulated budget case passed")
+    from tek.src.physical_input import PhysicalInputPause
+    from tek.src.dispatch_rate_limiter import DispatchRateLimiter
+    for held_key in ("Q", "SHIFT"):
+        now=[100.0]
+        guard=PhysicalInputPause(profile="balanced",clock=lambda:now[0])
+        engine=TEKEngine(RETRIBUTION_V2,ProfileResolver.from_file(example),physical_input_guard=guard,
+            rate_limiter=DispatchRateLimiter(clock=lambda:now[0]))
+        context=SafetyContext(bootstrapped=True)
+        def process(seq):
+            fields=tef.Transport.Encode(92,seq,seq,1,encode_binding_token("1"),True)
+            return engine.process_frame(decode_fields(tuple(fields[i] for i in range(1,21))),context)
+        initial=process(1)
+        assert initial.gatePassed and not initial.inputSent
+        guard.note_auto_dispatch(encode_binding_token("1"),1)
+        guard.begin_manual_hold(held_key)
+        held=process(2)
+        assert held.reason=="manual_input_held" and not held.inputSent
+        guard.end_manual_hold(held_key)
+        now[0]+=.01
+        assert process(3).reason=="manual_release_delay"
+        now[0]+=.04
+        assert process(4).reason=="manual_wait_freshness"
+        now[0]+=.05
+        recovered=process(5)
+        assert recovered.gatePassed and not recovered.inputSent and recovered.dispatcher_backend=="dry_run"
+        assert context.tek_armed and context.state!="ErrorLocked"
+    print("Lua 5.1/TOC; 6 TEK decoder/dry-run cases, 3 exact packet encodings, 1 simulated budget and 2 manual-handoff cases passed")
 
 
 if __name__ == "__main__":

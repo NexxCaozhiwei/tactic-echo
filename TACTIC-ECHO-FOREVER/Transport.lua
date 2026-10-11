@@ -2,10 +2,12 @@ local _, TEF = ...
 local S, T = TEF.Safety, {enabled=false,freshness=0,sequence=0,blocks={}}
 TEF.Transport = T
 function T:Fail(reason)
+    if TEF.Dispatch then TEF.Dispatch:StopContinuous("CONTINUOUS_SIGNAL_STOP") end
     self.enabled=false
     if TEF.Dispatch then TEF.Dispatch:Cancel("TEK_SIGNAL_FAILED") end
     if self.frame then TEF.UI:Call(self.frame,"Hide") end
     self.engine:Log("error",reason)
+    if TEF.Runtime and TEF.Runtime.e==self.engine then TEF.Runtime:Fault(reason) end
     return false
 end
 local function xor(a,b)
@@ -53,6 +55,7 @@ function T:Initialize(engine)
 end
 function T:SetEnabled(value)
     if not value then
+        if TEF.Dispatch then TEF.Dispatch:StopContinuous("CONTINUOUS_SIGNAL_STOP") end
         if TEF.Dispatch then TEF.Dispatch:Cancel("TEK_TRANSPORT_OFF") end
         self.enabled=false
         if self.frame then TEF.UI:Call(self.frame,"Hide") end
@@ -70,7 +73,7 @@ function T:SetEnabled(value)
             if not ok then return self:Fail("TRANSPORT_TEXTURE_FAILED") end
             self.blocks[i]=texture
         end
-        -- One protocol heartbeat only. No API state sampling or step advance.
+        -- One shared heartbeat. Continuous sampling never advances the engine.
         local scriptOK=TEF.UI:Call(self.frame,"SetScript","OnUpdate",function(_,rawElapsed)
             if not self.enabled then return end
             local elapsed=S.Public(rawElapsed,"number")
@@ -78,6 +81,14 @@ function T:SetEnabled(value)
             self.elapsed=(self.elapsed or 0)+elapsed
             if self.elapsed>=0.05 then
                 self.elapsed=self.elapsed%0.05
+                if TEF.Runtime and TEF.Runtime.e==self.engine then
+                    local reconciled=pcall(TEF.Runtime.Reconcile,TEF.Runtime)
+                    if not reconciled then self:Fail("RUNTIME_SAMPLE_FAILED"); return end
+                end
+                if TEF.Dispatch then
+                    local sampled=pcall(TEF.Dispatch.TickContinuous,TEF.Dispatch)
+                    if not sampled then self:Fail("CONTINUOUS_SAMPLE_FAILED"); return end
+                end
                 if not self:Paint() then return end
             end
         end)

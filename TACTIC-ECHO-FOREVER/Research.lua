@@ -123,6 +123,7 @@ function R.Priority(rows,byID,common)
     return nil,"PRIORITY_NO_CERTIFIED_READY"
 end
 function R:Sample(e)
+    if not e.steps or not e.steps[e.index] then return false,"RESEARCH_UNCONFIGURED" end
     if not e.running then self:Invalidate(); return false,"RESEARCH_PAUSED" end
     self.sampleSerial=(self.sampleSerial or 0)+1
     local ticket=self:Ticket(e)
