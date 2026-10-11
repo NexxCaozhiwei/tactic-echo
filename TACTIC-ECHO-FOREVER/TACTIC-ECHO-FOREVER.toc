@@ -1,0 +1,19 @@
+## Interface: 16001
+## Title: TACTIC-ECHO-FOREVER
+## Notes: TEF 双场景练习、交付HUD及主动TEK绑定验收
+## Author: TEF
+## Version: 0.5.1
+## SavedVariables: TEF_DB
+
+Config.lua
+Safety.lua
+Sequence.lua
+Profiles.lua
+Research.lua
+UI.lua
+HUD.lua
+Dispatch.lua
+Presentation.lua
+Transport.lua
+Core/Bootstrap.lua
+Bindings.xml

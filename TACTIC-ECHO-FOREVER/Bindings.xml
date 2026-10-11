@@ -1,0 +1,6 @@
+<Bindings xmlns="http://www.blizzard.com/wow/ui/">
+  <Binding name="TEF_TOGGLE_PRACTICE" header="TEF">TEF_RunToggle()</Binding>
+  <Binding name="TEF_TOGGLE_PERMISSION" header="TEF">TEF_PermissionToggle()</Binding>
+  <Binding name="TEF_REQUEST_CURRENT" header="TEF">TEF_RequestCurrent()</Binding>
+  <Binding name="TEF_STOP_ALL" header="TEF">TEF_StopAll()</Binding>
+</Bindings>

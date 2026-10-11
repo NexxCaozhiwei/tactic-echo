@@ -1,5 +1,14 @@
 # AGENTS.md — Tactic Echo 1.5.12 开发与安全边界
 
+## TEF 独立插件与下一阶段（2026-10-11）
+
+- 用户明确授权当前工作区的 `TACTIC-ECHO-FOREVER/` 独立插件及必要TEK共享传输兼容；TE AddOn基线仍1.5.12，不修改其运行逻辑。TEF版本单独同步其VERSION、Config、TOC、Bootstrap、CHANGELOG及 `docs/baselines/tef/` 基线。
+- TEF唯一数据库TEF_DB。分析落盘仅用TEF自身数据库；TEK自身trace只证明输入接口，不能代替游戏成功收据。不得读取其它插件SavedVariables。
+- TEF 0.5.1仍为固定练习、每步主动请求、默认暂停/许可关闭。S29实测116→205→205→143一轮成功并循环；相邻205分别计数，失败/中断/顺序外事件不推进。详细证据见TEF文档。
+- 下一阶段为连续派发，按 `TACTIC-ECHO-FOREVER/docs/CONTINUOUS_DISPATCH_PLAN.md` 设计和验收。不得把本次提交视为已经启用连续派发或动态优先级；不得以计时、CD或输入成功替代SUCCEEDED计步。
+- TEF部署只操作明确的独立目录，不MIR、不删除未知文件、不改WTF。TE/TEF只启用一个TEAP信号源；保持TEAP v3和TEK全部输入门禁，不增设输入通道。
+- TEF额外验证：Lua5.1模拟、TOC版本/加载列表、验收脚本测试及安装逐文件SHA256。离线验证与实机证据必须分开说明。
+
 ## 0. 当前收窄范围（最高优先级）
 
 - 当前产品范围只保留：首页/设置中心、HUD 主键、官方推荐与高亮推荐共用的主推荐输入链路及特殊模式替换、AutoBurst 及其设置页/运行链路。

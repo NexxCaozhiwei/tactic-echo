@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from functools import lru_cache
 
 from tek.src.teap import TEAPError
-from tek.src.visual_decoder import RGB, VisualDecodeError, decode_rgb_blocks
+from tek.src.visual_decoder import RGB, VisualDecodeError, decode_rgb_blocks, protocol_colour, SUPPORTED_DISPLAY_GAMMAS
 from tek.src.windows_display import virtual_desktop_bounds
 
 
@@ -596,23 +596,24 @@ def locate_te_signal_layout_from_image(
     if max_x <= 0 or max_y <= 0:
         raise OSError("te_signal_layout_not_found")
 
-    rectangles = {
-        value: _find_colour_rectangles(image, value, max_x=max_x, max_y=max_y)
-        for value in _HEADER_VALUES
-    }
-    for candidate in _header_layout_candidates(image, rectangles):
-        try:
-            blocks = _sample_layout_from_image(image, candidate)
-            decode_rgb_blocks(blocks)
-        except (VisualDecodeError, TEAPError, IndexError, OSError):
-            continue
-        return SignalLayout(
-            x=candidate.x + origin_x,
-            y=candidate.y + origin_y,
-            block_size=candidate.block_size,
-            block_gap=candidate.block_gap,
-            block_count=candidate.block_count,
-        )
+    for gamma in SUPPORTED_DISPLAY_GAMMAS:
+        rectangles = {
+            value: _find_colour_rectangles(image, value, max_x=max_x, max_y=max_y, gamma=gamma)
+            for value in _HEADER_VALUES
+        }
+        for candidate in _header_layout_candidates(image, rectangles, gamma=gamma):
+            try:
+                blocks = _sample_layout_from_image(image, candidate)
+                decode_rgb_blocks(blocks)
+            except (VisualDecodeError, TEAPError, IndexError, OSError):
+                continue
+            return SignalLayout(
+                x=candidate.x + origin_x,
+                y=candidate.y + origin_y,
+                block_size=candidate.block_size,
+                block_gap=candidate.block_gap,
+                block_count=candidate.block_count,
+            )
     raise OSError("te_signal_layout_not_found")
 
 
@@ -702,7 +703,7 @@ def locate_te_signal_layout(*, search_width: int | None = None, search_height: i
     )
 
 
-def _header_layout_candidates(image, rectangles: dict[int, tuple[_ColorRect, ...]]):
+def _header_layout_candidates(image, rectangles: dict[int, tuple[_ColorRect, ...]], gamma=1.0):
     """Yield geometry candidates from compatible T, E and derived Version=3.
 
     State is encoded immediately after Version and may be any byte 0..7.  A
@@ -738,7 +739,8 @@ def _header_layout_candidates(image, rectangles: dict[int, tuple[_ColorRect, ...
                 version = _sample_layout_block(image, layout, 2)
             except OSError:
                 continue
-            if _matches_protocol_value(version, 3, tolerance=_HEADER_VERSION_TOLERANCE):
+            expected = protocol_colour(3,gamma)
+            if max(abs(version.red-expected.red),abs(version.green-expected.green),abs(version.blue-expected.blue)) <= _HEADER_VERSION_TOLERANCE:
                 yield layout
 
 
@@ -762,7 +764,7 @@ def _dimension_compatible(first: int, second: int) -> bool:
     return smaller >= _MIN_HEADER_BLOCK_SIZE and larger <= max(smaller + 2, int(round(smaller * 1.50)))
 
 
-def _find_colour_rectangles(image, value: int, *, max_x: int, max_y: int) -> tuple[_ColorRect, ...]:
+def _find_colour_rectangles(image, value: int, *, max_x: int, max_y: int, gamma=1.0) -> tuple[_ColorRect, ...]:
     """Return connected, colour-specific rectangles for one header byte.
 
     Components are located per exact header value rather than with the old
@@ -776,12 +778,13 @@ def _find_colour_rectangles(image, value: int, *, max_x: int, max_y: int) -> tup
     seen = bytearray(scan_width * scan_height)
     matches: list[_ColorRect] = []
 
+    expected = protocol_colour(value,gamma)
     def pixel_matches(x: int, y: int) -> bool:
         red, green, blue = pixels[x, y][:3]
         return (
-            abs(int(red) - value) <= _HEADER_SEARCH_TOLERANCE
-            and abs(int(green) - (255 - value)) <= _HEADER_SEARCH_TOLERANCE
-            and abs(int(blue) - 17) <= _HEADER_SEARCH_TOLERANCE
+            abs(int(red) - expected.red) <= _HEADER_SEARCH_TOLERANCE
+            and abs(int(green) - expected.green) <= _HEADER_SEARCH_TOLERANCE
+            and abs(int(blue) - expected.blue) <= _HEADER_SEARCH_TOLERANCE
         )
 
     for start_y in range(scan_height):
