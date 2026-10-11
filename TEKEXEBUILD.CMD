@@ -43,7 +43,7 @@ echo [TEK] Python executable: %PYTHON_EXE%
 echo [TEK] Starting guarded TEK.exe build...
 echo.
 
-powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%ROOT%scripts\build-tek-exe.ps1" -InstallDependencies -PythonExe "%PYTHON_EXE%"
+pwsh.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%ROOT%scripts\build-tek-exe.ps1" -InstallDependencies -PythonExe "%PYTHON_EXE%"
 set "BUILD_EXIT=%ERRORLEVEL%"
 
 if not "%BUILD_EXIT%"=="0" (

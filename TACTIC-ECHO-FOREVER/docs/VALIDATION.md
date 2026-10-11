@@ -1,3 +1,59 @@
+# TEF 1.0.0基线验证
+
+运行语义冻结0.14.3。300项Lua5.1模拟（196原功能+104APL）、30个TOC入口与独立Bindings文件检查，88个Lua语法检查；Python791通过/7跳过/17subtests，TEK234/AddOn244 unittest，基线/compileall/diff检查。首个Release的TEK从同提交构建，隔离禁自动启动冒烟不代表Hook或真实输入验证。真实历史正样本和限制见S76报告，1.0.0的固定5019×2交接仍待游戏内验收。
+
+# 0.14.3
+
+300项Lua5.1模拟通过（196原功能+104APL）；新增4项覆盖可选冷却默认关闭/显式未知阻断/配置清洗、禁用时不查询及派发即时复核、5019最后有效成功在公开5019读条下交接、其他施法/引导/未知拒绝与暂停/重置/相邻5019失效。TOC30入口，Bindings.xml作为独立安装文件验证6命令及唯一分组头。88个Lua语法通过。
+
+Python回归791通过、7跳过、17subtests；TEK234与AddOn244 unittest，baseline、compileall和diff检查通过。客户端文件1.60.1.70338，Interface16001。部署35文件逐文件SHA256及TOC加载列表由deliver.py核对。以上为模拟/文件验证，新版加载、战斗APL与射击交接未实机验收；按PRODUCTION_0.14.3.md短测。TE/TEK与WTF不改。
+
+# 0.14.2 CDM帧身份隔离验证
+
+296项Lua5.1模拟通过（194原功能+102APL），新增5项覆盖未知ID帧在精确匹配前后、Secret ID/失败getter/公开getter、多个请求独立UNKNOWN、冲突/Secret状态/容量阻断与有界诊断清洗。派发即时复核用未知帧夹住匹配帧验证，匹配活动变化仍撤销请求。TOC31入口及88个Lua语法检查通过。
+
+Python回归791通过、7跳过、17subtests；TEK234及AddOn244 unittest，基线契约、compileall和diff检查通过。客户端文件版本重新核对1.60.1.70338，Interface16001。部署35文件逐文件SHA256、TOC版本和加载列表由交付脚本核对；记录见dist/tef/TEF-0.14.2-delivery.json。以上是模拟及文件验证，CDM修复尚未游戏内验收，按PRODUCTION_0.14.2.md测试。TE/TEK源码和WTF未改。
+
+# 0.14.1验证
+
+291项Lua5.1模拟（194原功能+97APL）。新增7项待命测试：自定义只读候选与TEAP paused/Token0；范围丢失/恢复；无目标自身技能；移动优先级及进战重核；蓝量阈值与Secret；战斗未知仍拒绝派发；手动APL不绕过战斗门禁。模板待命HUD主卡显示、直接Request拒绝、查询中途脱战撤销同样验证。
+
+88个Lua语法、TOC31入口、来源检查通过。Python回归791通过、7跳过、17subtests；TEK234、AddOn244 unittest，baseline、compileall与diff检查通过。Wow.exe仍1.60.1.70338、Interface16001。新版待命预览尚未游戏内验证，按PRODUCTION_0.14.1.md实测；部署35文件核对见dist/tef/TEF-0.14.1-delivery.json。
+
+推荐不再强制战斗；Allowed和最终Packet仍强制公开战斗true，其他条件UNKNOWN不放宽。下文战斗属于推荐必需条件的旧条目仅保留历史，以0.14.1为准。
+
+## 0.14.0验证记录
+
+284项Lua5.1模拟（194原功能、60模板、18自定义、12新条件）；TOC31入口，88个Lua语法检查。六比较边界、公开/Secret蓝量、零max、checked距离、CDM公开false/true与目录独立ID、可选nil SpellID物品条目、缺帧/linked/冲突/超限、用户四条例子、5019、拖放与拿技能点击/动作栏直放/拒绝宏，以及距离/蓝量/CDM即时变化撤销均通过。
+
+Python回归791通过、7跳过、17subtests；TEK234与AddOn244 unittest通过；baseline/compileall/diff检查通过。客户端Wow.exe 1.60.1.70338、Interface16001。模拟不证明本版拖入实机成功或敌对距离公开，新版按PRODUCTION_0.14.0.md逐项验收。
+
+本机UnitDocumentation说明UnitPower/Max可能受Secret限制；UnitDistanceSquared有checkedDistance返回。CooldownViewerDocumentation.spellID可为空，公开无spellID的条目不作直接匹配；Constants分类0/1/2/3对应Essential/Utility/TrackedBuff/TrackedBar。帧状态只取公开isActive，不以可见性恢复Secret。用户授权新条件，未读其他SavedVariables。部署核对见dist/tef/TEF-0.14.0-delivery.json。
+
+## 0.13.0验证记录
+
+272项Lua5.1模拟（194原功能、60模板APL、18自定义APL），TOC30入口；自定义排序、全部规则解释、即时条件复核、Secret/非法配置、16条上限、跨场景保存与reload、API重入、成功重新求值、拖入ID及数字框刷新/保存保护均通过。86个Lua语法检查通过。
+
+pytest合并运行791通过、7跳过、17subtests通过（含验收脚本2项mock）；TEK unittest234、AddOn unittest244通过。baseline contract、compileall、git diff检查通过。实际Wow.exe仍1.60.1.70338，TOC Interface16001。TEK异常日志为测试故意注入的boom/locked，不是实机日志。
+
+新版自定义APL UI和真实派发尚未实机验证；安装逐文件SHA256见dist/tef/TEF-0.13.0-delivery.json。具体使用、受限条件与实测见PRODUCTION_0.13.0.md。下文为历史版本验证记录。
+
+## 0.12.1验证记录
+
+254 Lua模拟（194+60），TOC加载、5来源hash与84规则顺序/条件核对。验证150次失败仍可恢复，失败GUID跨重置不复用，4096总容量保守停止，GCD检测不执行，自身CD未知仍阻断。新版未实机验证。
+
+# 0.12.0验证
+
+253项Lua5.1模拟（193原功能+60 APL）与TOC加载通过；TEK/TE回归789通过、7跳过、17子测试。模板默认填充、移动布尔、AoE父调用、条件阻断、落盘清洗、配置保存、原始条件展示均有模拟覆盖。新版界面与实际派发尚未游戏验证，GCD未知继续阻断。
+
+# 0.11.0验证
+
+245项Lua5.1模拟通过（原193+APL52），28项TOC加载入口/XML及TEK互操作通过。新增职业包、混合天赋、实际已学/等级、三值rank、经典与traits provider、GCD/自身CD未知、精确成功后再求值、当前SENT锁定、取消重试、时钟缺失与API重入失效、APL UI草稿和无序列预览等。
+
+pytest789通过、7跳过、17subtests；TEK234/AddOn244/验收mock2；83Lua语法、baseline、compileall及diff检查通过。实际Wow.exe 1.60.1.70338。TEFSim来源272技能/54天赋为unverified候选，源文件SHA256见APL_MAGE_60_V0.md；没有读写TEProbe、TE、TEK或其他插件SavedVariables。
+
+尚未游戏验证APL状态能力、天赋完整覆盖、动态推荐或真实派发。GCD61304 NO_DATA和冷却Secret仍不派发；原固定序列行为不变。首轮按PRODUCTION_0.11.0.md验收，落盘仅读TEF_DB。
+
 # 0.10.1验证
 
 193项Lua5.1模拟与18项TOC入口/TEK互操作通过；新增选项鼠标移开与切页保持、页面底层纹理及HUD右键入口回归。pytest789通过/7跳过/17subtests；TEK234/AddOn244/验收mock2；72Lua语法、baseline、compileall及diff检查通过。界面效果待游戏内视觉验收。

@@ -49,7 +49,6 @@ end
 function C:Initialize(e)
     self.e=e; self.intent=false; self.worldSeen=false; self.state="paused"
     self.reason=nil; self.cycle=0; self.requestSerial=0
-    TEF.Dispatch.movementReceipts={}; TEF.Dispatch.movementReceiptCount=0
     e.db.dispatch=self.Clean(e.db.dispatch)
     TEF.Dispatch:SetEnabled(e.db.dispatch.permission)
 end
@@ -82,8 +81,9 @@ end
 function C:SetIntent(enabled,reason)
     if enabled~=true then self:Stop(reason); return true end
     if self.intent then return true,"RUNTIME_ALREADY_ENABLED" end
+    if self.e.identitySaturated then self:Fault("RUNTIME_IDENTITY_CAPACITY_RELOAD_REQUIRED"); return false end
     if self.e.clientValidated==false then self:Fault("RUNTIME_CLIENT_UNVERIFIED"); return false end
-    if not TEF.Recommendation:Current(self.e) then self:Stop("RUNTIME_PROFILE_UNCONFIGURED"); return false end
+    if not TEF.Recommendation:Configured(self.e) then self:Stop("RUNTIME_PROFILE_UNCONFIGURED"); return false end
     if self.e.completed and not self:EngineCall("Reset") then return false end
     self.intent=true
     if self.e.db.dispatch.signal and not TEF.Transport.enabled then
@@ -128,11 +128,13 @@ function C:Reconcile()
     self.cycle=self.cycle+1
     if not self.intent then return end
     local e=self.e
+    if e.identitySaturated then self:Fault("RUNTIME_IDENTITY_CAPACITY_RELOAD_REQUIRED"); return end
+    if TEF.APL:IsActive(e) and not TEF.UI.settingsOpen then TEF.APL:Refresh(e) end
     local generation,index,serial=e.generation,e.index,e.receiptSerial or 0
     local function current() return self.intent and self.e==e and TEF.engine==e and generation==e.generation and index==e.index and serial==(e.receiptSerial or 0) end
     if e.completed then self:Stop("RUNTIME_COMPLETED","completed"); return end
     if not e.db.dispatch.permission or not e.db.dispatch.signal then self:Stop("RUNTIME_GATE_OFF"); return end
-    if not e.profileKey or not TEF.Recommendation:Current(e) then self:Suspend("RUNTIME_PROFILE_UNCONFIGURED"); return end
+    if not TEF.Recommendation:Configured(e) then self:Suspend("RUNTIME_PROFILE_UNCONFIGURED"); return end
     local ok,raw=S.Call("InCombatLockdown"); local combat
     if ok then combat=S.Public(raw,"boolean") end
     if not current() then return end
@@ -148,6 +150,13 @@ function C:Reconcile()
         TEF.Dispatch:YieldCast("CONTINUOUS_CAST_PRESENT_OR_UNKNOWN")
         self:Changed("blocked","CONTINUOUS_CAST_PRESENT_OR_UNKNOWN"); return
     end
+    if TEF.APL:IsActive(e) and TEF.Dispatch:HasCurrentInitiation() then
+        -- SENT may precede visible cast presence, and SUCCEEDED can precede
+        -- cast disappearance. A dirty APL snapshot must not erase its receipt.
+        TEF.Dispatch:YieldCast("APL_WAIT_CURRENT_RECEIPT")
+        self:Changed("blocked","APL_WAIT_CURRENT_RECEIPT"); return
+    end
+    if not TEF.Recommendation:Current(e) then self:Suspend("APL_NO_CANDIDATE"); return end
     local allowed,reason=TEF.Dispatch:ContinuousEvidence(e.steps[e.index].spellID)
     if not current() then return end
     if not allowed then self:Suspend(reason); return end
@@ -161,8 +170,7 @@ function C:Reconcile()
 end
 function C:GetViewState()
     local e=self.e
-    local source=e and e.db.sourceByProfile[e.profileKey or ""]
-    source=source and source[e.scene] or "manual"
+    local source=e and TEF.Recommendation:Source(e) or "manual"
     return {intent=self.intent,state=self.state,label=names[self.state] or "未知",reason=self.reason,
         profileKey=e and e.profileKey or "职业未解析",source=source,index=e and e.index or 1,
         count=e and e.steps and #e.steps or 0}
@@ -170,7 +178,7 @@ end
 function C:IsDispatchIntentEnabled() return self.intent end
 function C:View()
     local v=self:GetViewState()
-    return v.label .. " | " .. v.profileKey .. " | " .. (v.source=="code" and "代码序列" or "人工序列")
+    return v.label .. " | " .. (v.source=="apl" and "法师 APL" or v.profileKey) .. " | " .. (v.source=="apl" and "APL" or v.source=="code" and "代码序列" or "人工序列")
 end
 -- Internal compatibility, no additional public toggle or execution loop.
 C.Tick=C.Reconcile

@@ -11,7 +11,7 @@ issecretvalue=function(v)
 end
 local detector=issecretvalue
 local function load(name) assert(loadfile(root .. "/" .. name))("TACTIC-ECHO-FOREVER",T) end
-load("Config.lua"); load("Safety.lua"); load("Sequence.lua")
+load("Config.lua"); load("Safety.lua"); load("APL/Packs/Mage/Abilities.lua"); load("APL/Packs/Mage/Talents.lua"); load("APL/TalentState.lua"); load("APL/Registry.lua"); load("APL/PublicConditions.lua"); load("APL/Custom.lua"); load("APL/State.lua"); load("APL/Conditions.lua"); load("APL/Trace.lua"); load("APL/Packs/Mage/Mage60.lua"); load("APL/Packs/Mage/Rules.lua"); load("APL/Engine.lua"); load("Sequence.lua")
 load("HudStyles.lua"); load("Profiles.lua"); load("Recommendation.lua"); load("Research.lua")
 local standard=T.StandardConfig or T.Config
 local count=0
@@ -438,7 +438,7 @@ GetCurrentKeyBoardFocus=function() return nil end
 UnitExists=function() return true end; UnitCanAttack=function() return true end
 UnitIsDeadOrGhost=function() return false end; IsPlayerMoving=function() return false end
 UnitCastingInfo=function() return nil end; UnitChannelInfo=function() return nil end
-load("UI.lua"); load("UIComponents.lua"); load("SequenceEditor.lua"); load("HUD.lua"); load("Dispatch.lua"); load("Presentation.lua"); load("Transport.lua"); load("Runtime.lua"); load("Hotkeys.lua"); load("Core/Bootstrap.lua")
+load("UI.lua"); load("UIComponents.lua"); load("SequenceEditor.lua"); load("CustomAPLEditor.lua"); load("HUD.lua"); load("Dispatch.lua"); load("Presentation.lua"); load("Transport.lua"); load("Runtime.lua"); load("Hotkeys.lua"); load("Core/Bootstrap.lua")
 local realprint=io.write
 test("toc_bootstrap_independent_namespace_sent_payload",function()
     local ef=allFrames.TEF_EventFrame
@@ -1239,11 +1239,31 @@ test("movement_failure_api_reentry_cannot_revive_manual_stop",function()
 end)
 test("movement_identity_capacity_fails_closed_and_reload_clears",function()
     deliveryFixture(); T.Runtime:SetIntent(true); T.Dispatch:TickContinuous()
-    T.Dispatch.movementReceiptCount=128; IsPlayerMoving=function() return true end
+    T.engine.seenCount=4096; IsPlayerMoving=function() return true end
     receipt("UNIT_SPELLCAST_INTERRUPTED",116,"capacity-m")
     eq(T.Runtime.intent,false); eq(T.Runtime.state,"error"); eq(T.Dispatch.pending,nil)
-    T.Runtime:Initialize(T.engine); eq(T.Dispatch.movementReceiptCount,0); eq(next(T.Dispatch.movementReceipts),nil)
+    eq(T.Runtime:SetIntent(true),false)
+    eq(T.Runtime.reason,"RUNTIME_IDENTITY_CAPACITY_RELOAD_REQUIRED")
+    deliveryFixture(); eq(T.engine.seenCount,0); eq(T.engine.identitySaturated,nil)
+    eq(T.Runtime:SetIntent(true),true)
 end)
+test("failed_attempts_beyond_128_retry_and_old_guid_stays_retired",function()
+    deliveryFixture(); IsPlayerMoving=function() return true end; T.Runtime:SetIntent(true)
+    for i=1,150 do
+        T.Runtime:Reconcile(); T.Dispatch:TickContinuous()
+        local guid="over128-" .. i
+        receipt("UNIT_SPELLCAST_SENT",116,guid)
+        receipt("UNIT_SPELLCAST_FAILED",116,guid)
+        eq(T.Runtime.intent,true); eq(T.engine.index,1)
+    end
+    eq(T.engine.seenCount,150)
+    T.Runtime:Reconcile(); T.Dispatch:TickContinuous()
+    receipt("UNIT_SPELLCAST_START",116,"over128-1")
+    receipt("UNIT_SPELLCAST_SUCCEEDED",116,"over128-1")
+    eq(T.engine.index,1); eq(T.engine.associations["over128-1"],nil)
+    T.Runtime:Stop(); T.Runtime:SetIntent(true); eq(T.Runtime.intent,true)
+end)
+
 test("foreign_skill_combat_opener_keeps_auto_intent_and_first_step",function()
     deliveryFixture("auto"); T.Runtime:World(); eq(T.Runtime.state,"standby")
     receipt("UNIT_SPELLCAST_SENT",5019,"opener"); receipt("UNIT_SPELLCAST_SUCCEEDED",5019,"opener")
@@ -1466,6 +1486,30 @@ test("shoot_starts_then_active_zero_token_own_success_counts",function()
     T.Dispatch:TickContinuous(); eq(T.Dispatch.pending,nil); eq(T.Dispatch.continuousReason,"SHOOT_ACTIVE_WAIT_SUCCESS")
     receipt("UNIT_SPELLCAST_SENT",5019,"shot2"); receipt("UNIT_SPELLCAST_SUCCEEDED",5019,"shot2"); eq(T.engine.index,2)
     T.Dispatch:TickContinuous(); assert(T.Dispatch.pending); eq(T.Dispatch.pending.binding.spellID,143)
+end)
+test("shoot_final_success_handoff_public_5019_without_postshot_timer",function()
+    shootFixture(); receipt("UNIT_SPELLCAST_SENT",5019,"handoff1"); receipt("UNIT_SPELLCAST_SUCCEEDED",5019,"handoff1")
+    UnitCastingInfo=function() return "射击",nil,nil,nil,nil,nil,nil,nil,5019 end
+    eq(T.Dispatch:CastIdle(),false); eq(T.engine.stepCasts,1)
+    receipt("UNIT_SPELLCAST_SENT",5019,"handoff2"); receipt("UNIT_SPELLCAST_SUCCEEDED",5019,"handoff2")
+    eq(T.engine.index,2); assert(T.Dispatch:CastIdle()); T.Dispatch:TickContinuous(); assert(T.Dispatch.pending)
+    local serial=T.engine.receiptSerial
+    receipt("UNIT_SPELLCAST_SUCCEEDED",5019,"handoff2"); eq(T.engine.receiptSerial,serial)
+    eq(T.Dispatch.pending.binding.spellID,143); assert(T.Dispatch:Packet())
+    receipt("UNIT_SPELLCAST_SENT",143,"handoff-next"); eq(T.engine.shootHandoff,nil); eq(T.Dispatch:CastIdle(),false)
+end)
+test("shoot_handoff_never_bypasses_unknown_other_cast_or_channel",function()
+    shootFixture(); cast(T.engine,5019,"narrow1"); cast(T.engine,5019,"narrow2")
+    for _,id in ipairs({secret,143}) do
+        UnitCastingInfo=function() return "施法",nil,nil,nil,nil,nil,nil,nil,id end; eq(T.Dispatch:CastIdle(),false)
+    end
+    UnitCastingInfo=function() return "射击",nil,nil,nil,nil,nil,nil,nil,5019 end
+    UnitChannelInfo=function() return "引导" end; eq(T.Dispatch:CastIdle(),false)
+    UnitChannelInfo=function() return nil end; assert(T.Dispatch:CastIdle())
+    T.engine:Pause(); eq(T.engine.shootHandoff,nil); eq(T.Dispatch:CastIdle(),false)
+    shootFixture(); cast(T.engine,5019,"stale1"); cast(T.engine,5019,"stale2"); T.engine:Reset(); eq(T.engine.shootHandoff,nil)
+    continuousFixture(T.Profiles:Parse("5019\n5019\n143")); cast(T.engine,5019,"adjacent-shoot")
+    eq(T.engine.index,2); eq(T.engine.shootHandoff,nil)
 end)
 test("shoot_active_unknown_api_failure_never_toggle_or_count",function()
     for _,fn in ipairs({function() return secret end,function() return nil end,function() error("RAW") end,function() return true end}) do
@@ -1746,3 +1790,5 @@ test("hud_no_settings_button_or_root_backdrop_right_click_still_opens",function(
     T.UI:CloseSettings()
 end)
 realprint("TEF simulated tests: " .. count .. " passed\n")
+
+assert(loadfile(root .. "/tests/apl.lua"))("TACTIC-ECHO-FOREVER",T,{runtimeFixture=runtimeFixture,deliveryFixture=deliveryFixture,receipt=receipt})

@@ -64,6 +64,13 @@ function P:Initialize(e, old)
     local scene = S.Field(old,"scene","string")
     if scene ~= "multi" then scene = "single" end
     e.db.classProfiles={}; e.db.sourceByProfile={}
+    e.db.apl=TEF.APL and TEF.APL.Clean(S.Field(old,"apl","table")) or nil
+    e.db.aplByClass={}
+    local aplModes=S.Field(old,"aplByClass","table")
+    for class in pairs(classes) do
+        local mode=aplModes and S.Field(aplModes,class,"table")
+        if mode then e.db.aplByClass[class]={single=S.Field(mode,"single","boolean")==true,multi=S.Field(mode,"multi","boolean")==true} end
+    end
     local savedClasses=S.Field(old,"classProfiles","table")
     local sources=S.Field(old,"sourceByProfile","table")
     if savedClasses then
@@ -119,7 +126,7 @@ function P:Initialize(e, old)
     e.scene, e.db.scene = scene, scene
     -- Explicit Engine.New(config) callers retain their own config. Bootstrap
     -- selects the saved profile separately; research never changes selection.
-    e.db.schema = 3
+    e.db.schema = 4
     e.db.dispatch=TEF.Runtime and TEF.Runtime.Clean(S.Field(old,"dispatch","table")) or nil
     if not e.profileKey or e.classToken~="MAGE" then e.steps=TEF.Engine.Validate(e.db.profiles[scene]) end
     local hud = S.Field(old,"hud","table")
@@ -138,6 +145,8 @@ function P:Select(e, key)
     local rows
     if TEF.Recommendation then rows=TEF.Recommendation:Rows(e,key) else rows=self:Clean(e.db.profiles[key]) end
     e:Reset() -- keeps success tombstones; old initiation can never take over.
+    e.aplCandidate=nil; e.aplSnapshot=nil
+    if TEF.APL then TEF.APL:Invalidate(true) end
     e.steps = TEF.Engine.Validate(rows)
     e.scene, e.db.scene = key, key
     if not rows then e:Log("lifecycle","PROFILE_UNCONFIGURED"); return false,"PROFILE_UNCONFIGURED" end

@@ -4,6 +4,7 @@ param(
     [switch]$InstallDependencies,
     [switch]$SkipTests,
     [string]$PythonExe = "python",
+    [string]$OutputDirectory = "",
     [ValidateRange(0, 60)]
     [int]$UnlockWaitSeconds = 8
 )
@@ -310,6 +311,14 @@ if (-not $SkipTests) {
 }
 
 $DistRoot = Join-Path $RepoRoot "dist"
+if ($OutputDirectory) {
+    $requestedOutput = [System.IO.Path]::GetFullPath((Join-Path $RepoRoot $OutputDirectory))
+    $allowedOutput = [System.IO.Path]::GetFullPath($DistRoot).TrimEnd('\', '/') + [System.IO.Path]::DirectorySeparatorChar
+    if (-not $requestedOutput.StartsWith($allowedOutput, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "Release output must be a subdirectory of this repository's dist directory."
+    }
+    $DistRoot = $requestedOutput
+}
 $FinalExe = if ($OneDir) { Join-Path $DistRoot "TEK\TEK.exe" } else { Join-Path $DistRoot "TEK.exe" }
 if ((Test-Path -LiteralPath $FinalExe) -and -not (Stop-ExactTargetTekProcess -TargetExe $FinalExe -WaitSeconds $UnlockWaitSeconds)) {
     Write-Warning "dist target remains locked. PyInstaller will build in an isolated staging directory; the new executable will be retained under dist as TEK.new.exe (or a timestamped variant) if it cannot replace the primary target."
@@ -365,7 +374,7 @@ try {
     $exe = $publish.Executable
 
     if (-not $SkipSmokeTest) {
-        $process = Start-Process -FilePath $exe -PassThru
+        $process = Start-Process -FilePath $exe -PassThru -WindowStyle Hidden
         Start-Sleep -Seconds 3
         if ($process.HasExited) { throw "TEK.exe smoke test failed: process exited with code $($process.ExitCode)" }
         Stop-Process -Id $process.Id -Force
@@ -375,6 +384,7 @@ try {
     $manifest = [ordered]@{
         schemaVersion = 2
         component = "TEK"
+        sourceCommit = (& git rev-parse HEAD)
         builtAt = (Get-Date).ToUniversalTime().ToString("o")
         executable = (Resolve-Path -LiteralPath $exe).Path
         standardOutput = $FinalExe
@@ -399,6 +409,11 @@ try {
     Write-Host "Next required Windows gate: .\scripts\verify-tek-sendinput.ps1 -TekExe $exe"
 } finally {
     if (Test-Path -LiteralPath $StageRoot) {
+        $resolvedStage = [System.IO.Path]::GetFullPath($StageRoot)
+        $allowedStage = [System.IO.Path]::GetFullPath((Join-Path $RepoRoot "build")).TrimEnd('\', '/') + [System.IO.Path]::DirectorySeparatorChar
+        if (-not $resolvedStage.StartsWith($allowedStage, [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw "Refusing cleanup outside repository build directory."
+        }
         Remove-Item -LiteralPath $StageRoot -Recurse -Force -ErrorAction SilentlyContinue
     }
 }

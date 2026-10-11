@@ -1,0 +1,212 @@
+{
+  "date": 20250820.114011,
+  "type": "package",
+  "name": "火焰(黑科研)",
+  "payload": {
+    "source": "",
+    "builtIn": false,
+    "date": 20250731,
+    "spec": 8,
+    "hidden": false,
+    "desc": "本循环由黑科力研究所【风雪】制作 20250731",
+    "profile": "",
+    "version": 20250731,
+    "warnings": "WARNING:  The import for 'default' required some automated changes.\nLine 6: Unsupported action 'flame_cap'.\n\nImported 3 action lists.\n",
+    "author": "风雪",
+    "lists": {
+      "2T10": {
+        "1": {
+          "1": {},
+          "enabled": true,
+          "criteria": "(debuff.living_bomb.remains > 6 or debuff.living_bomb.down) & (buff.pushing_the_limit.remains > (cast_time +latency) ) & (buff.heating_up.down or (buff.heating_up.up & buff.hot_streak.down ) )",
+          "action": "fireball"
+        },
+        "2": {
+          "1": {},
+          "enabled": true,
+          "action": "pyroblast",
+          "criteria": "buff.heating_up.up & buff.hot_streak.up"
+        }
+      },
+      "default": {
+        "1": {
+          "1": {},
+          "enabled": true,
+          "use_while_casting": 1,
+          "action": "nitro_boosts",
+          "use_off_gcd": 1,
+          "criteria": "defile_target_is_me"
+        },
+        "2": {
+          "action": "counterspell",
+          "enabled": true
+        },
+        "3": {
+          "enabled": true,
+          "action": "spellsteal",
+          "line_cd": "spellsteal_cooldown"
+        },
+        "4": {
+          "enabled": true,
+          "action": "mirror_image",
+          "criteria": "down"
+        },
+        "5": {
+          "1": {},
+          "enabled": true,
+          "use_off_gcd": 1,
+          "action": "combustion",
+          "criteria": "down & (debuff.living_bomb.remains > 6  or debuff.living_bomb.down) & ((buff.quad_core.up & buff.magic_damage_increase.up) or (buff.quad_core.remains < 7 & buff.magic_damage_increase.down) or buff.magic_damage_increase.remains > 5 or target.health.pct < 36)"
+        },
+        "6": {
+          "action": "icy_veins",
+          "enabled": true
+        },
+        "7": {
+          "action": "flame_cap",
+          "enabled": true
+        },
+        "8": {
+          "action": "potion",
+          "enabled": true
+        },
+        "9": {
+          "enabled": true,
+          "action": "use_items",
+          "description": "Use any trinkets that aren't otherwise specified."
+        },
+        "10": {
+          "enabled": true,
+          "description": "",
+          "cycle_targets": 1,
+          "max_cycle_targets": "living_bomb_cap",
+          "action": "living_bomb",
+          "criteria": "target.time_to_die > 12 & debuff.living_bomb.down"
+        },
+        "11": {
+          "enabled": false,
+          "action": "call_action_list",
+          "criteria": "active_enemies > 2",
+          "list_name": "aoe"
+        },
+        "12": {
+          "1": {},
+          "enabled": true,
+          "description": "燃烧buff",
+          "action": "call_action_list",
+          "criteria": "buff.combustion.up",
+          "list_name": "combustion"
+        },
+        "13": {
+          "1": {},
+          "enabled": true,
+          "criteria": "buff.hot_streak.up & buff.magic_damage_increase.remains <( action.fireball.cast_time +latency )",
+          "action": "pyroblast"
+        },
+        "14": {
+          "1": {},
+          "enabled": true,
+          "action": "call_action_list",
+          "criteria": "buff.pushing_the_limit.up",
+          "list_name": "2T10"
+        },
+        "15": {
+          "enabled": true,
+          "action": "pyroblast",
+          "criteria": "buff.hot_streak.up"
+        },
+        "16": {
+          "enabled": true,
+          "action": "fire_blast",
+          "criteria": "moving"
+        },
+        "17": {
+          "enabled": true,
+          "action": "frostfire_bolt",
+          "criteria": "glyph.frostfire.enabled"
+        },
+        "18": {
+          "enabled": true,
+          "action": "fireball",
+          "criteria": ""
+        }
+      },
+      "precombat": {
+        "1": {
+          "enabled": true,
+          "description": "September 2023",
+          "action": "arcane_brilliance",
+          "criteria": "raid & buff.arcane_brilliance.down"
+        },
+        "2": {
+          "enabled": true,
+          "action": "arcane_intellect",
+          "criteria": "! raid & buff.arcane_brilliance.down & buff.arcane_intellect.down"
+        },
+        "3": {
+          "enabled": true,
+          "action": "molten_armor",
+          "criteria": "buff.unique_armor.down"
+        },
+        "4": {
+          "enabled": true,
+          "action": "focus_magic",
+          "criteria": "group & active_dot.focus_magic = 0"
+        }
+      },
+      "aoe": {
+        "1": {
+          "enabled": true,
+          "action": "blast_wave",
+          "criteria": "target.within10"
+        },
+        "2": {
+          "enabled": true,
+          "action": "flamestrike",
+          "criteria": "buff.firestarter.up",
+          "line_cd": "8"
+        },
+        "3": {
+          "enabled": true,
+          "action": "dragons_breath",
+          "criteria": "target.within12"
+        },
+        "4": {
+          "action": "blizzard",
+          "enabled": true
+        }
+      },
+      "combustion": {
+        "1": {
+          "1": {},
+          "enabled": true,
+          "action": "hyperspeed_acceleration",
+          "use_off_gcd": 1
+        },
+        "2": {
+          "1": {},
+          "enabled": true,
+          "criteria": "buff.heating_up.up & buff.hot_streak.up",
+          "action": "fireball"
+        },
+        "3": {
+          "1": {},
+          "enabled": true,
+          "criteria": "buff.heating_up.up & buff.hot_streak.up",
+          "action": "pyroblast"
+        },
+        "4": {
+          "1": {},
+          "enabled": true,
+          "criteria": "buff.hot_streak.up",
+          "action": "pyroblast"
+        },
+        "5": {
+          "1": {},
+          "action": "fireball",
+          "enabled": true
+        }
+      }
+    }
+  }
+}

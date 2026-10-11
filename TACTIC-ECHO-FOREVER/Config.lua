@@ -23,5 +23,5 @@ TEF.ProfileDefaults = {
     -- Public 118 successes observed in TEF sessions 16/17, 2026-10-11.
     multi = {{name="变形术",spellID=118,matchIDs={118}}, TEF.StandardConfig[4]},
 }
-TEF.Version = "0.10.1"
+TEF.Version = "1.0.0"
 TEF.Placeholder = 134400

@@ -117,7 +117,7 @@ function H:Refresh(cooldownEvent)
         local index=e.index+i-1
         if e.db.loop and e.steps and index>#e.steps then index=(index-1)%#e.steps+1 end
         local step=e.steps and e.steps[index]
-        if i>1 and (e.completed or not e.db.hud.preview) then step=nil end
+        if i>1 and (e.completed or not e.db.hud.preview or TEF.APL:IsActive(e)) then step=nil end
         local key=step and (step.spellID .. ":" .. step.name)
         local view=key and self.metadata[key]
         if step and not view then view=S.Spell(step.spellID,step.name); self.metadata[key]=view end
@@ -128,7 +128,7 @@ function H:Refresh(cooldownEvent)
     end
     local step=e.steps and e.steps[e.index]
     local view=step and self.metadata[step.spellID .. ":" .. step.name]
-    U:Paint(self.name,"SetText",e.completed and "完成" or (view and view.name or "未配置推荐序列"))
+    U:Paint(self.name,"SetText",e.completed and "完成" or (view and view.name or (TEF.APL:IsActive(e) and TEF.APL.Trace:Waiting(e) or "未配置推荐序列")))
     self:RefreshState()
 end
 H.colors={paused={.48,.52,.60},standby={.36,.78,.90},running={.22,.96,.56},blocked={.96,.72,.18},completed={.96,.83,.45},error={1,.25,.25}}
@@ -148,7 +148,11 @@ function H:RefreshState()
         if ok and S.Public(raw,"string") then castLabel=entry[2] end
     end
     for i,card in ipairs(self.cards) do U:Paint(card.state,"SetText",card.displayStep and (i==1 and (castLabel or v.label) or "随后") or "") end
-    U:Paint(self.status,"SetText",v.label .. " | " .. (e.scene=="multi" and "多目标" or "单体") .. " | " .. e.index .. "/" .. (e.steps and #e.steps or 0) .. " · 次数 " .. (e.stepCasts or 0) .. "/" .. (step and step.repeatCount or 1))
+    if TEF.APL:IsActive(e) then
+        U:Paint(self.status,"SetText",v.label .. " | " .. TEF.APL.Trace:View(e))
+    else
+        U:Paint(self.status,"SetText",v.label .. " | " .. (e.scene=="multi" and "多目标" or "单体") .. " | " .. e.index .. "/" .. (e.steps and #e.steps or 0) .. " · 次数 " .. (e.stepCasts or 0) .. "/" .. (step and step.repeatCount or 1))
+    end
 end
 function H:VisualTick()
     -- No spell/action/binding/presence reads in the visual fallback.

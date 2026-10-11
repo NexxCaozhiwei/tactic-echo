@@ -10,10 +10,10 @@ def main():
 
     toc = (ROOT / "TACTIC-ECHO-FOREVER.toc").read_text(encoding="utf-8")
     entries = [line.strip() for line in toc.splitlines() if line.strip() and not line.startswith("#")]
-    assert entries == ["Config.lua", "Safety.lua", "Sequence.lua", "HudStyles.lua", "Profiles.lua", "Recommendation.lua", "Research.lua", "UI.lua", "UIComponents.lua", "SequenceEditor.lua", "HUD.lua", "Dispatch.lua", "Presentation.lua", "Transport.lua", "Runtime.lua", "Hotkeys.lua", "Core/Bootstrap.lua", "Bindings.xml"]
+    assert entries == ["Config.lua", "Safety.lua", "APL/Packs/Mage/Abilities.lua", "APL/Packs/Mage/Talents.lua", "APL/TalentState.lua", "APL/Registry.lua", "APL/PublicConditions.lua", "APL/Custom.lua", "APL/State.lua", "APL/Conditions.lua", "APL/Trace.lua", "APL/Packs/Mage/Mage60.lua", "APL/Packs/Mage/Rules.lua", "APL/Engine.lua", "Sequence.lua", "HudStyles.lua", "Profiles.lua", "Recommendation.lua", "Research.lua", "UI.lua", "UIComponents.lua", "SequenceEditor.lua", "CustomAPLEditor.lua", "HUD.lua", "Dispatch.lua", "Presentation.lua", "Transport.lua", "Runtime.lua", "Hotkeys.lua", "Core/Bootstrap.lua"]
     assert "## Interface: 16001" in toc and "## SavedVariables: TEF_DB" in toc
     version = (ROOT / "VERSION").read_text().strip()
-    assert version == "0.10.1" and f"## Version: {version}" in toc
+    assert version == "1.0.0" and f"## Version: {version}" in toc
     assert f'local VERSION = "{version}"' in (ROOT / "Core/Bootstrap.lua").read_text(encoding="utf-8")
     baseline = ROOT / f"docs/baselines/BASELINE_{version}.md"
     if not baseline.is_file():
@@ -22,12 +22,16 @@ def main():
     assert version in (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
     lua = LuaRuntime(unpack_returned_tuples=True)
     assert lua.eval("_VERSION") == "Lua 5.1"
-    for entry in entries:
+    assert "Bindings.xml" not in entries
+    for entry in entries + ["Bindings.xml"]:
         assert (ROOT / entry).is_file()
         if entry.endswith(".xml"):
             import xml.etree.ElementTree as ET
             tree=ET.parse(ROOT/entry)
+            assert tree.getroot().tag == "Bindings"
             assert len(list(tree.getroot()))==6
+            headers=[b.attrib["header"] for b in tree.getroot() if "header" in b.attrib]
+            assert len(headers)==len(set(headers))
             public = [b for b in tree.getroot() if b.attrib.get("header")=="TEF"]
             assert len(public)==1 and public[0].attrib["name"]=="TEF_TOGGLE_DISPATCH"
             assert "TEF_ToggleDispatchIntent()" in public[0].text
@@ -36,7 +40,7 @@ def main():
         code = (ROOT / entry).read_text(encoding="utf-8")
         # Forbidden runtime dependencies/inputs and asynchronous advancement.
         assert not re.search(r"TacticEchoDB|TEProbeDB|C_Timer|CastSpell|RunMacro|SetCVar|TargetUnit|SendInput", code)
-        if entry in ("UI.lua","UIComponents.lua","SequenceEditor.lua","HUD.lua","Dispatch.lua","Transport.lua","Core/Bootstrap.lua"):
+        if entry in ("UI.lua","UIComponents.lua","SequenceEditor.lua", "CustomAPLEditor.lua","HUD.lua","Dispatch.lua","Transport.lua","Core/Bootstrap.lua"):
             assert not re.search(r"(?:engine|self\.e|e)\.running\s*=", code)
             assert not re.search(r"Runtime\.intent\s*=", code)
         if entry=="HUD.lua":
@@ -45,6 +49,33 @@ def main():
             assert "OnUpdate" not in code
     lua.globals().arg = lua.table_from([ROOT.as_posix()])
     lua.execute((ROOT / "tests/run.lua").read_text(encoding="utf-8"))
+    apl_count=lua.globals().TEF_APL_TEST_COUNT
+    assert apl_count and apl_count>=38
+    print(f"TEF APL Lua 5.1 simulated cases: {apl_count}")
+    # Compare every generated rule with the immutable user reference fields.
+    import json, hashlib
+    references = ROOT / "docs/references/wotlk"
+    for name, expected in json.loads((references / "sha256.json").read_text()).items():
+        assert hashlib.sha256((references / name).read_bytes()).hexdigest().upper() == expected
+    reference_lua = LuaRuntime(unpack_returned_tuples=True)
+    namespace = reference_lua.eval('{APL={Packs={MAGE={}}}}')
+    reference_lua.execute((ROOT / "APL/Packs/Mage/Rules.lua").read_text(encoding="utf-8"), "TEF", namespace)
+    count = 0
+    for template in ("arcane", "fire", "frost"):
+        raw = json.loads((references / f"mage_{template}_wotlk.json").read_text(encoding="utf-8"))
+        for list_name, rows in raw["payload"]["lists"].items():
+            generated = namespace.APL.Packs.MAGE.templates[template].lists[list_name]
+            assert len(generated) == len(rows)
+            for index, (source_index, row) in enumerate(sorted(rows.items(), key=lambda entry: int(entry[0])), 1):
+                actual = generated[index]
+                assert actual.id == f"{template}:{list_name}:{source_index}"
+                assert actual.action == row["action"] and actual.criteria == row.get("criteria", "")
+                assert actual.enabled == row.get("enabled", False)
+                if not actual.enabled:
+                    assert actual.status == "DROP"
+                count += 1
+    assert count == 84
+    print("Five reference SHA256 and 84 source-rule identity/order/condition checks passed")
     # Independent TEK decoder/gate checks use its current unmodified source.
     if not (ROOT.parent / "tek/src/teap.py").is_file():
         print("Lua 5.1/TOC passed; TEK interoperability checks skipped outside TE workspace")

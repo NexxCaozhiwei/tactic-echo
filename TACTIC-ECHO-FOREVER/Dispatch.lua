@@ -47,6 +47,10 @@ function D:InputIdle()
     return classification=="NO_DATA"
 end
 function D:ContinuousEvidence(id)
+    if TEF.APL and TEF.APL:IsActive(TEF.engine) then
+        local allowed,reason=TEF.APL:Allowed(TEF.engine,id)
+        if not allowed then return false,reason end
+    end
     if not self:InputIdle() then return false,"CONTINUOUS_TEXT_FOCUS_OR_UNKNOWN" end
     if publicBoolean("UnitExists","target")~=true
         or publicBoolean("UnitCanAttack","player","target")~=true
@@ -60,7 +64,9 @@ function D:ContinuousEvidence(id)
         local b=self:ResolveCached(id)
         if b and self:VerifyCurrent(b) then range=publicBoolean("C_ActionBar.IsActionInRange",b.slot,"target") end
     end
-    if range~=true then return false,"CONTINUOUS_RANGE_UNKNOWN_OR_BLOCKED" end
+    local c=TEF.engine.aplCandidate
+    local selfAction=TEF.APL and TEF.APL:IsActive(TEF.engine) and c and c.spellID==id and (c.target=="self" or (TEF.APL.Abilities[c.action] and TEF.APL.Abilities[c.action].target=="self"))
+    if not selfAction and range~=true then return false,"CONTINUOUS_RANGE_UNKNOWN_OR_BLOCKED" end
     local fn=S.Resolve("C_Spell.IsSpellUsable")
     if not fn then return false,"CONTINUOUS_USABLE_UNKNOWN_OR_BLOCKED" end
     local ok,usable,power=pcall(fn,id)
@@ -207,11 +213,21 @@ function D:ResolveCached(id)
     return cached,"TEK_BINDING_VERIFIED"
 end
 function D:CastIdle()
+    local e=TEF.engine; local h=e and e.shootHandoff
+    local generation,index,serial=e and e.generation,e and e.index,e and e.receiptSerial
+    local handoff=h and h.generation==generation and h.index==index and h.receiptSerial==serial
+        and e.running and not e.completed and e.steps[index].spellID~=5019
     for _,path in ipairs({"UnitCastingInfo","UnitChannelInfo"}) do
-        local ok,value=S.Call(path,"player")
+        local fn=S.Resolve(path)
+        if not fn then return false end
+        local ok,value,_,__,___,____,_____,______,_______,spell=pcall(fn,"player")
         local _,reason=S.Public(value,"string")
-        if not ok or reason~="NO_DATA" then return false end
+        if not ok then return false end
+        if reason~="NO_DATA" then
+            if not handoff or path~="UnitCastingInfo" or reason~="PUBLIC" or S.ID(spell)~=5019 then return false end
+        end
     end
+    if e and (generation~=e.generation or index~=e.index or serial~=e.receiptSerial) then return false end
     return true
 end
 function D:Request(fromContinuous)
@@ -231,6 +247,10 @@ function D:Request(fromContinuous)
     elseif not step or step.unverified then blocked="TEK_STEP_UNRESOLVED"
     elseif not self:CastIdle() then blocked="TEK_CAST_PRESENT_OR_UNKNOWN" end
     if blocked then e:Log("transport",blocked); return false,blocked end
+    if TEF.APL and TEF.APL:IsActive(e) then
+        local allowed,reason=TEF.APL:Allowed(e,step.spellID)
+        if not allowed then return false,reason end
+    end
     local binding,reason
     if fromContinuous then binding,reason=self:ResolveCached(step.spellID) else binding,reason=self:Resolve(step.spellID) end
     if not binding then e:Log("transport",reason); return false,reason end
@@ -284,6 +304,10 @@ function D:Packet()
         self:Block("CONTINUOUS_BINDING_CHANGED"); return nil
     end
     if not self:CastIdle() then self:Cancel("TEK_CAST_PRESENT_OR_UNKNOWN"); return nil end
+    if TEF.APL and TEF.APL:IsActive(e) then
+        local allowed,reason=TEF.APL:Allowed(e,p.binding.spellID)
+        if not allowed then self:Cancel(reason); return nil end
+    end
     if p.binding.spellID==5019 and self:ShootActive(p.binding)~=false then self:Cancel("SHOOT_ACTIVE_OR_UNKNOWN"); return nil end
     if self.continuous then
         local allowed,reason=self:ContinuousEvidence(p.binding.spellID)
@@ -294,6 +318,7 @@ function D:Packet()
     local combat
     if ok then combat=S.Public(rawCombat,"boolean") end
     if combat==nil then self:Cancel("TEK_COMBAT_UNKNOWN"); return nil end
+    if TEF.APL and TEF.APL:IsActive(e) and combat~=true then self:Cancel("APL_DISPATCH_COMBAT_REQUIRED"); return nil end
     if self.pending~=p or not self.enabled or not e.running or e.completed
         or e.generation~=p.generation or e.index~=p.index or p.receiptSerial~=(e.receiptSerial or 0) or TEF.UI.settingsOpen then return nil end
     return p.binding.token,combat
@@ -310,7 +335,7 @@ function D:Event(event,unit,id,guidRaw)
     local spellValue=S.ID(id)
     local guid=S.Identity(guidRaw)
     if owned and (runtime.e~=e or TEF.engine~=e or e.generation~=eventGeneration or e.index~=eventIndex) then return true end
-    if owned and unitValue=="player" and guid and self.movementReceipts and self.movementReceipts[guid] then
+    if owned and unitValue=="player" and guid and e.seen[guid]=="retired" then
         e:Log("ignored","CONTINUOUS_FAILED_RECEIPT_IGNORED",spellValue,nil,nil,event)
         return true
     end
@@ -337,9 +362,13 @@ function D:Event(event,unit,id,guidRaw)
                 if not guid then
                     self:Block("CONTINUOUS_FAILURE_IDENTITY_UNKNOWN"); return true
                 elseif moving==true or (a and a.generation==generation and a.index==index and a.spellID==spell) then
-                    if (self.movementReceiptCount or 0)>=128 then runtime:Fault("CONTINUOUS_FAILED_IDENTITY_CAPACITY"); return true end
-                    self.movementReceipts=self.movementReceipts or {}
-                    self.movementReceipts[guid]=true; self.movementReceiptCount=(self.movementReceiptCount or 0)+1
+                    -- Failed and invalidated initiations share Engine's existing
+                    -- lifetime tombstones. Never evict: delayed events must stay
+                    -- retired, but there is no redundant 128-attempt budget.
+                    if not e.seen[guid] then
+                        if e.seenCount>=4096 then e.identitySaturated=true; runtime:Fault("CONTINUOUS_FAILED_IDENTITY_CAPACITY"); return true end
+                        e.seen[guid]="retired"; e.seenCount=e.seenCount+1
+                    end
                     local reason=moving==true and "CONTINUOUS_MOVEMENT_FAILURE_RETRY" or (moving==false and "CONTINUOUS_FAILURE_RETRY" or "CONTINUOUS_FAILURE_MOVEMENT_UNKNOWN")
                     e:Log("observed",reason,spell,nil,nil,event)
                     runtime:Suspend(reason); return true

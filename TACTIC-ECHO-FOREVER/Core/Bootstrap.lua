@@ -1,5 +1,5 @@
 local addonName, TEF = ...
-local VERSION = "0.10.1"
+local VERSION = "1.0.0"
 local S = TEF.Safety
 local engine, frame
 
@@ -13,6 +13,7 @@ local function initialize()
     TEF_DB=engine.db
     -- Runtime namespace is the addon's private loader table, no TE dependency.
     TEF.engine=engine
+    TEF.APL:Invalidate(true)
     TEF.Profiles:Select(engine,engine.scene)
     TEF.Transport:Initialize(engine)
     engine.clientValidated=false
@@ -46,12 +47,22 @@ local function onEvent(_,event,...)
         return
     end
     if not engine then return end
+    if event=="SPELLS_CHANGED" or event=="CHARACTER_POINTS_CHANGED" or event=="PLAYER_TALENT_UPDATE"
+        or event=="TRAIT_CONFIG_UPDATED" or event=="ACTIVE_TALENT_GROUP_CHANGED" or event=="PLAYER_ENTERING_WORLD" then
+        TEF.APL:Invalidate(true)
+    elseif event=="SPELL_UPDATE_COOLDOWN" or event=="SPELL_UPDATE_CHARGES" or event=="PLAYER_TARGET_CHANGED"
+        or event=="PLAYER_REGEN_ENABLED" or event=="PLAYER_REGEN_DISABLED"
+        or event=="COOLDOWN_VIEWER_DATA_LOADED" or event=="COOLDOWN_VIEWER_SPELL_OVERRIDE_UPDATED" then TEF.APL:Invalidate() end
+    if event=="UNIT_POWER_UPDATE" or event=="UNIT_MAXPOWER" then
+        if S.Public((...),"string")=="player" then TEF.APL:Invalidate() end
+    end
     if event == "PLAYER_LOGOUT" then TEF.Runtime:Stop("RUNTIME_LOGOUT"); TEF.Transport:SetEnabled(false); return end
     if event == "PLAYER_LOGIN" then TEF.Hotkeys:Apply(); refresh(); return end
     if event == "PLAYER_ENTERING_WORLD" then TEF.Hotkeys:Apply(); TEF.Profiles:RefreshIdentity(engine); TEF.Runtime:World(); refresh(); return end
     if event == "PLAYER_SPECIALIZATION_CHANGED" or event=="CHARACTER_POINTS_CHANGED" then
         TEF.Profiles:RefreshIdentity(engine); refresh(); return
     end
+    if event=="PLAYER_TALENT_UPDATE" or event=="TRAIT_CONFIG_UPDATED" or event=="ACTIVE_TALENT_GROUP_CHANGED" then refresh(); return end
     if event == "SPELLS_CHANGED" then TEF.Presentation.bindings={}; TEF.Presentation.cooldowns={}; TEF.HUD.metadata={}; TEF.Dispatch:ClearBindingCache(); refresh(); return end
     if event == "SPELL_UPDATE_COOLDOWN" or event == "SPELL_UPDATE_CHARGES" then TEF.HUD:Refresh(event=="SPELL_UPDATE_COOLDOWN"); return end
     if event == "PLAYER_REGEN_ENABLED" then
@@ -60,7 +71,7 @@ local function onEvent(_,event,...)
     end
     if event == "ACTIONBAR_SLOT_CHANGED" or event == "UPDATE_BINDINGS" then
         if event=="UPDATE_BINDINGS" then TEF.Hotkeys:Apply() end
-        TEF.Dispatch:BindingsChanged(); TEF.Presentation.bindings={}; TEF.Research:Invalidate(); refresh(); return
+        TEF.Dispatch:BindingsChanged(); TEF.Presentation.bindings={}; TEF.Research:Invalidate(); TEF.APL:Invalidate(true); refresh(); return
     end
     if event == "PLAYER_REGEN_DISABLED" then
         -- Combat flags are sampled live by Packet; entering combat is not a
@@ -87,7 +98,7 @@ local function onEvent(_,event,...)
         if not consumed then engine:Handle(engine.generation,event,unit,guid,id) end
         -- Events invalidate research evidence, never manufacture cast=false.
         local publicUnit=S.Public(unit,"string")
-        if publicUnit=="player" then TEF.Research:Invalidate() end
+        if publicUnit=="player" then TEF.Research:Invalidate(); TEF.APL:Invalidate() end
         refresh()
     end
 end
@@ -101,8 +112,9 @@ if created then
     end)
     if ok then
         local events={"ADDON_LOADED","PLAYER_LOGIN","PLAYER_LOGOUT","PLAYER_ENTERING_WORLD","SPELLS_CHANGED",
-            "PLAYER_TARGET_CHANGED","PLAYER_REGEN_ENABLED","PLAYER_REGEN_DISABLED","UI_SCALE_CHANGED","ACTIONBAR_SLOT_CHANGED","UPDATE_BINDINGS","SPELL_UPDATE_COOLDOWN","SPELL_UPDATE_CHARGES","PLAYER_SPECIALIZATION_CHANGED","CHARACTER_POINTS_CHANGED"}
+            "PLAYER_TARGET_CHANGED","PLAYER_REGEN_ENABLED","PLAYER_REGEN_DISABLED","UI_SCALE_CHANGED","ACTIONBAR_SLOT_CHANGED","UPDATE_BINDINGS","SPELL_UPDATE_COOLDOWN","SPELL_UPDATE_CHARGES","PLAYER_SPECIALIZATION_CHANGED","CHARACTER_POINTS_CHANGED","PLAYER_TALENT_UPDATE","TRAIT_CONFIG_UPDATED","ACTIVE_TALENT_GROUP_CHANGED"}
         for event in pairs(TEF.Events) do events[#events+1]=event end
+        for _,event in ipairs({"UNIT_POWER_UPDATE","UNIT_MAXPOWER","COOLDOWN_VIEWER_DATA_LOADED","COOLDOWN_VIEWER_SPELL_OVERRIDE_UPDATED"}) do events[#events+1]=event end
         for _,event in ipairs(events) do
             local registered=TEF.UI:Call(frame,"RegisterEvent",event)
             if not registered then printSafe("事件注册失败：" .. event) end

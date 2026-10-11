@@ -94,7 +94,8 @@ function Engine.New(config, db)
                         version=S.Field(r,"version","string"),
                         cycle=S.Field(r,"cycle","number"),request=S.Field(r,"request","number"),
                         castCount=S.Field(r,"castCount","number"),requiredCasts=S.Field(r,"requiredCasts","number"),
-                        research=TEF.Research and TEF.Research.CleanSummary(S.Field(r,"research","table")) or nil}
+                        research=TEF.Research and TEF.Research.CleanSummary(S.Field(r,"research","table")) or nil,
+                        apl=TEF.APL and TEF.APL.Trace.Clean(S.Field(r,"apl","table")) or nil}
                 end
             end
         end
@@ -111,6 +112,7 @@ function Engine.New(config, db)
 end
 
 function Engine:Invalidate(reason)
+    self.shootHandoff=nil
     -- Public initiation identities already accepted by Handle must stay retired
     -- across reset/pause. A late START must not recreate an old association in
     -- the new generation. Share the existing bounded identity budget.
@@ -143,6 +145,9 @@ end
 function Engine:Resume()
     self:Invalidate("RESUME")
     self.running = self.steps ~= nil and not self.completed and not self.identitySaturated
+    -- Resume retains a selected action, but Packet still requires fresh live
+    -- dependencies. Pause/reset snapshots fail generation checks until sampled.
+    if TEF.APL and TEF.APL:IsActive(self) and self.aplSnapshot then self.aplSnapshot.generation=self.generation end
 end
 function Engine:Reset()
     self.running = false
@@ -184,6 +189,7 @@ function Engine:Handle(generation, event, unitRaw, guidRaw, spellRaw)
         return
     end
     if event == "UNIT_SPELLCAST_SENT" or event == "UNIT_SPELLCAST_START" then
+        if self.steps[self.index].matches[spellID] then self.shootHandoff=nil end
         -- SENT observes initiation only; no target argument is consumed.
         if not self.associations[guid] then
             if self.associationCount >= 256 then
@@ -221,6 +227,12 @@ function Engine:Handle(generation, event, unitRaw, guidRaw, spellRaw)
     self.seen[guid], self.seenCount = true, self.seenCount+1
     self.receiptSerial=(self.receiptSerial or 0)+1
     self.associations[guid]=nil; self.associationCount=self.associationCount-1
+    if TEF.APL and TEF.APL:IsActive(self) then
+        self.stepCasts=0
+        log("match","APL_MATCH",spellID,self.index,self.index)
+        TEF.APL:Invalidate()
+        return
+    end
     self.stepCasts=self.stepCasts+1
     if self.stepCasts<self.steps[self.index].repeatCount then
         log("match","STEP_REPEAT_MATCH",spellID,self.index,self.index)
@@ -233,6 +245,11 @@ function Engine:Handle(generation, event, unitRaw, guidRaw, spellRaw)
         log("completed", self.db.loop and "LOOP_COMPLETED" or "COMPLETED", spellID, current, following)
     else log("match", "CURRENT_MATCH", spellID, current, following) end
     self.index=following
+    if spellID==5019 and not self.completed and following~=current
+        and self.steps[following].spellID~=5019 then
+        self.shootHandoff={generation=self.generation,index=following,receiptSerial=self.receiptSerial}
+        log("observed","SHOOT_SUCCESS_HANDOFF",spellID,current,following)
+    else self.shootHandoff=nil end
     if not self.completed then self.stepCasts=0 end
     -- No polling, scheduled advance, cast-state write, or automatic input.
 end
