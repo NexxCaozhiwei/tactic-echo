@@ -1,8 +1,0 @@
-<Bindings>
-  <Binding name="TEF_TOGGLE_DISPATCH" header="TEF">TEF_ToggleDispatchIntent()</Binding>
-  <Binding name="TEF_TOGGLE_PRACTICE" header="TEF_LEGACY">TEF_ToggleDispatchIntent()</Binding>
-  <Binding name="TEF_TOGGLE_CONTINUOUS">TEF_ToggleDispatchIntent()</Binding>
-  <Binding name="TEF_TOGGLE_PERMISSION" header="TEF_TEST">TEF_PermissionToggle()</Binding>
-  <Binding name="TEF_REQUEST_CURRENT">TEF_RequestCurrent()</Binding>
-  <Binding name="TEF_STOP_ALL">TEF_StopAll()</Binding>
-</Bindings>

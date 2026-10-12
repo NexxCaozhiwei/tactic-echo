@@ -1,10 +1,12 @@
+$RepoRoot = Split-Path -Parent $PSScriptRoot
+Set-Location -LiteralPath $RepoRoot
 $ErrorActionPreference = "Stop"
 
 $targets = Get-CimInstance Win32_Process |
     Where-Object {
-        $_.CommandLine -match 'tek-live-sendinput-ui-toggle\.ps1' -or
-        $_.CommandLine -match 'tek-ui-toggle-managed' -or
-        $_.CommandLine -match 'tek\.src\.cli'
+        $_.CommandLine -and $_.CommandLine.Contains($RepoRoot) -and
+        ($_.CommandLine -match 'tek-live-sendinput-ui-toggle\.ps1' -or
+         $_.CommandLine -match 'tek-ui-toggle-managed')
     }
 
 if (-not $targets) {

@@ -1,6 +1,6 @@
 # Documentation Index
 
-Current version: `1.4.4`
+Current version: `1.5.12`
 
 Start with the root documents:
 
@@ -9,7 +9,7 @@ Start with the root documents:
 - `../TASKS.md` for active validation.
 - `../DECISIONS.md` for current decisions.
 
-Current baseline documents live in `baselines/`; start with `baselines/BASELINE_1.4.4.md`.
+Current baseline documents live in `baselines/`; start with `baselines/BASELINE_1.5.12.md`.
 Patch manifest documents live in `patch-manifests/`; root-level `PATCH_MANIFEST*` files are not canonical.
 
 Topic documents:
@@ -23,3 +23,5 @@ Topic documents:
 - `BUILD_TEK_EXE_WINDOWS.md`
 
 Historical documents, including retired reaction/interrupt/control/defense/environment designs and tests, live under `archive/`. Treat archive files as reference only; do not use them as current implementation authority without re-verifying against the live source and obtaining explicit scope approval.
+
+Local standalone project metadata: [PROJECT_SPLIT.md](PROJECT_SPLIT.md).

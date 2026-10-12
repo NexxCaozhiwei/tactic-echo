@@ -30,6 +30,8 @@ dist\TEK.new.exe
 
 它先验证 Notepad，再验证 WoW 前台与非前台保护；不要跳过 [PRIORITY_A_MANUAL_CALIBRATION.md](PRIORITY_A_MANUAL_CALIBRATION.md) 的完整清单。
 
-## TEF发布构建
+## 隔离构建输出
 
-桌面构建入口使用PowerShell7。发布流水线可直接复用脚本后端：`pwsh.exe -NoLogo -NoProfile -Command "& ./scripts/build-tek-exe.ps1 -OutputDirectory dist/tef/tek-1.0.0 -SkipSmokeTest -SkipTests"`，仅在必需回归已单独完成后使用SkipTests。OutputDirectory限定仓库dist子目录，发布输出隔离，不替换运行中的dist/TEK.exe。发布冒烟使用独立用户目录、关闭自动派发，不复用本机设置；不把进程存活当输入成功。
+仅在必需回归已单独完成后可用：
+`pwsh -File scripts/build-tek-exe.ps1 -OutputDirectory dist/standalone-split-build -SkipSmokeTest -SkipTests`。
+OutputDirectory 必须位于本项目 dist；不替换活动主产物。启动冒烟与真实输入另行验收。

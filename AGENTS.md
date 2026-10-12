@@ -1,28 +1,8 @@
-# AGENTS.md — Tactic Echo 1.5.12 开发与安全边界
+# AGENTS.md — Retail Tactic Echo 1.5.12
 
-## TEF 独立插件与下一阶段（2026-10-11）
+## Local project boundary (2026-10-12)
 
-- TEF当前独立基线1.0.0。用户最新授权APL正式接入，覆盖下文旧“APL仍旁路”条目；自动场景切换仍旁路。Infinite推荐基本单位是Class Pack，首包MAGE_FOREVER_60，不建立互斥现代专精包，实际已学等级和天赋rank决定资格。
-- TEF 1.0.0发布基线：冻结0.14.3运行语义，标签tef-v1.0.0、codex/tef；不提升TE 1.5.12或虚构TEK版本。Release必须提供插件、同提交TEK、完整源码与哈希，构建成功/启动冒烟不能代替真实输入验收；S76仅作为0.14.3历史实测，固定5019交接待验。发布构建输出到独立dist子目录，不能停止/替换活动TEK。
-- TEF 0.14.3：用户授权自定义APL取消通用ready强制条件，requireReady默认false且不查询数值；显式开启仅接受公开0/0，可能受GCD与Secret阻断，不声称独立自身CD。旧模板ready契约保持。Bindings.xml由客户端专用路径读取，不列普通TOC，文件必须安装、分组头唯一。固定序列5019最后独立成功后切到其他技能允许公开5019读条窄交接；不强写castPresent、不绕过其他读条/引导/未知，代次/索引/收据检查及新起始失效。
-- TEF 0.14.2 CDM帧隔离：单帧cooldownID不可确认时继续有界扫描，仅精确匹配帧的公开isActive决定该请求；未匹配仍UNKNOWN。固定cdmScanReason及最多160个跳过帧计数仅诊断，不能授权；冲突/枚举失败/超限继续保守阻断。不加hook、计时器或新输入路径。
-- TEF 0.14.1待命推荐：用户授权自定义和旧模板推荐评估移除强制战斗门槛，自动待命显示按公开条件选出的候选；APL Allowed/最终Packet仍要求公开战斗true，手动模式与测试Request也不因预览绕过。待命不创建请求/关联/计数，进战重新采样，目标/自身条件未知不伪造候选。停止/保存/reload的生命周期保持，未添加独立轮询或输入路径。
-- TEF 0.14.0用户授权启用自定义CDM、蓝量百分比及目标距离比较，覆盖0.13.0未启用限制。蓝量由公开UnitPower/UnitPowerMax计算；目标距离仅UnitDistanceSquared公开数值且checkedDistance=true，不能以技能范围、位置估算代替精确距离。CDM独立配置目录SpellID，仅精确目录身份及公开frame.isActive；缺帧/隐藏/Secret/冲突不当无增益，不作为Aura真值或自身ready。额外支持5019，保留范围动作槽校验、ShootActive门禁及自身ready。用户输入比较条件不允许动态表达式或Secret操作；完整即时重核、唯一传输链路不变。
-- TEF 0.13.0自定义APL历史：首版仅法师12种登记技能，每场景最多16条精确ID规则，手动优先级；支持移动、额外冷却活动及显式实验可见姓名板敌人数阈值。资源仅不足布尔、范围仅技能布尔；CDM/蓝量百分比/精确距离不执行。UNKNOWN不授权，所有规则可见解释，派发前即时复核，保存停止旧运行，继续复用唯一传输链路。
-- 固定序列仍默认且保持原尝试语义；APL独立显式选择，额外要求公开known/usable/power_ok/范围、自身冷却（用户授权0.12.1取消GCD条件），其他UNKNOWN零Token。TEFSim目录272条法师技能与54个天赋均为unverified候选，不把70170静态节点/等级/效果直接作为70338资格或成功别名。天赋Provider必须校核当前config、树归属、实际node/definition、rank；BuildSignature仅诊断。APL继续使用唯一Runtime/Dispatch/TEAP/TEK，不新增输入路径、不修改TE/TEProbe/TEK或其他数据库。
-
-- 用户明确授权当前工作区的 `TACTIC-ECHO-FOREVER/` 独立插件及必要TEK共享传输兼容；TE AddOn基线仍1.5.12，不修改其运行逻辑。TEF版本单独同步其VERSION、Config、TOC、Bootstrap、CHANGELOG及 `docs/baselines/tef/` 基线。
-- TEF唯一数据库TEF_DB。分析落盘仅用TEF自身数据库；TEK自身trace只证明输入接口，不能代替游戏成功收据。不得读取其它插件SavedVariables。
-- TEF开发分支codex/tef；独立版本0.11.0，TE AddOn保持1.5.12。许可及TEAP默认开启，唯一Runtime.intent；默认自动启停脱战待命、进战运行，另有手动启停和脱战后停止。独立autoStart默认开，仅创建新意图，不恢复旧请求/步骤/身份。用户手动停止不得进战复活。
-- 设置、目标、焦点、施法或UNKNOWN仅临时阻断，保留意图、Token0并撤销旧请求；恢复由Runtime重新核对当前代次/步骤/绑定。读条阻断保留已建立成功关联。手动停止、重置、配置修改、切图、高级门禁关闭和异常清意图。底层StopContinuous不得反向关闭意图。HUD主卡普通Button仅控制意图；hide纯视觉，必须显式stop才能停派发。正式公开启停键唯一，旧键兼容分组。0.25秒fallback只更新视觉数字，不扫技能/绑定。
-- S37证明单步Request撤销continuous导致116成功后没有205请求。单步不得撤销、替换或绕过自动所有者；重复待处理请求幂等。职业/专精/场景配置隔离，旧法师配置只迁移MAGE，未知职业不猜技能；人工/代码来源独立，缺代码不回退人工。APL依照0.11.0独立Class Pack契约正式接入；自动场景切换仍旁路。
-- 固定尝试不读取CD/GCD/充能作为准入，也不声称ready；保留公开目标/范围/usable、实际读条/引导、文本焦点及真实BindingToken。普通失败/中断保留意图且不计步，撤回后经公开资格重核再尝试原步；移动不作全局门禁，其他按键由TEK临时让权与恢复，顺序外成功只记偏离；精确SUCCEEDED才计步。自定义控制快捷键只用TEF override，不写技能绑定/宏/SaveBindings，默认冲突拒绝；用户可显式开启临时覆盖已有绑定，战斗延迟应用。0.8.2/S49仅有116→205→205成功，未保留143与完整循环；0.9.0编辑器与5019次数仍按TACTIC-ECHO-FOREVER/docs/PRODUCTION_0.9.0.md实机验收，历史成功不得代替新版验收。
-- TEF部署只操作明确的独立目录，不MIR、不删除未知文件、不改WTF。TE/TEF只启用一个TEAP信号源；保持TEAP v3和TEK全部输入门禁，不增设输入通道。
-- TEF 0.9.0推荐配置：单体/多目标每套最多16步骤，每步1–99次；拖入及手输只精确ID，不猜等级别名。旧超限配置保留禁运行，保存/切场景/reload清活动次数，暂停保留；每次成功递增receiptSerial，起始关联/候选须匹配该代次。5019已激活或未知时零Token，活动状态不计数；新功能按PRODUCTION_0.9.0.md实机验收。
-- TEF 0.9.1快捷键：录入即保存，手输须保存/回车；reload从TEF_DB恢复，登录/绑定刷新/脱战重核，明确脱战变更override。读回当前含override命令才报生效，保存与应用状态分开，冲突/取消保留旧值；同键幂等及重入保护，不写SaveBindings或技能绑定。
-- TEF 0.10.0：循环模式none/normal/target/combat，后三者均无限循环；目标/脱战事件只在对应模式重置首步和次数，并经唯一Runtime保留意图、失效旧关联，手动停止不复活。HUD标签参考TE ControlPanel/TacticalIconButton，仅保存独立标量样式，战斗中延迟布局，不改变派发资格。
-- TEF 0.10.1界面：选中样式必须经统一按钮绘制保留，循环页常驻当前模式；设置分区装饰用页面底层纹理，不以子Frame盖住父页正文；HUD无独立设置按钮或整块底纹，主卡右键设置仍可用。
-- TEF额外验证：Lua5.1模拟、TOC版本/加载列表、验收脚本测试及安装逐文件SHA256。离线验证与实机证据必须分开说明。
+Retail TE + its own TEK only. The separately derived sibling project is independent; no runtime imports, shared source directory or automatic TEK synchronization. TEAP logical namespace TE, current v3 wire unchanged. Retired interrupt/control/defensive modules remain retired under section 0; this split does not re-enable them. Preserve HUD, macro/actionbar identity, burst, foreground, hook and input gates. Version remains 1.5.12; split metadata lives in docs/PROJECT_SPLIT.md.
 
 ## 0. 当前收窄范围（最高优先级）
 
@@ -256,7 +236,3 @@ python -m compileall -q tek/src tek/app tek/runtime
 ## P5.3.1 补充：legacy 目标管理宏
 - 当前目标可使用的唯一目标管理宏形态是已解析为 `focus → target` 的 strict fallback，且没有存活敌对 focus 抢占首分支；其他 target mutation macro 与 mouseover 仍不得自动路由。
 - action-info 代表 SpellID 的 `GetMacroInfo(handle)` 名称仅可作为唯一语义 join key；正文仍必须来自当前真实宏 index。
-
-- TEF 0.12.0：五份用户参考文件重设WotLK规则；统一Class Pack内手选arcane/fire/frost构筑模板，不按现代Spec或不完整天赋自动切换。保留原条件与顺序，BLOCKED/DROP不执行；依模板最终填充或显式覆盖。源火焰AoE关闭不自动启用。公开CD/GCD门禁不变。
-
-- TEF 0.12.1用户授权：APL不查询61304、不判断GCD准入，不伪造ready；保留自身CD和其它公开条件。失败事件身份统一进入Engine已有4096会话预算，不另设128失败预算；旧失败及旧代次身份不可淘汰，真正总预算饱和需reload。

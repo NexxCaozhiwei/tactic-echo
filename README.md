@@ -1,3 +1,9 @@
+# Retail-only local project boundary
+
+Tactic Echo now serves Retail WoW only, with its own independent TEK in `tek/`. Tactic Echo Forever has moved to the separate local sibling `../Tactic Echo Forever`; this path is documentation only, not a runtime/build dependency. There is no new remote repository URL and no automatic TEK synchronization. Version remains1.5.12; namespace TE, existing TEAP v3 wire unchanged.
+
+[Split metadata](docs/PROJECT_SPLIT.md)
+
 # Tactic Echo 战术回响
 
 当前版本：`1.5.1`

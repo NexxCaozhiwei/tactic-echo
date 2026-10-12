@@ -5,11 +5,11 @@ from tek.src.visual_decoder import RGB, protocol_colour, decode_rgb_blocks, _gam
 from tek.src.screen_sampler import locate_te_signal_layout_from_image
 
 
-class TEFColourTransportTests(unittest.TestCase):
+class ColourTransportCompatibilityTests(unittest.TestCase):
     def test_every_byte_complementary_pair_is_unique(self):
         self.assertEqual(_gamma_fields(tuple(protocol_colour(v,1.2) for v in range(256)),1.2),list(range(256)))
 
-    def test_identity_and_gamma_te_and_tef_frames(self):
+    def test_identity_and_gamma_catalog_and_binding_token_frames(self):
         for action,token in ((1,0),(0,5),(0,197)):
             values=encode_fields_v3(state="armed",action_code=action,binding_token=token,sequence=7723,frame_freshness_counter=7723)
             for gamma in (1.0,1.2):

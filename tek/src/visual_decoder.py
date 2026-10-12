@@ -17,7 +17,7 @@ class RGB:
     blue: int
 
 
-# Shared TE/TEF colour transport; only the live-CRC-verified transform is added.
+# Colour transport compatibility; only the live-CRC-verified transform is added.
 SUPPORTED_DISPLAY_GAMMAS = (1.0, 1.2)
 
 
